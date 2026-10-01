@@ -215,7 +215,7 @@ Every application runs within an ephemeral Bubblewrap namespace configured for m
 
 ---
 
-## 🗺️ Roadmap and 🤝 Contributing
+## 🗺️ Roadmap & 🤝 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ### Core Engine Status
