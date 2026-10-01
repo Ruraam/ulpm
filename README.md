@@ -215,15 +215,18 @@ Every application runs within an ephemeral Bubblewrap namespace configured for m
 
 ---
 
-## 🗺️ Roadmap
+## 🗺️ Roadmap and 🤝 Contributing
 
 - [x] Autonomous`.lpk` packaging format (v2).
 - [x] Ed25519 cryptographic signing &keyring.
 - [x] Bubblewrap isolation with dynamic XDG remapping.
 - [x] Automatic recursive`.deb` dependency resolution.
-- [ ] Nested namespace permission helper (for Steam / Proton `pressure-vessel`).
+- [ ] Add support for [your favorite distro]
+- [ ] Improve the packaging
 - [ ] Fine-grained D-Bus proxy filtering via `xdg-dbus-proxy`.
--[ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
+- [ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
+- [ ] Nested namespace permission helper (for Steam / Proton `pressure-vessel`).
+- [ ] Fix [open issue]
 
 ---
 
