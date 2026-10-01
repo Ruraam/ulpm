@@ -32,7 +32,7 @@
 
 **ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`) and massive monolithic runtimes (Flatpak, Snap).
 
-It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern**Zstandard (zstd)**—and runs them via native Linux user namespaces (**Bubblewrap**) with **zero systemoverhead**.
+It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero systemoverhead**.
 
 ### Why ULPM ?
 
