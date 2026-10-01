@@ -30,7 +30,7 @@
 
 ## ⚡ Overview
 
-**ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`) and massive monolithic runtimes (Flatpak, Snap).
+**ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
 
 It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero systemoverhead**.
 
@@ -41,7 +41,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 - 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted network capability, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates.
 - 🔑 **Cryptographically Signed:** Mandatory Ed25519 payload signatures verified before every execution or installation.
 - 🎮 **Hardware Native:** Direct zero-friction access to host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), Wayland, X11, PipeWire, and PulseAudio.
-- 🔄 **Universal Conversion:** Automatically turn raw `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundles on the fly.
+- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage`, `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundles on the fly.
 
 ---
 
@@ -67,7 +67,7 @@ ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of
 | **Sandboxing** | `bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
 | **Filesystem** | `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images|
 | **Bundle Creation** | `squashfs-tools` (`mksquashfs`) | Generates optimized $zstd$-compressed `.lpk` images |
-| **Cryptography** | `openssl` &`coreutils` | Ed25519 signature verification & SHA-256 payload integrity |
+| **Cryptography** | `openssl` & `coreutils` | Ed25519 signature verification & SHA-256 payload integrity |
 | **Metadata Parsing** | `jq` & `file` | Fast JSON inspection and ELF binary architecture detection |
 | **Transport** | `curl` | Secure bundle downloading and remote repository sync |
 
@@ -80,7 +80,7 @@ The official installer auto-detects your environment, resolves dependencies acro
 #### Rootless Install (Recommended)
 **Installs cleanly to `~/.local/bin/ulpm` without requiring root permissions:**
 ```bash
-curl -fsSLhttps://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
 ```
 #### System-Wide Install
 Installs globally to `/usr/local/bin/ulpm` for all userson the host:
