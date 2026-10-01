@@ -59,9 +59,59 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 ## 🚀 Installation & Requirements
 
 ### Dependencies
-ULPM leverages battle-tested, standard Linux utilities:
-(coming soon)
 
+ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested,standard Linux utilities:
+
+| Component | Utility | Description |
+| :--- | :--- | :--- |
+| **Sandboxing** | `bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
+| **Filesystem** | `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images|
+| **Bundle Creation** | `squashfs-tools` (`mksquashfs`) | Generates optimized $zstd$-compressed `.lpk` images |
+| **Cryptography** | `openssl` &`coreutils` | Ed25519 signature verification & SHA-256 payload integrity |
+| **Metadata Parsing** | `jq` & `file` | Fast JSON inspection and ELF binary architecture detection |
+| **Transport** | `curl` | Secure bundle downloading and remote repository sync |
+
+---
+
+### Quick Install (Automated)
+
+The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`), and sets up either a **rootless** or **system-wide** installation.
+
+#### Rootless Install (Recommended)
+**Installs cleanly to `~/.local/bin/ulpm` without requiring root permissions:**
+```bash
+curl -fsSLhttps://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
+```
+#### System-Wide Install
+Installs globally to `/usr/local/bin/ulpm` for all userson the host:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | sudo bash
+```
+
+---
+
+### Manual Dependency Installation
+
+If you prefer installing dependencies manually before running the script:
+
+**Debian / Ubuntu / Linux Mint:**
+```bash
+sudo apt update && sudo apt install -y bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
+```
+**Arch Linux / Manjaro:**
+```bash
+sudo pacman -Syu --needed bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
+```
+**Fedora /RHEL / CentOS Stream:**
+```bash
+sudo dnf install -y bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
+```
+**Alpine Linux:**
+```bash
+sudo apk add bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
+```
+
+---
 
 ## 📖 Usage Guide
 
