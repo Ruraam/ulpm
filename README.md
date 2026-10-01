@@ -7,7 +7,7 @@
 
 <p><strong><em>Lightweight, rootless, zero-daemon, sandboxed application runtime for any Linux system.</em></strong></p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Format](https://img.shields.io/badge/Format-.lpk%20v2-orange.svg)](#the-lpk-format)
 [![Sandbox](https://img.shields.io/badge/Sandbox-Bubblewrap-green.svg)](#security-model)
 [![Crypto](https://img.shields.io/badge/Signatures-Ed25519-purple.svg)](#cryptographic-verification)
