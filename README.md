@@ -216,12 +216,16 @@ Every application runs within an ephemeral Bubblewrap namespace configured for m
 ---
 
 ## 🗺️ Roadmap and 🤝 Contributing
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
+### Core Engine Status
 - [x] Autonomous`.lpk` packaging format (v2).
 - [x] Ed25519 cryptographic signing &keyring.
 - [x] Bubblewrap isolation with dynamic XDG remapping.
 - [x] Automatic recursive`.deb` dependency resolution.
-- [ ] Add support for [your favorite distro]
+
+### Upcoming & Help Wanted
+- [ ] Add support for [your favorite distro] (PRs welcome!)
 - [ ] Improve the packaging
 - [ ] Fine-grained D-Bus proxy filtering via `xdg-dbus-proxy`.
 - [ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
