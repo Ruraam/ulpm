@@ -1,0 +1,1224 @@
+#!/usr/bin/env bash
+#
+# Universal Linux Package Manager (ULPM / LPK Engine v2 - Autonomous)
+#
+set -uo pipefail
+
+ULPM_FORMAT_VERSION=2
+: "${ULPM_API_CACHE_TTL:=15}"
+# Signatures are mandatory for installation, regardless of environment settings.
+ULPM_STRICT_SIGNATURES=true
+
+BOLD='\033[1m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+
+# --- Required Dependencies ---
+for cmd in squashfuse mksquashfs bwrap jq file curl fusermount openssl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo -e "${RED}[-] Error: Required tool '$cmd' is not installed.${NC}" >&2
+        exit 1
+    fi
+done
+
+# --- Rootless Base Paths ---
+ULPM_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
+ULPM_APPS="$ULPM_DATA/apps"
+ULPM_DB="$ULPM_DATA/installed.db"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
+CACHE_API_DIR="$CACHE_DIR/api"
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
+TRUSTED_KEYS_DIR="$CONF_DIR/trusted_keys"
+DEFAULT_KEY="$CONF_DIR/ulpm_ed25519.key"
+
+mkdir -p "$ULPM_APPS" "$CACHE_API_DIR" "$DESKTOP_DIR" "$ICON_DIR" "$TRUSTED_KEYS_DIR"
+touch "$ULPM_DB"
+
+TEMP_DIR=$(mktemp -d "/tmp/ulpm.XXXXXX")
+cleanup_temp() {
+    rm -rf -- "$TEMP_DIR" 2>/dev/null || true
+}
+trap cleanup_temp EXIT INT TERM
+
+# --- Architecture Detection ---
+detect_arch() {
+    local m
+    m="$(uname -m)"
+    case "$m" in
+        x86_64|amd64)   echo "amd64" ;;
+        aarch64|arm64)  echo "arm64" ;;
+        armv7*|armhf)   echo "armhf" ;;
+        i386|i686)      echo "i386" ;;
+        riscv64)        echo "riscv64" ;;
+        *)              echo "$m" ;;
+    esac
+}
+
+SYS_ARCH=$(detect_arch)
+
+case "$SYS_ARCH" in
+    amd64)
+        ARCH_REGEX="x86_64|amd64|x64"
+        MULTILIB_ARCHS=("amd64" "i386")
+        ;;
+    arm64)
+        ARCH_REGEX="aarch64|arm64|armv8"
+        MULTILIB_ARCHS=("arm64")
+        ;;
+    armhf)
+        ARCH_REGEX="armv7l|armhf|arm"
+        MULTILIB_ARCHS=("armhf")
+        ;;
+    i386)
+        ARCH_REGEX="i386|i686|x86"
+        MULTILIB_ARCHS=("i386")
+        ;;
+    *)
+        ARCH_REGEX="$SYS_ARCH"
+        MULTILIB_ARCHS=("$SYS_ARCH")
+        ;;
+esac
+
+# --- GitHub API Helpers ---
+CONF_FILE="$CONF_DIR/ulpm.conf"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+if [ -z "$GITHUB_TOKEN" ] && [ -f "$CONF_FILE" ]; then
+    raw_token=$(grep -E '^GITHUB_TOKEN=' "$CONF_FILE" 2>/dev/null | cut -d'=' -f2-) || true
+    GITHUB_TOKEN=$(echo "$raw_token" | tr -d "\"'")
+fi
+
+fetch_github_api() {
+    local endpoint="${1#https://api.github.com/}"
+    endpoint="${endpoint#/}"
+    local ttl="${2:-$ULPM_API_CACHE_TTL}"
+    local cache_key
+    cache_key=$(echo "$endpoint" | tr '/' '_')
+    local cache_file="${CACHE_API_DIR}/${cache_key}.json"
+
+    if [ -f "$cache_file" ]; then
+        if [ "$ttl" -eq 0 ]; then
+            rm -f "$cache_file"
+        else
+            local file_mod
+            file_mod=$(find "$cache_file" -mmin "+$ttl" 2>/dev/null) || true
+            if [ -z "$file_mod" ]; then
+                cat "$cache_file"
+                return 0
+            fi
+        fi
+    fi
+
+    local auth_header=()
+    [ -n "$GITHUB_TOKEN" ] && auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
+
+    local response
+    response=$(curl -sS --connect-timeout 10 --max-time 25 --retry 2 \
+        "${auth_header[@]}" \
+        -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: ulpm-client" \
+        "https://api.github.com/${endpoint}" 2>/dev/null) || true
+
+    if [ -n "$response" ] && echo "$response" | jq -e . >/dev/null 2>&1; then
+        echo "$response" > "$cache_file"
+        echo "$response"
+        return 0
+    fi
+
+    if [ -f "$cache_file" ]; then
+        cat "$cache_file"
+        return 0
+    fi
+    return 1
+}
+
+find_lpk_download_url() {
+    local json="$1"
+    local regex="$2"
+    echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
+        | grep -iE '\.lpk$' \
+        | grep -iE "($regex)" \
+        | head -n1 \
+        | cut -f2 || true
+}
+
+find_archive_download_url() {
+    local json="$1"
+    local regex="$2"
+    echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
+        | grep -iE '\.(deb|rpm|tar\.gz|tar\.xz|tgz|tar\.zst|zip)$' \
+        | grep -iE "($regex)" \
+        | grep -ivE "src|source|dev|doc" \
+        | head -n1 \
+        | cut -f2 || true
+}
+
+# ==========================================================
+# CRYPTOGRAPHY (Ed25519)
+# ==========================================================
+
+# Silent key generation for the default key (used automatically during pack)
+ensure_default_key() {
+    if [ -f "$DEFAULT_KEY" ]; then
+        return 0
+    fi
+
+    echo -e "${CYAN}-> No signing key found. Generating default Ed25519 keypair...${NC}"
+    local priv_key="$DEFAULT_KEY"
+    local pub_key="${DEFAULT_KEY%.key}.pub"
+    local key_name="ulpm_ed25519"
+
+    if ! openssl genpkey -algorithm ed25519 -out "$priv_key" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to generate the private key.${NC}" >&2
+        rm -f "$priv_key" "$pub_key"
+        return 1
+    fi
+    chmod 600 "$priv_key" || { rm -f "$priv_key" "$pub_key"; return 1; }
+
+    if ! openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to derive the public key.${NC}" >&2
+        rm -f "$priv_key" "$pub_key"
+        return 1
+    fi
+
+    if ! cp -f "$pub_key" "$TRUSTED_KEYS_DIR/${key_name}.pub"; then
+        echo -e "${RED}[-] Error: Failed to add the public key to the trusted keyring.${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ Private Key : ${BOLD}$priv_key${NC} (keep this secret!)"
+    echo -e "${GREEN}✔ Public Key  : ${BOLD}$pub_key${NC}"
+    echo -e "${GREEN}✔ Added to trusted keyring: ${BOLD}$TRUSTED_KEYS_DIR/${key_name}.pub${NC}"
+    return 0
+}
+
+cmd_keygen() {
+    local key_name="${1:-ulpm_ed25519}"
+    local priv_key="$CONF_DIR/${key_name}.key"
+    local pub_key="$CONF_DIR/${key_name}.pub"
+
+    if [ -f "$priv_key" ]; then
+        echo -e "${YELLOW}[!] Warning: Key '$priv_key' already exists. Overwrite? (y/N)${NC}"
+        read -r reply
+        if [[ ! "$reply" =~ ^[yYoO]$ ]]; then
+            echo "Aborted."
+            return 0
+        fi
+    fi
+
+    echo -e "${CYAN}-> Generating Ed25519 signing keypair...${NC}"
+    if ! openssl genpkey -algorithm ed25519 -out "$priv_key" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to generate the private key.${NC}" >&2
+        rm -f "$priv_key" "$pub_key"
+        return 1
+    fi
+    chmod 600 "$priv_key" || { rm -f "$priv_key" "$pub_key"; return 1; }
+    if ! openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to derive the public key.${NC}" >&2
+        rm -f "$priv_key" "$pub_key"
+        return 1
+    fi
+
+    if ! cp -f "$pub_key" "$TRUSTED_KEYS_DIR/${key_name}.pub"; then
+        echo -e "${RED}[-] Error: Failed to add the public key to the trusted keyring.${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ Private Key : ${BOLD}$priv_key${NC} (keep this secret!)"
+    echo -e "${GREEN}✔ Public Key  : ${BOLD}$pub_key${NC}"
+    echo -e "${GREEN}✔ Added to trusted keyring: ${BOLD}$TRUSTED_KEYS_DIR/${key_name}.pub${NC}"
+}
+
+cmd_sign() {
+    local pkg_path="${1:-}"
+    local priv_key="${2:-$DEFAULT_KEY}"
+
+    if [ -z "$pkg_path" ] || [ ! -f "$pkg_path" ]; then
+        echo -e "${RED}[-] Error: Specify a valid .lpk package to sign.${NC}" >&2
+        return 1
+    fi
+
+    if [ ! -f "$priv_key" ]; then
+        echo -e "${RED}[-] Error: Private key not found: '$priv_key'. Run 'ulpm keygen' first.${NC}" >&2
+        return 1
+    fi
+
+    local sig_file="${pkg_path}.sig"
+    echo -e "${CYAN}-> Signing '${pkg_path}' with Ed25519...${NC}"
+    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_file"; then
+        echo -e "${RED}[-] Error: Failed to create package signature.${NC}" >&2
+        rm -f "$sig_file"
+        return 1
+    fi
+    echo -e "${GREEN}✔ Signature created : ${BOLD}$sig_file${NC}"
+}
+
+cmd_trust() {
+    local pub_key="${1:-}"
+    if [ -z "$pub_key" ] || [ ! -f "$pub_key" ]; then
+        echo -e "${RED}[-] Error: Specify a valid .pub public key file.${NC}" >&2
+        return 1
+    fi
+
+    local base_name
+    base_name=$(basename "$pub_key")
+    cp -f "$pub_key" "$TRUSTED_KEYS_DIR/$base_name"
+    echo -e "${GREEN}✔ Key added to trusted keyring : ${BOLD}$TRUSTED_KEYS_DIR/$base_name${NC}"
+}
+
+verify_package_signature() {
+    local pkg="$1"
+    local sig_file="${2:-${pkg}.sig}"
+
+    if [ ! -f "$sig_file" ]; then
+        echo -e "${RED}[-] Security Error: Missing signature for '$pkg'; unsigned packages are rejected.${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${CYAN}-> Verifying Ed25519 cryptographic signature...${NC}"
+
+    local matched=false
+    shopt -s nullglob
+    local pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
+    shopt -u nullglob
+
+    if [ ${#pub_keys[@]} -eq 0 ]; then
+        echo -e "${RED}[-] Security Error: No trusted public keys found in '$TRUSTED_KEYS_DIR'; cannot verify package signature.${NC}" >&2
+        return 1
+    fi
+
+    for pub in "${pub_keys[@]}"; do
+        if openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -in "$pkg" -sigfile "$sig_file" &>/dev/null; then
+            echo -e "${GREEN}✔ Cryptographic signature verified with key: $(basename "$pub")${NC}"
+            matched=true
+            break
+        fi
+    done
+
+    if [ "$matched" = "false" ]; then
+        echo -e "${RED}[-] CRITICAL: Signature verification failed or signer key is untrusted!${NC}" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Validate fields before using them in paths, desktop entries, database records,
+# or runtime commands.
+validate_manifest() {
+    local manifest="$1"
+
+    if ! jq -e --argjson max_version "$ULPM_FORMAT_VERSION" '
+        type == "object" and
+        ((.format_version // 1) | type == "number" and . == floor and . >= 1 and . <= $max_version) and
+        (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") and (contains("..") | not)) and
+        (.name | type == "string" and length > 0 and length <= 128 and
+            (explode | all(.[]; . >= 32 and . != 127 and . != 124 and . != 92))) and
+        ((.version // "1.0.0") | type == "string" and length > 0 and length <= 64 and
+            (explode | all(.[]; . >= 32 and . != 127 and . != 124 and . != 92))) and
+        (.exec | type == "string" and length > 0 and length <= 4096 and
+            (startswith("/") | not) and
+            (explode | all(.[]; . >= 32 and . != 127)) and
+            (split("/") | all(.[]; . != "" and . != "." and . != ".."))) and
+        ((.icon // "") | type == "string" and
+            (. == "" or ((startswith("/") | not) and
+            (explode | all(.[]; . >= 32 and . != 127)) and
+            (split("/") | all(.[]; . != "" and . != "." and . != ".."))))) and
+        ((.chromium // false) | type == "boolean") and
+        ((.network // true) | type == "boolean")
+    ' "$manifest" >/dev/null 2>&1; then
+        echo -e "${RED}[-] Error: Invalid manifest schema or unsafe field value.${NC}" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Escape reserved characters in a freedesktop .desktop string value.
+desktop_entry_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "$value"
+}
+
+# ==========================================================
+# BUNDLING ENGINE
+# ==========================================================
+
+extract_any_payload() {
+    local src="$1"
+    local dest="$2"
+
+    if [ -d "$src" ]; then
+        cp -a "$src"/. "$dest/"
+    elif [[ "$src" =~ \.deb$ ]]; then
+        dpkg-deb -x "$src" "$dest"
+    elif [[ "$src" =~ \.rpm$ ]]; then
+        if command -v rpm2cpio &>/dev/null; then
+            (cd "$dest" && rpm2cpio "$src" | cpio -idm --quiet)
+        elif command -v bsdtar &>/dev/null; then
+            bsdtar -xf "$src" -C "$dest"
+        else
+            echo -e "${RED}[-] Error: rpm2cpio or bsdtar is required to extract .rpm packages.${NC}" >&2
+            return 1
+        fi
+    elif [[ "$src" =~ \.zip$ ]]; then
+        unzip -q -o "$src" -d "$dest"
+    else
+        tar -xf "$src" -C "$dest"
+    fi
+}
+
+bundle_libs() {
+    local root_dir="$1"
+    local bin_path="$2"
+    local lib_dest="$root_dir/lib"
+
+    mkdir -p "$lib_dest"
+    echo -e "${CYAN}-> Inspecting shared libraries (Fat Bundle)...${NC}"
+
+    local targets_to_scan=()
+    if file -b "$bin_path" 2>/dev/null | grep -q "ELF"; then
+        targets_to_scan+=("$bin_path")
+    fi
+
+    while IFS= read -r companion_elf; do
+        [ -n "$companion_elf" ] && targets_to_scan+=("$companion_elf")
+    done < <(find "$root_dir" -type f -executable 2>/dev/null | while read -r f; do
+        file -b "$f" 2>/dev/null | grep -q "ELF" && echo "$f"
+    done || true)
+
+    [ ${#targets_to_scan[@]} -eq 0 ] && return 0
+
+    local added=1
+    while [ "$added" -gt 0 ]; do
+        added=0
+        while IFS= read -r lib_file; do
+            if [ -n "$lib_file" ] && [ -f "$lib_file" ]; then
+                local bname
+                bname=$(basename "$lib_file")
+                if [[ ! "$bname" =~ ^(ld-linux|libc\.so|libGL|libEGL|libdrm|libvulkan|libX11|libasound) ]]; then
+                    if [ ! -f "$lib_dest/$bname" ]; then
+                        cp -u -L "$lib_file" "$lib_dest/$bname" 2>/dev/null || true
+                        added=$((added + 1))
+                    fi
+                fi
+            fi
+        done < <(ldd "${targets_to_scan[@]}" ${lib_dest:+"$lib_dest"/*} 2>/dev/null | grep -oE '/[^ ]+' || true)
+    done
+}
+
+# ==========================================================
+# LPK PACKAGING CORE
+# ==========================================================
+
+lpk_pack() {
+    local source_input="$1"
+    local raw_name="${2:-}"
+    local out_pkg="${3:-}"
+    local version_hint="${4:-latest}"
+
+    if [ -n "$out_pkg" ]; then
+        if [[ "$out_pkg" =~ [^a-zA-Z0-9._/-] ]]; then
+            echo -e "${RED}[-] Error: Invalid output package name: '$out_pkg'${NC}" >&2
+            return 1
+        fi
+    fi
+
+    local base_clean app_name app_id work_dir target_arch
+    base_clean=$(basename "$source_input")
+    base_clean="${base_clean%%.*}"
+    app_name="${raw_name:-$base_clean}"
+
+    app_name="$(echo "$app_name" | tr -cd 'a-zA-Z0-9._-')"
+    if [ -z "$app_name" ]; then
+        echo -e "${RED}[-] Error: App name resolved to invalid or empty characters.${NC}" >&2
+        return 1
+    fi
+
+    app_id="io.lpk.${app_name,,}"
+    target_arch="$SYS_ARCH"
+
+    [ -z "$out_pkg" ] && out_pkg="${app_name}_${target_arch}.lpk"
+
+    # Always ensure a signing key exists before packaging
+    ensure_default_key || return 1
+
+    # Check for a pre-structured package directory.
+    if [ -d "$source_input" ] && [ -f "$source_input/meta/manifest.json" ] && [ -d "$source_input/root" ]; then
+        echo -e "${CYAN}-> Pre-structured LPK detected. Building: ${BOLD}${out_pkg}${NC}..."
+        validate_manifest "$source_input/meta/manifest.json" || return 1
+        rm -f "$out_pkg" "$out_pkg.sig" || return 1
+        if ! mksquashfs "$source_input" "$out_pkg" -comp zstd -noappend -reproducible -quiet; then
+            echo -e "${RED}[-] Error: SquashFS packaging failed.${NC}" >&2
+            rm -f "$out_pkg"
+            return 1
+        fi
+        cmd_sign "$out_pkg" "$DEFAULT_KEY" || { rm -f "$out_pkg"; return 1; }
+        return 0
+    fi
+
+    work_dir=$(mktemp -d "/tmp/ulpm_build_XXXXXX")
+    mkdir -p "$work_dir/root" "$work_dir/meta"
+
+    echo -e "${CYAN}-> Extracting payload...${NC}"
+    if ! extract_any_payload "$source_input" "$work_dir/root"; then
+        echo -e "${RED}[-] Error: Failed to extract source payload.${NC}" >&2
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    local entries=("$work_dir/root"/*)
+    if [ ${#entries[@]} -eq 1 ] && [ -d "${entries[0]}" ]; then
+        local nested="${entries[0]}"
+        mv "$nested"/* "$work_dir/root/" 2>/dev/null || true
+        rmdir "$nested" 2>/dev/null || true
+    fi
+
+    echo -e "  ${CYAN}-> Locating primary executable...${NC}"
+    local detected_exec=""
+
+    while IFS= read -r f; do
+        local fname
+        fname=$(basename "$f")
+        if [[ "${fname,,}" =~ ^(${app_name,,}|${base_clean,,})$ ]]; then
+            detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
+            break
+        fi
+    done < <(find "$work_dir/root" -maxdepth 4 -type f -executable 2>/dev/null || true)
+
+    if [ -z "$detected_exec" ]; then
+        while IFS= read -r f; do
+            if file -b "$f" 2>/dev/null | grep -q "ELF.*executable"; then
+                detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
+                break
+            fi
+        done < <(find "$work_dir/root" -maxdepth 4 -type f -executable 2>/dev/null || true)
+    fi
+
+    if [ -z "$detected_exec" ]; then
+        local fallback
+        fallback=$(find "$work_dir/root" -maxdepth 3 -type f -executable 2>/dev/null | head -n1 || true)
+        [ -n "$fallback" ] && detected_exec=$(realpath --relative-to="$work_dir/root" "$fallback")
+    fi
+
+    if [ -z "$detected_exec" ]; then
+        echo -e "${RED}[-] Error: No executable binary found in package.${NC}" >&2
+        rm -rf "$work_dir"
+        return 1
+    fi
+    echo -e "  ${GREEN}✔ Primary executable: ${detected_exec}${NC}"
+
+    local bin_file_info
+    bin_file_info=$(file -b "$work_dir/root/$detected_exec" 2>/dev/null || true)
+    if echo "$bin_file_info" | grep -q "ARM aarch64"; then
+        target_arch="arm64"
+    elif echo "$bin_file_info" | grep -q "x86-64"; then
+        target_arch="amd64"
+    fi
+
+    bundle_libs "$work_dir/root" "$work_dir/root/$detected_exec"
+
+    echo -e "  ${CYAN}-> Resolving icon...${NC}"
+    local best_icon=""
+    best_icon=$(find "$work_dir/root" -type f \( -iname "*.png" -o -iname "*.svg" \) 2>/dev/null | grep -iE "512|256|128|logo|icon|app" | head -n1 || true)
+    [ -z "$best_icon" ] && best_icon=$(find "$work_dir/root" -type f -iname "*.png" 2>/dev/null | head -n1 || true)
+
+    local icon_manifest=""
+    if [ -n "$best_icon" ] && [ -f "$best_icon" ]; then
+        if ! cp -f "$best_icon" "$work_dir/meta/icon.png"; then
+            echo -e "${RED}[-] Error: Failed to copy package icon.${NC}" >&2
+            rm -rf "$work_dir"
+            return 1
+        fi
+        icon_manifest="meta/icon.png"
+    fi
+
+    local is_chromium=false
+    if grep -qiE "chromium|electron" "$work_dir/root/$detected_exec" 2>/dev/null || [[ "$detected_exec" =~ (brave|chrome|electron) ]]; then
+        is_chromium=true
+    fi
+
+    cat > "$work_dir/meta/manifest.json" <<EOF
+{
+  "format_version": $ULPM_FORMAT_VERSION,
+  "id": "$app_id",
+  "name": "$app_name",
+  "version": "$version_hint",
+  "arch": "$target_arch",
+  "exec": "$detected_exec",
+  "icon": "$icon_manifest",
+  "chromium": $is_chromium,
+  "network": true
+}
+EOF
+
+    echo -e "  ${CYAN}-> Creating SquashFS package [Arch: ${BOLD}$target_arch${NC}] -> ${BOLD}$out_pkg${NC}..."
+    rm -f "$out_pkg" "$out_pkg.sig" || { rm -rf "$work_dir"; return 1; }
+    if ! mksquashfs "$work_dir" "$out_pkg" -comp zstd -noappend -reproducible -quiet; then
+        echo -e "${RED}[-] Error: SquashFS packaging failed.${NC}" >&2
+        rm -f "$out_pkg"
+        rm -rf "$work_dir"
+        return 1
+    fi
+    rm -rf "$work_dir"
+
+    # Sign automatically (key is guaranteed to exist thanks to ensure_default_key)
+    cmd_sign "$out_pkg" "$DEFAULT_KEY" || { rm -f "$out_pkg"; return 1; }
+
+    return 0
+}
+
+lpk_pack_from_apt() {
+    local pkg_input="${1:-}"
+    local app_name_hint="${2:-}"
+    local out_pkg="${3:-}"
+
+    if [ -z "$pkg_input" ]; then
+        echo -e "${RED}[-] Usage: ulpm deb-pack <package_name|file.deb> [app_name]${NC}" >&2
+        return 1
+    fi
+
+    if ! command -v apt-get &>/dev/null || ! command -v apt-cache &>/dev/null; then
+        echo -e "${RED}[-] Error: apt-get and apt-cache are required for deb-pack.${NC}" >&2
+        return 1
+    fi
+
+    local build_dir
+    build_dir=$(mktemp -d "/tmp/ulpm_apt_XXXXXX")
+    local deb_dir="$build_dir/debs"
+    local root_dir="$build_dir/root"
+    mkdir -p "$deb_dir" "$root_dir"
+
+    local target_pkg="$pkg_input"
+    if [ -f "$pkg_input" ] && [[ "$pkg_input" =~ \.deb$ ]]; then
+        target_pkg=$(dpkg-deb -f "$pkg_input" Package 2>/dev/null || basename "$pkg_input" .deb)
+        cp -f "$pkg_input" "$deb_dir/"
+    fi
+
+    local app_name="${app_name_hint:-$target_pkg}"
+    echo -e "${BLUE}::${NC} ${CYAN}Fetching APT dependencies for '${target_pkg}'...${NC}"
+
+    (
+        cd "$deb_dir" || exit 1
+        [ ! -f "$pkg_input" ] && apt-get download "$target_pkg" 2>/dev/null || true
+
+        apt-cache depends --recurse --no-recommends --no-suggests "$target_pkg" 2>/dev/null \
+            | grep -E "Depends:" | awk '{print $2}' | grep -v "<" | sort -u \
+            | grep -vE "^(libc6|base-files|dpkg|debconf|sensible-utils|init-system-helpers)$" \
+            | xargs -r apt-get download 2>/dev/null || true
+    )
+
+    echo -e "  ${CYAN}-> Extracting deb packages...${NC}"
+    for deb in "$deb_dir"/*.deb; do
+        [ -f "$deb" ] && dpkg-deb -x "$deb" "$root_dir"
+    done
+
+    find "$root_dir" -type f \( -name "ld-linux*.so*" -o -name "libc.so*" \) -delete 2>/dev/null || true
+
+    local pack_status=0
+    lpk_pack "$root_dir" "$app_name" "$out_pkg" || pack_status=$?
+    rm -rf "$build_dir"
+    return "$pack_status"
+}
+
+lpk_install_file() {
+    local pkg="$1"
+    local repo_origin="${2:-local}"
+
+    # Cryptographic verification.
+    if ! verify_package_signature "$pkg"; then
+        echo -e "${RED}[-] Aborting installation: Signature check failed.${NC}" >&2
+        return 1
+    fi
+
+    local mnt_tmp
+    mnt_tmp=$(mktemp -d /tmp/ulpm_inst_XXXXXX)
+
+    cleanup_inst_mount() {
+        local count=0
+        if mountpoint -q "$mnt_tmp" 2>/dev/null; then
+            while mountpoint -q "$mnt_tmp" && [ "$count" -lt 5 ]; do
+                fusermount -u "$mnt_tmp" 2>/dev/null && break
+                sleep 0.2
+                ((count++))
+            done
+
+            if mountpoint -q "$mnt_tmp" 2>/dev/null; then
+                fusermount -u -z "$mnt_tmp" 2>/dev/null || true
+            fi
+        fi
+
+        if ! mountpoint -q "$mnt_tmp" 2>/dev/null; then
+            rm -rf "$mnt_tmp" 2>/dev/null || true
+        fi
+    }
+
+    if ! squashfuse "$pkg" "$mnt_tmp" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to mount package with squashfuse.${NC}" >&2
+        rm -rf "$mnt_tmp" 2>/dev/null || true
+        return 1
+    fi
+
+    local manifest="$mnt_tmp/meta/manifest.json"
+    if [ ! -f "$manifest" ]; then
+        echo -e "${RED}[-] Error: Invalid package (missing manifest.json).${NC}" >&2
+        cleanup_inst_mount
+        return 1
+    fi
+
+    if ! validate_manifest "$manifest"; then
+        cleanup_inst_mount
+        return 1
+    fi
+
+    local fmt_ver
+    fmt_ver=$(jq -r '.format_version // 1' "$manifest") || { cleanup_inst_mount; return 1; }
+    if [ "$fmt_ver" -gt "${ULPM_FORMAT_VERSION:-2}" ]; then
+        echo -e "${RED}[-] Error: Package requires format v${fmt_ver}, but ulpm supports up to v${ULPM_FORMAT_VERSION:-2}.${NC}" >&2
+        echo -e "${YELLOW}[!] Please upgrade ulpm to install this package.${NC}" >&2
+        cleanup_inst_mount
+        return 1
+    fi
+
+    local id name icon_file version exec_file
+    id=$(jq -r '.id' "$manifest") || { cleanup_inst_mount; return 1; }
+    name=$(jq -r '.name' "$manifest") || { cleanup_inst_mount; return 1; }
+    version=$(jq -r '.version // "1.0.0"' "$manifest") || { cleanup_inst_mount; return 1; }
+    icon_file=$(jq -r '.icon // empty' "$manifest") || { cleanup_inst_mount; return 1; }
+    exec_file=$(jq -r '.exec' "$manifest") || { cleanup_inst_mount; return 1; }
+
+    if [[ "$repo_origin" == *'|'* || "$repo_origin" == *$'\n'* || "$repo_origin" == *$'\r'* ]]; then
+        echo -e "${RED}[-] Error: Invalid repository origin value.${NC}" >&2
+        cleanup_inst_mount
+        return 1
+    fi
+
+    local package_root exec_real icon_real
+    package_root=$(realpath -e -- "$mnt_tmp") || { cleanup_inst_mount; return 1; }
+    exec_real=$(realpath -e -- "$package_root/root/$exec_file") || {
+        echo -e "${RED}[-] Error: Manifest executable does not exist inside the package.${NC}" >&2
+        cleanup_inst_mount
+        return 1
+    }
+    case "$exec_real" in
+        "$package_root/root"/*)
+            if [ ! -f "$exec_real" ] || [ ! -x "$exec_real" ]; then
+                echo -e "${RED}[-] Error: Manifest executable is not an executable file.${NC}" >&2
+                cleanup_inst_mount
+                return 1
+            fi
+            ;;
+        *) echo -e "${RED}[-] Error: Manifest executable resolves outside the package.${NC}" >&2; cleanup_inst_mount; return 1 ;;
+    esac
+    if [ -n "$icon_file" ]; then
+        icon_real=$(realpath -e -- "$package_root/$icon_file") || {
+            echo -e "${RED}[-] Error: Manifest icon does not exist.${NC}" >&2
+            cleanup_inst_mount
+            return 1
+        }
+        case "$icon_real" in
+            "$package_root"/*) [ -f "$icon_real" ] || { cleanup_inst_mount; return 1; } ;;
+            *) echo -e "${RED}[-] Error: Manifest icon resolves outside the package.${NC}" >&2; cleanup_inst_mount; return 1 ;;
+        esac
+    fi
+
+    echo -e "${BLUE}::${NC} Installing ${BOLD}$name${NC} (${id})..."
+
+    local target_pkg="$ULPM_APPS/$id.lpk"
+    if ! cp -f "$pkg" "$target_pkg"; then
+        echo -e "${RED}[-] Error: Failed to copy package into the ULPM application store.${NC}" >&2
+        cleanup_inst_mount
+        return 1
+    fi
+    if ! cp -f "${pkg}.sig" "${target_pkg}.sig"; then
+        echo -e "${RED}[-] Error: Failed to copy package signature into the ULPM application store.${NC}" >&2
+        rm -f "$target_pkg"
+        cleanup_inst_mount
+        return 1
+    fi
+
+    local target_icon="$id"
+    if [ -n "$icon_file" ]; then
+        if ! cp -f "$icon_real" "$ICON_DIR/$id.png"; then
+            echo -e "${RED}[-] Error: Failed to install package icon.${NC}" >&2
+            rm -f "$target_pkg" "${target_pkg}.sig"
+            cleanup_inst_mount
+            return 1
+        fi
+        target_icon="$ICON_DIR/$id.png"
+    fi
+
+    cleanup_inst_mount
+
+    local desktop_name
+    desktop_name=$(desktop_entry_escape "$name")
+    if ! cat > "$DESKTOP_DIR/ulpm-$id.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$desktop_name
+Exec=ulpm run "$id" %U
+Icon=$target_icon
+Terminal=false
+Categories=Utility;Network;Development;AudioVideo;Graphics;
+StartupNotify=true
+EOF
+    then
+        echo -e "${RED}[-] Error: Failed to write desktop launcher.${NC}" >&2
+        rm -f "$target_pkg" "${target_pkg}.sig" "$DESKTOP_DIR/ulpm-$id.desktop"
+        return 1
+    fi
+
+    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
+    local escaped_id
+    escaped_id=$(printf '%s\n' "$id" | sed -e 's/[]\/$*.^[]/\\&/g')
+    sed -i "/^${escaped_id}|/d" "$ULPM_DB" 2>/dev/null || true
+    if ! echo "${id}|${name}|${version}|${repo_origin}|$(date +%s)" >> "$ULPM_DB"; then
+        echo -e "${RED}[-] Error: Failed to update installed-package database.${NC}" >&2
+        rm -f "$target_pkg" "${target_pkg}.sig" "$DESKTOP_DIR/ulpm-$id.desktop"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ '$name' installed successfully!${NC}"
+}
+
+# ==========================================================
+# SECURE ISOLATED RUNTIME (BUBBLEWRAP)
+# ==========================================================
+
+lpk_run_isolated() {
+    local force_offline=false
+    while [[ "${1:-}" =~ ^-- ]]; do
+        case "$1" in
+            --offline|--no-net)
+                force_offline=true
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local target="${1:-}"
+    [ -z "$target" ] && { echo -e "${RED}[-] Error: No target package specified to run.${NC}" >&2; exit 1; }
+    shift || true
+
+    local pkg_path=""
+    if [ -f "$target" ]; then
+        pkg_path="$(realpath "$target")"
+    elif [ -f "$ULPM_APPS/$target.lpk" ]; then
+        pkg_path="$ULPM_APPS/$target.lpk"
+    elif [ -f "$ULPM_APPS/io.lpk.${target,,}.lpk" ]; then
+        pkg_path="$ULPM_APPS/io.lpk.${target,,}.lpk"
+    else
+        echo -e "${RED}[-] Error: Package not found: $target${NC}" >&2
+        exit 1
+    fi
+
+    if ! verify_package_signature "$pkg_path"; then
+        echo -e "${RED}[-] Aborting launch: package signature check failed.${NC}" >&2
+        exit 1
+    fi
+
+    local mnt_dir
+    mnt_dir=$(mktemp -d /tmp/ulpm_run_XXXXXX)
+
+    cleanup_instance() {
+        local count=0
+        if mountpoint -q "$mnt_dir" 2>/dev/null; then
+            while mountpoint -q "$mnt_dir" && [ "$count" -lt 5 ]; do
+                fusermount -u "$mnt_dir" 2>/dev/null && break
+                sleep 0.2
+                ((count++))
+            done
+
+            if mountpoint -q "$mnt_dir" 2>/dev/null; then
+                fusermount -u -z "$mnt_dir" 2>/dev/null || true
+            fi
+        fi
+
+        if ! mountpoint -q "$mnt_dir" 2>/dev/null; then
+            rm -rf "$mnt_dir" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_instance EXIT INT TERM
+
+    if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
+        echo -e "${RED}[-] Error: Failed to mount LPK image via squashfuse.${NC}" >&2
+        cleanup_instance
+        exit 1
+    fi
+
+    local manifest="$mnt_dir/meta/manifest.json"
+    if [ ! -f "$manifest" ]; then
+        echo -e "${RED}[-] Error: Package does not contain a valid manifest.${NC}" >&2
+        cleanup_instance
+        exit 1
+    fi
+
+    if ! validate_manifest "$manifest"; then
+        cleanup_instance
+        exit 1
+    fi
+
+    local fmt_ver
+    fmt_ver=$(jq -r '.format_version // 1' "$manifest") || { cleanup_instance; exit 1; }
+    if [ "$fmt_ver" -gt "${ULPM_FORMAT_VERSION:-2}" ]; then
+        echo -e "${RED}[-] Error: Package requires format v${fmt_ver}, but your ulpm supports up to v${ULPM_FORMAT_VERSION:-2}.${NC}" >&2
+        echo -e "${YELLOW}[!] Please upgrade ulpm to run this package.${NC}" >&2
+        cleanup_instance
+        exit 1
+    fi
+
+    local app_id exec_bin is_chromium allow_net
+    app_id=$(jq -r '.id' "$manifest") || { cleanup_instance; exit 1; }
+    exec_bin=$(jq -r '.exec' "$manifest") || { cleanup_instance; exit 1; }
+    is_chromium=$(jq -r '.chromium // false' "$manifest" 2>/dev/null || echo "false")
+    allow_net=$(jq -r '.network // true' "$manifest" 2>/dev/null || echo "true")
+
+    if [ -z "$app_id" ] || [ -z "$exec_bin" ]; then
+        echo -e "${RED}[-] Error: Corrupted manifest (missing 'id' or 'exec').${NC}" >&2
+        cleanup_instance
+        exit 1
+    fi
+
+    local package_root resolved_exec
+    package_root=$(realpath -e -- "$mnt_dir/root") || { cleanup_instance; exit 1; }
+    resolved_exec=$(realpath -e -- "$package_root/$exec_bin") || {
+        echo -e "${RED}[-] Error: Manifest executable does not exist.${NC}" >&2
+        cleanup_instance
+        exit 1
+    }
+    case "$resolved_exec" in
+        "$package_root"/*)
+            if [ ! -f "$resolved_exec" ] || [ ! -x "$resolved_exec" ]; then
+                echo -e "${RED}[-] Error: Manifest executable is not an executable file.${NC}" >&2
+                cleanup_instance
+                exit 1
+            fi
+            ;;
+        *)
+            echo -e "${RED}[-] Error: Manifest executable resolves outside the package.${NC}" >&2
+            cleanup_instance
+            exit 1
+            ;;
+    esac
+
+    local isolate_network=false
+    if [ "$force_offline" = "true" ] || [ "$allow_net" = "false" ]; then
+        isolate_network=true
+    fi
+
+    local run_uid
+    run_uid="$(id -u)"
+    local run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
+
+    local app_data_dir="$HOME/.var/app/$app_id"
+    mkdir -p "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
+
+    local dl_dir
+    dl_dir="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
+    [ -d "$dl_dir" ] || dl_dir="$HOME"
+
+    local exec_dir
+    exec_dir="$(dirname "/app/$exec_bin")"
+
+    local app_ld_path="/app/lib:/app/usr/lib:/app/usr/lib/x86_64-linux-gnu:/app/usr/lib/i386-linux-gnu:/app/usr/lib/aarch64-linux-gnu:$exec_dir"
+    [ -n "${LD_LIBRARY_PATH:-}" ] && app_ld_path="$app_ld_path:$LD_LIBRARY_PATH"
+
+    local host_ca_bundle=""
+    for ca_path in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/ssl/ca-bundle.pem \
+        /etc/ca-certificates/extracted/ca-bundle.trust.crt; do
+        if [ -f "$ca_path" ]; then
+            host_ca_bundle="$ca_path"
+            break
+        fi
+    done
+
+    local chromium_flags=()
+    if [ "$is_chromium" = "true" ] || grep -qiE "chromium|electron" "$mnt_dir/root/$exec_bin" 2>/dev/null; then
+        chromium_flags=(
+            "--no-sandbox"
+            "--test-type"
+            "--disable-gpu-sandbox"
+            "--disable-setuid-sandbox"
+            "--log-level=3"
+            "--silent-debugger-extension-api"
+        )
+        [ -n "${WAYLAND_DISPLAY:-}" ] && chromium_flags+=("--ozone-platform-hint=auto")
+    fi
+
+    local bwrap_args=(
+        --ro-bind /usr /usr
+        --ro-bind-try /lib /lib
+        --ro-bind-try /lib64 /lib64
+        --ro-bind-try /bin /bin
+        --ro-bind-try /sbin /sbin
+        --ro-bind-try /etc /etc
+        --ro-bind /sys /sys
+        --proc /proc
+        --dev /dev
+        --tmpfs /dev/shm
+        --bind /tmp /tmp
+
+        --dev-bind-try /dev/dri /dev/dri
+        --ro-bind-try /usr/lib/i386-linux-gnu /usr/lib/i386-linux-gnu
+        --ro-bind-try /lib/i386-linux-gnu /lib/i386-linux-gnu
+        --ro-bind-try /lib/ld-linux.so.2 /lib/ld-linux.so.2
+
+        --ro-bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
+        --bind-try "$run_user_dir" "$run_user_dir"
+        --ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority"
+
+        --ro-bind-try /usr/share/fonts /usr/share/fonts
+        --ro-bind-try /usr/share/themes /usr/share/themes
+        --ro-bind-try /usr/share/icons /usr/share/icons
+        --ro-bind-try "$HOME/.icons" "$HOME/.icons"
+        --ro-bind-try "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-3.0"
+        --ro-bind-try "$HOME/.config/fontconfig" "$HOME/.config/fontconfig"
+
+        # User directory sandboxing
+        --bind "$dl_dir" "$dl_dir"
+        --bind "$app_data_dir/config" "$HOME/.config"
+        --bind "$app_data_dir/data" "$HOME/.local/share"
+        --bind "$app_data_dir/cache" "$HOME/.cache"
+
+        --ro-bind "$mnt_dir/root" /app
+    )
+
+    if [ "$isolate_network" = "true" ]; then
+        bwrap_args+=(--unshare-net)
+    else
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /run/resolvconf /run/resolvconf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+        )
+    fi
+
+    if [ -n "$host_ca_bundle" ]; then
+        bwrap_args+=(
+            --ro-bind-try "$host_ca_bundle" /etc/ssl/certs/ca-certificates.crt
+            --ro-bind-try "$host_ca_bundle" /etc/pki/tls/certs/ca-bundle.crt
+        )
+    fi
+
+    for dev in /dev/nvidia*; do
+        [ -e "$dev" ] && bwrap_args+=(--dev-bind "$dev" "$dev")
+    done
+
+    bwrap "${bwrap_args[@]}" \
+        --setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
+        --setenv DISPLAY "${DISPLAY:-}" \
+        --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-}" \
+        --setenv XDG_RUNTIME_DIR "$run_user_dir" \
+        --setenv SSL_CERT_FILE "${host_ca_bundle:-}" \
+        --setenv PULSE_SERVER "${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
+        --setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir" \
+        --setenv DBUS_SESSION_BUS_ADDRESS "${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
+        --setenv LD_LIBRARY_PATH "$app_ld_path" \
+        --chdir /app \
+        "/app/$exec_bin" "${chromium_flags[@]}" "$@" || true
+}
+
+# ==========================================================
+# CLI COMMANDS
+# ==========================================================
+
+cmd_install_target() {
+    local target="$1"
+    local app_name_hint="${2:-}"
+
+    if [ -f "$target" ] && [[ "$target" =~ \.lpk$ ]]; then
+        lpk_install_file "$target" "local"
+        return $?
+    fi
+
+    if [ -d "$target" ] || [[ "$target" =~ \.(deb|rpm|tar\..*|tgz|zip)$ ]]; then
+        local out_lpk="$TEMP_DIR/bundle_${SYS_ARCH}.lpk"
+        lpk_pack "$target" "$app_name_hint" "$out_lpk" || return 1
+        lpk_install_file "$out_lpk" "local"
+        return $?
+    fi
+
+    local repo_path
+    repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
+    echo -e "${BLUE}::${NC} ${CYAN}Scanning GitHub releases for ${BOLD}${repo_path}${NC}...${NC}"
+
+    local release_json
+    release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || {
+        echo -e "${RED}[-] Error: Failed to fetch the GitHub release metadata.${NC}" >&2
+        return 1
+    }
+    local tag_name
+    tag_name=$(echo "$release_json" | jq -r '.tag_name // empty' 2>/dev/null) || true
+    if [ -z "$tag_name" ]; then
+        echo -e "${RED}[-] Error: No GitHub releases available for ${repo_path}.${NC}" >&2
+        return 1
+    fi
+
+    # 1. Native .lpk asset
+    local lpk_url
+    lpk_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
+
+    if [ -n "$lpk_url" ]; then
+        local tmp_lpk="$TEMP_DIR/downloaded.lpk"
+        echo -e "  ${GREEN}✔ Downloading remote .lpk...${NC}"
+        curl -fsSL --progress-bar -o "$tmp_lpk" "$lpk_url" || return 1
+
+        # Look for a matching signature asset on GitHub.
+        local lpk_name sig_url
+        lpk_name=$(basename "$lpk_url")
+        sig_url=$(echo "$release_json" | jq -r --arg n "${lpk_name}.sig" '.assets[]? | select(.name == $n) | .browser_download_url' 2>/dev/null || true)
+        if [ -n "$sig_url" ]; then
+            echo -e "  ${CYAN}-> Found remote signature. Downloading...${NC}"
+            curl -fsSL -o "${tmp_lpk}.sig" "$sig_url" 2>/dev/null || return 1
+        fi
+
+        lpk_install_file "$tmp_lpk" "$repo_path"
+        return $?
+    fi
+
+    # 2. Archive asset
+    local dl_url
+    dl_url=$(find_archive_download_url "$release_json" "$ARCH_REGEX")
+
+    if [ -z "$dl_url" ]; then
+        echo -e "${RED}[-] Error: No compatible binary found for arch '$SYS_ARCH'.${NC}" >&2
+        return 1
+    fi
+
+    local tmp_archive="$TEMP_DIR/downloaded_archive"
+    echo -e "  ${GREEN}✔ Downloading application archive...${NC}"
+    curl -fsSL --progress-bar -o "$tmp_archive" "$dl_url" || return 1
+
+    local auto_lpk="$TEMP_DIR/generated_${SYS_ARCH}.lpk"
+    local app_name
+    app_name="${app_name_hint:-$(echo "$repo_path" | cut -d'/' -f2)}"
+    lpk_pack "$tmp_archive" "$app_name" "$auto_lpk" "$tag_name" || return 1
+    lpk_install_file "$auto_lpk" "$repo_path"
+}
+
+cmd_upgrade() {
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
+    echo -e "${BOLD}${CYAN}Checking for application updates...${NC}"
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
+
+    if [ ! -s "$ULPM_DB" ]; then
+        echo -e "${GRAY}No GitHub-tracked packages installed.${NC}"
+        return 0
+    fi
+
+    while IFS='|' read -r id name ver repo created; do
+        [ "$repo" = "local" ] && continue
+        [ -z "$repo" ] && continue
+        echo -e "${BLUE}::${NC} Checking ${BOLD}$name${NC} ($repo)..."
+        local rel_data tag_remote
+        rel_data=$(fetch_github_api "repos/${repo}/releases/latest") || continue
+        tag_remote=$(echo "$rel_data" | jq -r '.tag_name // empty' | tr -d '\r')
+        local clean_remote="${tag_remote#v}"
+        local clean_local="${ver#v}"
+
+        if [ -n "$clean_remote" ] && [ "$clean_remote" != "$clean_local" ]; then
+            echo -e "  ${YELLOW}★ Update available: ${clean_local} -> ${GREEN}${clean_remote}${NC}"
+            cmd_install_target "$repo" "$name"
+        else
+            echo -e "  ${GREEN}✔ Up to date (${clean_local})${NC}"
+        fi
+    done < "$ULPM_DB"
+}
+
+cmd_remove() {
+    local target="${1:-}"
+    [ -z "$target" ] && { echo -e "${RED}[-] Error: No package specified to remove.${NC}" >&2; return 1; }
+
+    if [[ "$target" =~ (\.\.|/) ]]; then
+        echo -e "${RED}[-] Error: Illegal package identifier.${NC}" >&2
+        return 1
+    fi
+
+    local id="io.lpk.${target,,}"
+    [[ "$target" =~ ^io\.lpk\. ]] && id="$target"
+
+    echo -e "${BLUE}::${NC} Uninstalling ${BOLD}$target${NC}..."
+    rm -f "$ULPM_APPS/$id.lpk" "$ULPM_APPS/$id.lpk.sig"
+    rm -f "$DESKTOP_DIR/ulpm-$id.desktop"
+    rm -f "$ICON_DIR/$id.png"
+
+    local escaped_id
+    escaped_id=$(printf '%s\n' "$id" | sed -e 's/[]\/$*.^[]/\\&/g')
+    sed -i "/^${escaped_id}|/d" "$ULPM_DB" 2>/dev/null || true
+
+    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    echo -e "${GREEN}✔ Package $id removed successfully.${NC}"
+}
+
+cmd_list() {
+    echo -e "${BOLD}${CYAN}Installed ULPM Packages:${NC}"
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
+    if [ -s "$ULPM_DB" ]; then
+        while IFS='|' read -r id name ver repo created; do
+            printf "  ${BOLD}%-25s${NC} ${GREEN}%-10s${NC} ${GRAY}(%s)${NC}\n" "$name" "$ver" "$repo"
+        done < "$ULPM_DB"
+    else
+        echo -e "  ${GRAY}(No packages installed)${NC}"
+    fi
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
+}
+
+usage() {
+    cat <<EOF
+Universal Linux Package Manager (LPK Core) - Autonomous System
+
+Usage: ulpm <command> [options]
+
+Package Management:
+  install, -i <source> [name]         Install (.deb, .rpm, archive, .lpk, or owner/repo)
+  run [--offline] <id|file> [args]   Run application inside sandboxed runtime
+  pack <source> [name] [out]          Pack directory/archive into standalone .lpk
+  deb-pack <pkg|deb> [name] [out]     Pack with ALL recursive APT dependencies
+  upgrade, -u                        Check and apply GitHub updates
+  remove, -r <id>                    Uninstall package
+  list, -l                           List installed applications
+
+Security & Cryptography (Ed25519):
+  keygen [name]                      Generate a new Ed25519 signing keypair
+  sign <file.lpk> [priv_key]         Sign a package (produces <file.lpk>.sig)
+  trust <file.pub>                   Import a public key into trusted keyring
+EOF
+    exit 0
+}
+
+# --- Argument Dispatcher ---
+[ $# -eq 0 ] && usage
+ACTION="$1"
+shift || true
+
+case "$ACTION" in
+    install|-i|add|-a) cmd_install_target "$@" ;;
+    run)               lpk_run_isolated "$@" ;;
+    pack)              lpk_pack "$@" ;;
+    deb-pack)          lpk_pack_from_apt "$@" ;;
+    upgrade|-u)        cmd_upgrade ;;
+    remove|-r)         cmd_remove "$@" ;;
+    list|-l)           cmd_list ;;
+    keygen)            cmd_keygen "$@" ;;
+    sign)              cmd_sign "$@" ;;
+    trust)             cmd_trust "$@" ;;
+    help|-h|--help)    usage ;;
+    *)                 echo -e "${RED}[-] Unknown command: '$ACTION'${NC}"; usage ;;
+esac
