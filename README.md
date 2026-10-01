@@ -138,8 +138,9 @@ Install directly from local files, archives, or remote GitHub releases:
 ```bash
 ulpm install ./app_amd64.lpk
 ```
-**Convert and install a .deb or archive on the fly**
+**Convert and install an AppImage, .deb or archive on the fly**
 ```bash
+ulpm install ./app.AppImage
 ulpm install ./discord.deb
 ulpm install ./app.tar.gz my-custom-app
 ```
@@ -150,8 +151,9 @@ ulpm install owner/repo
 ### 3. Packaging & Fat-Bundling (`pack` & `deb-pack`)
 ULPM can automatically resolve dependencies using `ldd` and fat-bundle required shared libraries:
 
-**Package a folder or archive into an autonomous .lpk**
+**Package a folder, archive or AppImage into an autonomous .lpk**
 ```bash
+ulpm pack ./app.AppImage
 ulpm pack ./extracted_folder myapp
 ```
 **Build a standalone .lpk bundle fetching all recursive APT dependencies**
