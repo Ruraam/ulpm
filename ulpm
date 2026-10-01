@@ -153,7 +153,7 @@ find_archive_download_url() {
     local json="$1"
     local regex="$2"
     echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
-        | grep -iE '\.(deb|rpm|tar\.gz|tar\.xz|tgz|tar\.zst|zip)$' \
+        | grep -iE '\.(appimage|deb|rpm|tar\.gz|tar\.xz|tgz|tar\.zst|zip)$' \
         | grep -iE "($regex)" \
         | grep -ivE "src|source|dev|doc" \
         | head -n1 \
@@ -359,17 +359,37 @@ extract_any_payload() {
 
     if [ -d "$src" ]; then
         cp -a "$src"/. "$dest/"
+    elif [[ "$src" =~ \.appimage$ ]] || [[ "$src" =~ \.AppImage$ ]]; then
+    local appimg_tmp
+        appimg_tmp=$(mktemp-d "/tmp/ulpm_appimage_XXXXXX")
+            chmod +x "$src" 2>/dev/null || true
+    (
+    cd "$appimg_tmp" || exit 1
+    "$src" --appimage-extract >/dev/null 2>&1 || true
+    )
+    
+    if [ -d "$appimg_tmp/squashfs-root" ]; then
+        cp -a "$appimg_tmp/squashfs-root"/. "$dest/"
+            rm -rf "$appimg_tmp"
+        else
+            rm-rf "$appimg_tmp"
+                echo -e "${RED}[-] Error: Failed to extract AppImage payload.${NC}" >&2
+        return 1
+    fi
+
+    if [ -d "$src" ]; then
+        cp -a "$src"/. "$dest/"
     elif [[ "$src" =~ \.deb$ ]]; then
         dpkg-deb -x "$src" "$dest"
     elif [[ "$src" =~ \.rpm$ ]]; then
-        if command -v rpm2cpio &>/dev/null; then
-            (cd "$dest" && rpm2cpio "$src" | cpio -idm --quiet)
-        elif command -v bsdtar &>/dev/null; then
-            bsdtar -xf "$src" -C "$dest"
-        else
-            echo -e "${RED}[-] Error: rpm2cpio or bsdtar is required to extract .rpm packages.${NC}" >&2
-            return 1
-        fi
+    if command -v rpm2cpio &>/dev/null; then
+        (cd "$dest" && rpm2cpio "$src" | cpio -idm --quiet)
+    elif command -v bsdtar &>/dev/null; then
+        bsdtar -xf "$src" -C "$dest"
+    else
+        echo -e "${RED}[-] Error: rpm2cpio or bsdtar is required to extract .rpm packages.${NC}" >&2
+        return 1
+    fi
     elif [[ "$src" =~ \.zip$ ]]; then
         unzip -q -o "$src" -d "$dest"
     else
@@ -1048,7 +1068,7 @@ cmd_install_target() {
         return $?
     fi
 
-    if [ -d "$target" ] || [[ "$target" =~ \.(deb|rpm|tar\..*|tgz|zip)$ ]]; then
+    if [ -d "$target" ] || [[ "$target" =~ \.(appimage|deb|rpm|tar\..*|tgz|zip)$ ]] || [[ "$target" =~ \.AppImage$ ]]; then
         local out_lpk="$TEMP_DIR/bundle_${SYS_ARCH}.lpk"
         lpk_pack "$target" "$app_name_hint" "$out_lpk" || return 1
         lpk_install_file "$out_lpk" "local"
@@ -1187,7 +1207,7 @@ Universal Linux Package Manager (LPK Core) - Autonomous System
 Usage: ulpm <command> [options]
 
 Package Management:
-  install, -i <source> [name]         Install (.deb, .rpm, archive, .lpk, or owner/repo)
+  install, -i <source> [name]         Install (.appimage, .deb, .rpm, archive, .lpk, or owner/repo)
   run [--offline] <id|file> [args]   Run application inside sandboxed runtime
   pack <source> [name] [out]          Pack directory/archive into standalone .lpk
   deb-pack <pkg|deb> [name] [out]     Pack with ALL recursive APT dependencies
