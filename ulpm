@@ -655,7 +655,7 @@ cat > "$DESKTOP_DIR/ulpm-$id.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$(desktop_entry_escape "$name")
-Exec=ulpmrun "$id" %U
+Exec=ulpm run "$id" %U
 Icon=$target_icon
 Terminal=false
 Categories=Utility;Network;Development;AudioVideo;Graphics;
