@@ -243,7 +243,7 @@ Contributions, issues,and feature requests are welcome! Feel free to check the [
 - [x] Smart Cache withconditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
 
-### Upcoming& Help Wanted
+### Upcoming & Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
 - [ ] Improve the packaging
 - [ ] Fine-grained D-Bus proxy filtering via `xdg-dbus-proxy`.
@@ -255,4 +255,4 @@ Contributions, issues,and feature requests are welcome! Feel free to check the [
 
 ## 📄 License
 
-This project is licensed underthe [GPLv3 License](LICENSE).
+This project is licensed under the [GPLv3 License](LICENSE).
