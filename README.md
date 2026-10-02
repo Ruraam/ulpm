@@ -20,7 +20,7 @@
 >[!WARNING]
 > ### ⚠️ Project Status: Experimental / Proof of Concept
 >
-> **ULPM** is currently in an active development and evaluation phase (**v0.2.0-beta**).
+> **ULPM** is currently in an active development and evaluation phase (**v0.3.0-beta**).
 >
 > - **Sandbox Scope:** While Bubblewrap provides strong filesystem and namespace isolation, session D-Bus is currently bridged to the host for desktop integration. Do not use this tool as a bullet proof sandbox to execute untrusted malware.
 > - **Breaking Changes:** The `.lpk` container structure and CLI syntax may evolve before reaching version `1.0.0`.
@@ -39,8 +39,10 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 - 🚫 **Zero Daemon:** No background services consuming memory or disk I/O.
 - 👤 **100% Rootless:** Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`). No `sudo` required.
 - 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted network capability, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates.
-- 🔑 **Cryptographically Signed:** Mandatory Ed25519 payload signatures verified before every execution or installation.
+- 🔑 **Cryptographically Signed:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation (zero detached files).
 - 🎮 **Hardware Native:** Direct zero-friction access to host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), Wayland, X11, PipeWire, and PulseAudio.
+- ⚡ **Instant Streaming &Demo:** Stream apps directly into volatile RAM/tmpfs to test software on the fly with zero footprint upon exit.
+- 🧠**Smart Cache:** Intelligent HTTP header (`ETag` / `If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
 - 🔄 **Universal Conversion:** Automatically turn raw `.AppImage`, `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundles on the fly.
 
 ---
@@ -54,22 +56,22 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 | **Runtime Overhead** | ⚠️ Heavy startup | ⚠️ Runtimes required | ✔️ Low | 🚀 **Near-zero** |
 | **Sandbox Built-in** | AppArmor (Host root) | Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap Native** |
 | **Mandatory Signatures**| Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in** |
-| **Multi-format Builder**| Complex recipe | Complex JSON/YAML | Manual recipes | 🪄**Auto from .deb/.rpm/tar** |
+| **Multi-format Builder**| Complex recipe | Complex JSON/YAML | Manual recipes | 🪄**Auto from .appimage/.deb/.rpm/tar** |
 
 ## 🚀 Installation & Requirements
 
 ### Dependencies
 
-ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested,standard Linux utilities:
+ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested, standard Linux utilities:
 
-| Component | Utility | Description |
+| Component| Utility | Description |
 | :--- | :--- | :--- |
-| **Sandboxing** | `bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
-| **Filesystem** | `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images|
+| **Sandboxing** |`bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
+| **Filesystem** |`squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
 | **Bundle Creation** | `squashfs-tools` (`mksquashfs`) | Generates optimized $zstd$-compressed `.lpk` images |
-| **Cryptography** | `openssl` & `coreutils` | Ed25519 signature verification & SHA-256 payload integrity |
+| **Cryptography** | `openssl` & `coreutils` | Autonomous Ed25519 trailer signature verification & raw I/O |
 | **Metadata Parsing** | `jq` & `file` | Fast JSON inspection and ELF binary architecture detection |
-| **Transport** | `curl` | Secure bundle downloading and remote repository sync |
+| **Transport** | `curl` | Smart conditional caching and remote repository sync |
 
 ---
 
@@ -115,8 +117,21 @@ sudo apk add bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
 
 ## 📖 Usage Guide
 
-### 1. Running Applications
-Launch any `.lpk` directly, or launch an installed package by its ID:
+### 1. Ephemeral Streaming & Demos (`stream`)
+Stream remote applications directlyinto volatile RAM/tmpfs. Perfect for instant trials, demo software, or running single-use tools without writing them to disk:
+
+**Stream directly from a URL or GitHub repository**
+```bash
+ulpm stream https://example.com/app_amd64.lpk
+```
+or
+```bash
+ulpm stream owner/repo
+```
+*When the application exits, the ephemeral runtime and all cached binaries are automatically destroyed.*
+
+### 2. Running Applications (`run`)
+Launch any local `.lpk`, an installed package ID, or a remote target backed by Smart Cache (`304 Not Modified`):
 
 **Run a local bundle**
 ```bash
@@ -131,7 +146,7 @@ ulpm run io.lpk.brave
 ulpm run --offline io.lpk.brave
 ```
 
-### 2. Installing Packages
+### 3. Installing Packages
 Install directly from local files, archives, or remote GitHub releases:
 
 **Install a pre-built .lpk bundle**
@@ -175,16 +190,19 @@ ulpm remove io.lpk.brave
 ```
 ---
 
-## 🔐 Cryptography & Trust (Ed25519)
+## 🔐 Cryptography & Trust (Autonomous Ed25519)
 
-Security is not an afterthought. **ULPM enforces strict signature verification** before installing or running any package:
+Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or running any packagewithout relying on detached `.sig` files:
+
+- **Self-Contained Footer:** Every signed `.lpk` embeds a fixed104-byte cryptographic trailer (`[64B signature | 32B public key | 8B magic LPKSIG01]`) at the end of the file.
+- **Payload Integrity:** The SquashFS payload sizeis computed dynamically without tampering with the compressed data stream.
 
 1. **Automatic Keypair Generation:** On first pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
 2. **Manual Key Management:**
 ```bash
 ulpm keygen release_key
 ```
-**Sign an existing package**
+**Inject an autonomous signature into an existing package**
 ```bash
 ulpm sign myapp_amd64.lpk ~/.config/ulpm/release_key.key
 ```
@@ -192,49 +210,49 @@ ulpm sign myapp_amd64.lpk ~/.config/ulpm/release_key.key
 ```bash
 ulpm trust developer.pub
 ```
-Packages lacking a valid `.sig` file signed by a trusted key inside `~/.config/ulpm/trusted_keys/` are immediately rejected.
+Packages lacking a valid cryptographic signature signed by a trusted key inside `~/.config/ulpm/trusted_keys/` are immediately rejected.
 
 ---
 
 ## 🏗️ Architecture & Sandbox Model
 
-Every application runs within an ephemeral Bubblewrap namespace configured for maximum performance and user privacy:
+Every application runs within an ephemeral Bubblewrap namespace configured for maximum performance anduser privacy:
 
 - **Isolated User Storage:** Instead of cluttering `$HOME`, application data is sandboxed into:
 - `~/.var/app/<app_id>/config` $\rightarrow$ Mounted as `$HOME/.config`
 - `~/.var/app/<app_id>/data` $\rightarrow$ Mounted as `$HOME/.local/share`
-- `~/.var/app/<app_id>/cache` $\rightarrow$ Mounted as `$HOME/.cache`
+- `~/.var/app/<app_id>/cache` $\rightarrow$Mounted as `$HOME/.cache`
+- **Network Controls:** Manifest gate (`"network": false`) or CLI flag(`--offline`) triggering kernel-level unsharing (`--unshare-net`).
 - **Host Integration:**
 - Access to `$HOME/Downloads` for standard file exchanges.
-- Native displaypass-through: Wayland socket & X11 (`~/.Xauthority`).
+- Native display pass-through: Wayland socket & X11 (`~/.Xauthority`).
 - Native audio: PipeWire and PulseAudio runtime sockets.
 - Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and`~/.icons` are mounted read-only.
 - Hardware acceleration: Direct pass-through of `/dev/dri` and proprietary `/dev/nvidia*` devices.
 
 ---
 
----
-
 ## 🗺️ Roadmap & 🤝 Contributing
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
+Contributions, issues,and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ### Core Engine Status
-- [x] Autonomous`.lpk` packaging format (v2).
-- [x] Ed25519 cryptographic signing &keyring.
-- [x] Bubblewrap isolation with dynamic XDG remapping.
-- [x] Automatic recursive`.deb` dependency resolution.
+-[x] Autonomous `.lpk` packaging format (v3 with embedded 104-byte footer).
+- [x] AutonomousEd25519 cryptographic signing & keyring.
+- [x] Bubblewrap isolation with dynamic XDG remapping& offline mode.
+- [x] Ephemeral RAM streaming execution (`ulpm stream`).
+- [x] Smart Cache withconditional HTTP verification (`ETag` / `If-Modified-Since`).
+- [x] Automatic recursive `.deb` dependency resolution.
 
-### Upcoming & Help Wanted
+### Upcoming& Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
 - [ ] Improve the packaging
 - [ ] Fine-grained D-Bus proxy filtering via `xdg-dbus-proxy`.
 - [ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
-- [ ] Nested namespace permission helper (for Steam / Proton `pressure-vessel`).
+- [ ] Nested namespace permission helper (forSteam / Proton `pressure-vessel`).
 - [ ] Fix [open issue]
 
 ---
 
 ## 📄 License
 
-This project is licensed under the[GPLv3 License](LICENSE).
-
+This project is licensed underthe [GPLv3 License](LICENSE).
