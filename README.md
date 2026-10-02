@@ -236,7 +236,7 @@ Every application runs within an ephemeral Bubblewrap namespace configured for m
 Contributions, issues,and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ### Core Engine Status
--[x] Autonomous `.lpk` packaging format (v3 with embedded 104-byte footer).
+- [x] Autonomous `.lpk` packaging format (v3 with embedded 104-byte footer).
 - [x] AutonomousEd25519 cryptographic signing & keyring.
 - [x] Bubblewrap isolation with dynamic XDG remapping& offline mode.
 - [x] Ephemeral RAM streaming execution (`ulpm stream`).
