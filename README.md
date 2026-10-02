@@ -8,7 +8,7 @@
 <p><strong><em>Lightweight, rootless, zero-daemon, sandboxed application runtime for any Linux system.</em></strong></p>
 
 [![License: MIT](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Format](https://img.shields.io/badge/Format-.lpk%20v2-orange.svg)](#the-lpk-format)
+[![Format](https://img.shields.io/badge/Format-.lpk%20v3-orange.svg)](#the-lpk-format)
 [![Sandbox](https://img.shields.io/badge/Sandbox-Bubblewrap-green.svg)](#security-model)
 [![Crypto](https://img.shields.io/badge/Signatures-Ed25519-purple.svg)](#cryptographic-verification)
 [![Tested Hardware](https://img.shields.io/badge/Validated%20On-Celeron%20N4000%20(%2450%20Box)-brightgreen.svg)](#performance-philosophy)
@@ -163,7 +163,7 @@ ulpm install ./app.tar.gz my-custom-app
 ```bash
 ulpm install owner/repo
 ```
-### 3. Packaging & Fat-Bundling (`pack` & `deb-pack`)
+### 4. Packaging & Fat-Bundling (`pack` & `deb-pack`)
 ULPM can automatically resolve dependencies using `ldd` and fat-bundle required shared libraries:
 
 **Package a folder, archive or AppImage into an autonomous .lpk**
@@ -175,7 +175,7 @@ ulpm pack ./extracted_folder myapp
 ```bash
 ulpm deb-pack vlc
 ```
-### 4. Updating & Managing Packages
+### 5. Updating & Managing Packages
 **List all installed packages**
 ```bash
 ulpm list
