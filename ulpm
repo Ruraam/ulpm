@@ -856,17 +856,19 @@ lpk_run_isolated() {
     # Future improvement: use xdg-dbus-proxy for finer control.
 
     bwrap "${bwrap_args[@]}" \
-        --setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
-        --setenv DISPLAY "${DISPLAY:-}" \
-        --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-}" \
-        --setenv XDG_RUNTIME_DIR "$run_user_dir" \
-        --setenv SSL_CERT_FILE "${host_ca_bundle:-}" \
-        --setenv PULSE_SERVER "${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
-        --setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir" \
-        --setenv DBUS_SESSION_BUS_ADDRESS "${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
-        --setenv LD_LIBRARY_PATH "$app_ld_path" \
-        --chdir /app \
-        "/app/$exec_bin" "${chromium_flags[@]}" "$@" || true
+--setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
+--setenv DISPLAY "${DISPLAY:-}" \
+--setenvWAYLAND_DISPLAY "${WAYLAND_DISPLAY:-}" \
+--setenv XDG_RUNTIME_DIR "$run_user_dir" \
+--setenv XDG_CONFIG_DIRS "/app/etc/xdg:/etc/xdg" \
+--setenv XDG_DATA_DIRS "/app/usr/share:/app/share:/usr/local/share:/usr/share" \
+--setenv SSL_CERT_FILE "${host_ca_bundle:-}" \
+--setenv PULSE_SERVER "${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
+--setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir" \
+--setenv DBUS_SESSION_BUS_ADDRESS "${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
+--setenv LD_LIBRARY_PATH "$app_ld_path" \
+--chdir /app \
+"/app/$exec_bin" "${chromium_flags[@]}" "$@" || true
 }
 
 # ============================================================
