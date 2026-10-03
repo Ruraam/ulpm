@@ -28,7 +28,7 @@
 
 ---
 
-##⚡ Overview
+## ⚡ Overview
 
 **ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages(`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
 
@@ -79,7 +79,7 @@ ULPM is designed witha **zero-daemon, minimal-overhead** philosophy. Instead of 
 
 ---
 
-###Quick Install (Automated)
+### Quick Install (Automated)
 
 The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`, `xbps`), and sets up eithera **rootless** or **system-wide** installation.
 
@@ -224,7 +224,7 @@ Packages lacking a valid cryptographic signature or signed by an untrusted key a
 
 ---
 
-## 🏗️Architecture & Sandbox Model
+## 🏗️ Architecture & Sandbox Model
 
 Every application runs within an ephemeral Bubblewrap namespace configured for maximum performance and user privacy:
 
