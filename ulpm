@@ -1042,16 +1042,16 @@ cmd_remove() {
 }
 
 cmd_list() {
-    echo -e "${BOLD}${CYAN}Installed ULPM packages:${NC}"
-    echo -e "${BLUE}---------------------------------------------------------${NC}"
+    printf "%b\n" "${BOLD}${CYAN}Installed ULPM packages:${NC}"
+    printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
     if [[ -s "$ULPM_DB" ]]; then
         while IFS='|' read -r id name ver repo _; do
             printf "  ${BOLD}%-25s${NC} ${GREEN}%-12s${NC} ${GRAY}(%s)${NC}\n" "$name" "$ver" "$repo"
         done < "$ULPM_DB"
     else
-        echo -e "  ${GRAY}(No packages installed)${NC}"
+        printf "%b\n" "  ${GRAY}(No packages installed)${NC}"
     fi
-    echo -e "${BLUE}---------------------------------------------------------${NC}"
+    printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
 }
 
 usage() {
