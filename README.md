@@ -40,7 +40,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 - 👤 **100% Rootless:** Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`). No `sudo` required.
 - 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), MIT-SHM support for X11, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates (`--cap-drop ALL`).
 - 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
--🎮 **Hardware Native:** Direct zero-friction access to host GPU drivers (Mesa, DRI/VA-API,proprietary Nvidia), Wayland, X11, PipeWire, and PulseAudio.
+- 🎮 **Hardware Native:** Direct zero-friction access to host GPU drivers (Mesa, DRI/VA-API,proprietary Nvidia), Wayland, X11, PipeWire, and PulseAudio.
 - ⚡ **Instant Streaming& Demo:** Stream apps directly into volatile RAM/tmpfs to test software on the fly with zero footprint upon exit.
 - 🧠 **Smart Cache:** Intelligent HTTP header (`ETag` / `If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
 - 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safeELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundles on the fly.
