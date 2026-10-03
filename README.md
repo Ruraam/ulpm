@@ -18,7 +18,7 @@
 ---
 
 >[!NOTE]
-> ### 🚀 Release Status: v3.2 Production Ready
+> ### 🚀 Release Status: v3.2 beta
 >
 > **ULPM Engine v3.2** powers the autonomous **`.lpk` Format v3** specification.
 >
