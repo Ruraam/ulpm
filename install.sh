@@ -39,7 +39,7 @@ if [ -t 0 ]; then
 printf "%b" "${BOLD}Do you want to install missing dependencies now? [y/N]: ${NC}"
 read -r response
 elif [ -e /dev/tty ]; then
-printf "%b" "${BOLD}Doyou want to install missing dependencies now? [y/N]: ${NC}"
+printf "%b" "${BOLD}Do you want to install missing dependencies now? [y/N]: ${NC}"
 read -r response < /dev/tty
 else
 response="n"
@@ -87,7 +87,7 @@ $ELEVATE zypper install -y "${PKGS[@]}"
 elif command -v apk >/dev/null 2>&1; then
 $ELEVATE apk add "${PKGS[@]}"
 else
-echo -e "${RED}[X] Could not auto-install dependencies.Please install: ${MISSING_CMDS[*]}${NC}"
+echo -e "${RED}[X] Could not auto-install dependencies. Please install: ${MISSING_CMDS[*]}${NC}"
 exit 1
 fi
 fi
