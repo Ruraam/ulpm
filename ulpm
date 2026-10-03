@@ -754,26 +754,29 @@ lpk_run_isolated() {
         exit 1
     fi
 
-    local mnt_dir is_mounted_fuse=false
+    local mnt_dir is_mounted_fuse="false"
     mnt_dir=$(mktemp -d /tmp/ulpm_run_XXXXXX)
 
-  cleanup_instance() {
-    if [[ "$is_mounted_fuse" == "true" ]]; then
-      fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
-    fi
+    cleanup_instance() {
+        if [[ "${is_mounted_fuse:-false}" == "true" ]]; then
+            fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
+        fi
     rm -rf "$mnt_dir" 2>/dev/null || true
 }
-  trap cleanup_instance EXIT INT TERM
+    trap cleanup_instance EXIT INT TERM
 
-    if [ -e /dev/fuse ] && squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
-      is_mounted_fuse=true
+    if [[ -e /dev/fuse ]] && squashfuse "$pkg_path" "$mnt_dir"2>/dev/null; then
+        is_mounted_fuse="true"
     else
+        if ! unsquashfs -d "$mnt_dir" -f "$pkg_path" >/dev/null 2>&1; then
+            echo -e "${RED}[-] Failed to mount or extract SquashFS${NC}" >&2
+               cleanup_instance
+            exit 1
+        fi
+    fi
 
-      if ! unsquashfs -d "$mnt_dir" -f "$pkg_path" >/dev/null 2>&1; then
-        echo -e "${RED}[-] Failed to mount SquashFS (and unsquashfs fallback failed)${NC}">&2
-        cleanup_instance
-        exit 1
-      fi
+    if [[ ! -d "$mnt_dir/root" ]]; then
+        ln-s . "$mnt_dir/root" 2>/dev/null || true
     fi
 
     local manifest="$mnt_dir/meta/manifest.json"
@@ -861,6 +864,23 @@ lpk_run_isolated() {
 
     # Note: full session D-Bus is still exposed.
     # Future improvement: use xdg-dbus-proxy for finer control.
+
+    if [[ -n "${PROOT_PID:-}" ]] || grep -qa "proot" /proc/1/cmdline 2>/dev/null || ! bwrap --ro-bind // true 2>/dev/null; then
+    # --- MODE COMPATIBILITÉ PROOT / ANDROID ---
+    local target_root="$mnt_dir/root"
+    [[ ! -d "$target_root" ]] && target_root="$mnt_dir"
+
+    PATH="$target_root/bin:$target_root/usr/bin:/usr/local/bin:/usr/bin:/bin" \
+    DISPLAY="${DISPLAY:-}" \
+    WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+    XDG_RUNTIME_DIR="$run_user_dir" \
+    SSL_CERT_FILE="${host_ca_bundle:-}" \
+    PULSE_SERVER="${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
+    PIPEWIRE_RUNTIME_DIR="$run_user_dir" \
+    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-     unix:path=$run_user_dir/bus}" \
+    LD_LIBRARY_PATH="$target_root/lib:$target_root/usr/lib:$target_root/usr/lib/aarch64-linux-gnu:$target_root/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$target_root/$exec_bin" "${chromium_flags[@]}" "$@" || true
+    else
 
     bwrap "${bwrap_args[@]}" \
         --setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
