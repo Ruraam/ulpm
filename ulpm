@@ -762,7 +762,7 @@ lpk_run_isolated() {
             fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
         fi
     rm -rf "$mnt_dir" 2>/dev/null || true
-}
+    }
     trap cleanup_instance EXIT INT TERM
 
     if [[ -e /dev/fuse ]] && squashfuse "$pkg_path" "$mnt_dir"2>/dev/null; then
