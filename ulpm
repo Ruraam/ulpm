@@ -964,11 +964,11 @@ echo -e "${GREEN}✔ Removed $id.${NC}"
 }
 
 cmd_list() {
-echo -e "${BOLD}${CYAN}Installed ULPM Packages:${NC}"
+printf "%b%\n" "${BOLD}${CYAN}Installed ULPM Packages:${NC}"
 echo -e "${BLUE}---------------------------------------------------------${NC}"
 if [ -s "$ULPM_DB" ]; then
 while IFS='|' read -r id name ver repo _; do
-printf "  ${BOLD}%-25s${NC} ${GREEN}%-10s${NC} ${GRAY}(%s)${NC}\n""$name" "$ver" "$repo"
+printf "  ${BOLD}%-25s${NC} ${GREEN}%-10s${NC} ${GRAY}(%s)${NC}\n" "$name" "$ver" "$repo"
 done < "$ULPM_DB"
 else
 echo -e "  ${GRAY}(No packages installed)${NC}"
