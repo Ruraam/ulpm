@@ -20,7 +20,7 @@
 >[!WARNING]
 > ### ⚠️ Project Status: Experimental / Proof of Concept
 >
-> **ULPM** is currently in an active development and evaluation phase (**v0.3.0-beta**).
+> **ULPM** is currently in an active development and evaluation phase (**v0.3.1-beta**).
 >
 > - **Sandbox Scope:** While Bubblewrap provides strong filesystem and namespace isolation, session D-Bus is currently bridged to the host for desktop integration. Do not use this tool as a bullet proof sandbox to execute untrusted malware.
 > - **Breaking Changes:** The `.lpk` container structure and CLI syntax may evolve before reaching version `1.0.0`.
