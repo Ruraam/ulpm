@@ -754,19 +754,26 @@ lpk_run_isolated() {
         exit 1
     fi
 
-    local mnt_dir
+    local mnt_dir is_mounted_fuse=false
     mnt_dir=$(mktemp -d /tmp/ulpm_run_XXXXXX)
 
-    cleanup_instance() {
-        fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
-        rm -rf "$mnt_dir" 2>/dev/null || true
-    }
-    trap cleanup_instance EXIT INT TERM
+  cleanup_instance() {
+    if [[ "$is_mounted_fuse" == "true" ]]; then
+      fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
+    fi
+    rm -rf "$mnt_dir" 2>/dev/null || true
+}
+  trap cleanup_instance EXIT INT TERM
 
-    if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
-        echo -e "${RED}[-] Failed to mount SquashFS${NC}" >&2
+    if [ -e /dev/fuse ] && squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
+      is_mounted_fuse=true
+    else
+
+      if ! unsquashfs -d "$mnt_dir" -f "$pkg_path" >/dev/null 2>&1; then
+        echo -e "${RED}[-] Failed to mount SquashFS (and unsquashfs fallback failed)${NC}">&2
         cleanup_instance
         exit 1
+      fi
     fi
 
     local manifest="$mnt_dir/meta/manifest.json"
