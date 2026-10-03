@@ -22,7 +22,7 @@
 >
 > **ULPM** is currently in an active development and evaluation phase (**v0.3.2-beta**).
 >
-> - **Sandbox Scope:** Bubblewrap provides strong filesystem and namespace isolation. Session D-Bus is filtered via `xdg-dbus-proxy` by default. Do not use this tool asa bulletproof sandbox to execute untrusted malware.
+> - **Sandbox Scope:** Bubblewrap provides strong filesystem and namespace isolation. Session D-Bus is filtered via `xdg-dbus-proxy` by default. Do not use this tool as a bulletproof sandbox to execute untrusted malware.
 > - **Breaking Changes:** The `.lpk` container structure and CLI syntaxmay evolve before reaching version `1.0.0`.
 > - **Testing:** Built and validated on Debian minimal environments (including low-power hardware). Bug reports, feature requests, and PRs are welcome!
 
