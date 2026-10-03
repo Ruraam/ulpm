@@ -720,173 +720,155 @@ EOF
 }
 
 lpk_run_isolated() {
-local force_offline=false
-while [[ "${1:-}" =~ ^-- ]]; do
-case "$1" in
---offline|--no-net) force_offline=true; shift ;;
-*) break ;;
-esac
-done
+    local force_offline=false
+    while [[ "${1:-}" =~ ^-- ]]; do
+        case "$1" in
+            --offline|--no-net) force_offline=true; shift ;;
+            *) break ;;
+        esac
+    done
 
-local target="${1:-}"
-if [[ -z "$target" ]]; then
-echo -e "${RED}[-] No target specified${NC}" >&2
-exit 1
-fi
-shift || true
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}[-] No target specified${NC}" >&2
+        exit 1
+    fi
+    shift || true
 
-local pkg_path=""
-if [[ -f "$target" ]]; then
-pkg_path="$(realpath "$target")"
-elif [[ -f "$ULPM_APPS/$target.lpk" ]]; then
-pkg_path="$ULPM_APPS/$target.lpk"
-elif [[ -f "$ULPM_APPS/io.lpk.${target,,}.lpk" ]]; then
-pkg_path="$ULPM_APPS/io.lpk.${target,,}.lpk"
-elif [[ "$target" =~ ^https?:// ]] || [[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-pkg_path=$(resolve_and_fetch_cached "$target") || exit 1
-else
-echo -e "${RED}[-] Target '$target' could not be resolved${NC}" >&2
-exit 1
-fi
+    local pkg_path=""
+    if [[ -f "$target" ]]; then
+        pkg_path="$(realpath "$target")"
+    elif [[ -f "$ULPM_APPS/$target.lpk" ]]; then
+        pkg_path="$ULPM_APPS/$target.lpk"
+    elif [[ -f "$ULPM_APPS/io.lpk.${target,,}.lpk" ]]; then
+        pkg_path="$ULPM_APPS/io.lpk.${target,,}.lpk"
+    elif [[ "$target" =~ ^https?:// ]] || [[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        pkg_path=$(resolve_and_fetch_cached "$target") || exit 1
+    else
+        echo -e "${RED}[-] Target '$target' could not be resolved${NC}" >&2
+        exit 1
+    fi
 
-if ! verify_package_signature "$pkg_path"; then
-echo -e "${RED}[-] Launch aborted: signature check failed${NC}" >&2
-exit 1
-fi
+    if ! verify_package_signature "$pkg_path"; then
+        echo -e "${RED}[-] Launch aborted: signature check failed${NC}" >&2
+        exit 1
+    fi
 
-local mnt_dir is_mounted_fuse="false"
-mnt_dir=$(mktemp -d /tmp/ulpm_run_XXXXXX)
+    local mnt_dir
+    mnt_dir=$(mktemp -d /tmp/ulpm_run_XXXXXX)
 
-cleanup_instance() {
-if [[ "${is_mounted_fuse:-false}" == "true" ]]; then
-fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null ||true
-fi
-rm -rf "$mnt_dir" 2>/dev/null || true
+    cleanup_instance() {
+        fusermount -u "$mnt_dir" 2>/dev/null || fusermount -u -z "$mnt_dir" 2>/dev/null || true
+        rm -rf "$mnt_dir" 2>/dev/null || true
+    }
+    trap cleanup_instance EXIT INT TERM
+
+    if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
+        echo -e "${RED}[-] Failed to mount SquashFS${NC}" >&2
+        cleanup_instance
+        exit 1
+    fi
+
+    local manifest="$mnt_dir/meta/manifest.json"
+    if [[ ! -f "$manifest" ]] || ! validate_manifest "$manifest"; then
+        cleanup_instance
+        exit 1
+    fi
+
+    local app_id exec_bin is_chromium allow_net
+    app_id=$(jq -r '.id' "$manifest")
+    exec_bin=$(jq -r '.exec' "$manifest")
+    is_chromium=$(jq -r '.chromium // false' "$manifest")
+    allow_net=$(jq -r '.network // true' "$manifest")
+
+    local app_data_dir="$HOME/.var/app/$app_id"
+    mkdir -p "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
+
+    local run_uid run_user_dir dl_dir exec_dir app_ld_path host_ca_bundle=""
+    run_uid="$(id -u)"
+    run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
+    dl_dir="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
+    exec_dir="$(dirname "/app/$exec_bin")"
+    app_ld_path="/app/lib:/app/usr/lib:/app/usr/lib/x86_64-linux-gnu:/app/usr/lib/aarch64-linux-gnu:$exec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
+        [[ -f "$ca" ]] && { host_ca_bundle="$ca"; break; }
+    done
+
+    local chromium_flags=()
+    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$mnt_dir/root/$exec_bin" 2>/dev/null; then
+        chromium_flags=(
+            --no-sandbox
+            --test-type
+            --disable-gpu-sandbox
+            --disable-setuid-sandbox
+            --log-level=3
+        )
+        [[ -n "${WAYLAND_DISPLAY:-}" ]] && chromium_flags+=(--ozone-platform-hint=auto)
+    fi
+
+    local bwrap_args=(
+        --ro-bind /usr /usr
+        --ro-bind-try /lib /lib
+        --ro-bind-try /lib64 /lib64
+        --ro-bind-try /bin /bin
+        --ro-bind-try /sbin /sbin
+        --ro-bind-try /etc /etc
+        --ro-bind /sys /sys
+        --proc /proc
+        --dev /dev
+        --tmpfs /dev/shm
+        --bind /tmp /tmp
+        --dev-bind-try /dev/dri /dev/dri
+        --ro-bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
+        --bind-try "$run_user_dir" "$run_user_dir"
+        --ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority"
+        --ro-bind-try /usr/share/fonts /usr/share/fonts
+        --ro-bind-try /usr/share/themes /usr/share/themes
+        --ro-bind-try /usr/share/icons /usr/share/icons
+        --ro-bind-try "$HOME/.icons" "$HOME/.icons"
+        --ro-bind-try "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-3.0"
+        --ro-bind-try "$HOME/.config/fontconfig" "$HOME/.config/fontconfig"
+        --bind "$dl_dir" "$dl_dir"
+        --bind "$app_data_dir/config" "$HOME/.config"
+        --bind "$app_data_dir/data" "$HOME/.local/share"
+        --bind "$app_data_dir/cache" "$HOME/.cache"
+        --ro-bind "$mnt_dir/root" /app
+    )
+
+    if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
+        bwrap_args+=(--unshare-net)
+    else
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /run/resolvconf /run/resolvconf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+        )
+    fi
+
+    [[ -n "$host_ca_bundle" ]] && bwrap_args+=(--ro-bind-try "$host_ca_bundle" /etc/ssl/certs/ca-certificates.crt)
+
+    for dev in /dev/nvidia*; do
+        [[ -e "$dev" ]] && bwrap_args+=(--dev-bind "$dev" "$dev")
+    done
+
+    # Note: full session D-Bus is still exposed.
+    # Future improvement: use xdg-dbus-proxy for finer control.
+
+    bwrap "${bwrap_args[@]}" \
+        --setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
+        --setenv DISPLAY "${DISPLAY:-}" \
+        --setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-}" \
+        --setenv XDG_RUNTIME_DIR "$run_user_dir" \
+        --setenv SSL_CERT_FILE "${host_ca_bundle:-}" \
+        --setenv PULSE_SERVER "${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
+        --setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir" \
+        --setenv DBUS_SESSION_BUS_ADDRESS "${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
+        --setenv LD_LIBRARY_PATH "$app_ld_path" \
+        --chdir /app \
+        "/app/$exec_bin" "${chromium_flags[@]}" "$@" || true
 }
-trap cleanup_instance EXIT INT TERM
 
-if [[ -e /dev/fuse ]] && squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
-is_mounted_fuse="true"
-else
-if ! unsquashfs -d "$mnt_dir" -f "$pkg_path" >/dev/null 2>&1; then
-echo -e "${RED}[-]Failed to mount or extract SquashFS${NC}" >&2
-cleanup_instance
-exit 1
-fi
-fi
-
-local manifest="$mnt_dir/meta/manifest.json"
-if [[ ! -f "$manifest" ]]|| ! validate_manifest "$manifest"; then
-cleanup_instance
-exit 1
-fi
-
-local app_id exec_bin is_chromium allow_net
-app_id=$(jq -r '.id' "$manifest")
-exec_bin=$(jq -r '.exec' "$manifest")
-is_chromium=$(jq -r '.chromium // false' "$manifest")
-allow_net=$(jq -r '.network // true' "$manifest")
-
-local app_data_dir="$HOME/.var/app/$app_id"
-mkdir -p "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
-
-local run_uid run_user_dir dl_dir exec_dir app_ld_path host_ca_bundle=""
-run_uid="$(id -u)"
-run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
-dl_dir="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
-exec_dir="$(dirname "/app/$exec_bin")"
-app_ld_path="/app/lib:/app/usr/lib:/app/usr/lib/x86_64-linux-gnu:/app/usr/lib/aarch64-linux-gnu:$exec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
-[[ -f "$ca" ]] && { host_ca_bundle="$ca"; break; }
-done
-
-local chromium_flags=()
-if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$mnt_dir/root/$exec_bin" 2>/dev/null; then
-chromium_flags=(
---no-sandbox
---test-type
---disable-gpu-sandbox
---disable-setuid-sandbox
---log-level=3
-)
-[[ -n "${WAYLAND_DISPLAY:-}" ]] && chromium_flags+=(--ozone-platform-hint=auto)
-fi
-
-if [[ -n "${PROOT_PID:-}" ]] || grep -qa "proot" /proc/1/cmdline 2>/dev/null|| ! bwrap --ro-bind / / true 2>/dev/null; then
-local target_root="$mnt_dir/root"
-[[ ! -d "$target_root" ]] && target_root="$mnt_dir"
-
-PATH="$target_root/bin:$target_root/usr/bin:/usr/local/bin:/usr/bin:/bin" \
-DISPLAY="${DISPLAY:-}" \
-WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-XDG_RUNTIME_DIR="$run_user_dir" \
-SSL_CERT_FILE="${host_ca_bundle:-}" \
-PULSE_SERVER="${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
-PIPEWIRE_RUNTIME_DIR="$run_user_dir" \
-DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
-LD_LIBRARY_PATH="$target_root/lib:$target_root/usr/lib:$target_root/usr/lib/aarch64-linux-gnu:$target_root/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-"$target_root/$exec_bin" "${chromium_flags[@]}" "$@" || true
-else
-local bwrap_args=(
---ro-bind /usr /usr
---ro-bind-try /lib /lib
---ro-bind-try /lib64 /lib64
---ro-bind-try /bin /bin
---ro-bind-try /sbin /sbin
---ro-bind-try /etc /etc
---ro-bind /sys /sys
---proc /proc
---dev /dev
---tmpfs /dev/shm
---bind /tmp /tmp
---dev-bind-try /dev/dri /dev/dri
---ro-bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
---bind-try "$run_user_dir" "$run_user_dir"
---ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority"
---ro-bind-try /usr/share/fonts /usr/share/fonts
---ro-bind-try /usr/share/themes /usr/share/themes
---ro-bind-try /usr/share/icons /usr/share/icons
---ro-bind-try "$HOME/.icons" "$HOME/.icons"
---ro-bind-try "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-3.0"
---ro-bind-try "$HOME/.config/fontconfig" "$HOME/.config/fontconfig"
---bind "$dl_dir" "$dl_dir"
---bind "$app_data_dir/config" "$HOME/.config"
---bind "$app_data_dir/data" "$HOME/.local/share"
---bind "$app_data_dir/cache" "$HOME/.cache"
---ro-bind "$mnt_dir/root" /app
-)
-
-if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
-bwrap_args+=(--unshare-net)
-else
-bwrap_args+=(
---ro-bind-try /etc/resolv.conf /etc/resolv.conf
---ro-bind-try /run/resolvconf /run/resolvconf
---ro-bind-try /run/systemd/resolve /run/systemd/resolve
-)
-fi
-
-[[ -n "$host_ca_bundle" ]] && bwrap_args+=(--ro-bind-try "$host_ca_bundle" /etc/ssl/certs/ca-certificates.crt)
-
-for dev in /dev/nvidia*; do
-[[ -e "$dev" ]] && bwrap_args+=(--dev-bind "$dev" "$dev")
-done
-
-bwrap "${bwrap_args[@]}" \
---setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin" \
---setenv DISPLAY "${DISPLAY:-}" \
---setenv WAYLAND_DISPLAY "${WAYLAND_DISPLAY:-}" \
---setenv XDG_RUNTIME_DIR "$run_user_dir" \
---setenv SSL_CERT_FILE "${host_ca_bundle:-}" \
---setenv PULSE_SERVER "${PULSE_SERVER:-unix:$run_user_dir/pulse/native}" \
---setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir"\
---setenv DBUS_SESSION_BUS_ADDRESS "${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}" \
---setenv LD_LIBRARY_PATH "$app_ld_path" \
---chdir /app \
-"/app/$exec_bin" "${chromium_flags[@]}" "$@" || true
-fi
-}
 # ============================================================
 # Cache & Streaming
 # ============================================================
@@ -1060,40 +1042,38 @@ cmd_remove() {
 }
 
 cmd_list() {
-    printf "%b\n" "${BOLD}${CYAN}Installed ULPM packages:${NC}"
-    printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
+    echo -e "${BOLD}${CYAN}Installed ULPM packages:${NC}"
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
     if [[ -s "$ULPM_DB" ]]; then
         while IFS='|' read -r id name ver repo _; do
             printf "  ${BOLD}%-25s${NC} ${GREEN}%-12s${NC} ${GRAY}(%s)${NC}\n" "$name" "$ver" "$repo"
         done < "$ULPM_DB"
     else
-        printf "%b\n" "  ${GRAY}(No packages installed)${NC}"
+        echo -e "  ${GRAY}(No packages installed)${NC}"
     fi
-    printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
+    echo -e "${BLUE}---------------------------------------------------------${NC}"
 }
 
 usage() {
     cat <<EOF
----------------------------------------------------------
-| ULPM - Universal Linux Package Manager (LPK Engine v3.1)
----------------------------------------------------------
-| Usage: ulpm <command> [options]
----------------------------------------------------------
-| Core:
-|  stream <url|owner/repo> [args] |Ephemeral launch from web/RAM
-|  run [--offline] <pkg|id|url>    Run in Bubblewrap sandbox
-|  install, -i <source> [name]     Install (.lpk / AppImage / deb / rpm / GitHub...)
-|  pack <source> [name] [out]      Create signed .lpk
-|  deb-pack <pkg|deb> [name]       Pack with recursive APT dependencies
-|  upgrade, -u                     Update GitHub-tracked packages
-|  remove, -r <id>                 Uninstall
-|  list, -l                        List installed packages
-|
-| Cryptography:
-|  keygen [name]                   Generate Ed25519 keypair
-|  sign <file.lpk> [privkey]       Embed signature footer
-|  trust <file.pub>                Trust a public key
----------------------------------------------------------
+ULPM - Universal Linux Package Manager (LPK Engine v3.1)
+
+Usage: ulpm <command> [options]
+
+Core:
+  stream <url|owner/repo> [args]   Ephemeral launch from web/RAM
+  run [--offline] <pkg|id|url>     Run in Bubblewrap sandbox
+  install, -i <source> [name]      Install (.lpk / AppImage / deb / rpm / GitHub...)
+  pack <source> [name] [out]       Create signed .lpk
+  deb-pack <pkg|deb> [name]        Pack with recursive APT dependencies
+  upgrade, -u                      Update GitHub-tracked packages
+  remove, -r <id>                  Uninstall
+  list, -l                         List installed packages
+
+Cryptography:
+  keygen [name]                    Generate Ed25519 keypair
+  sign <file.lpk> [privkey]        Embed signature footer
+  trust <file.pub>                 Trust a public key
 EOF
     exit 0
 }
