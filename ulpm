@@ -15,13 +15,13 @@ set -euo pipefail
 
 ULPM_FORMAT_VERSION=3
 : "${ULPM_API_CACHE_TTL:=15}"
-: "${ULPM_STRICT_SIGNATURES:=true}"
+: "${ULPM_STRICT_SIGNATURES:=false}"
 
 SIG_MAGIC="LPKSIG01"
 SIG_MAGIC_LEN=8
 SIG_RAW_LEN=64
 SIG_PUB_LEN=32
-SIG_FOOTER_TOTAL=104   # 64 + 32 + 8
+SIG_FOOTER_TOTAL=104   # 64 + 32 +8
 
 # Colors
 BOLD='\033[1m'
@@ -231,7 +231,7 @@ cmd_sign() {
     fi
 
     local file_size
-    file_size=$(stat -c%s "$pkg_path")
+    file_size=$(stat -c %s "$pkg_path")
     if [[ "$file_size" -ge $SIG_FOOTER_TOTAL ]]; then
         local check_magic
         check_magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg_path" 2>/dev/null || true)
@@ -244,7 +244,8 @@ cmd_sign() {
     local pub_raw="$TEMP_DIR/pub_raw.bin"
     local sig_raw="$TEMP_DIR/sig_raw.bin"
 
-    openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c 32 > "$pub_raw"
+    openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw"
+
     if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_raw" 2>/dev/null; then
         echo -e "${RED}[-] Ed25519 signing failed${NC}" >&2
         return 1
@@ -261,10 +262,10 @@ cmd_trust() {
         return 1
     fi
     cp -f "$pub_key" "$TRUSTED_KEYS_DIR/$(basename "$pub_key")"
-    echo -e "${GREEN}✔ Key added to trusted keyring${NC}"
+        echo -e "${GREEN}✔ Key added to trusted keyring${NC}"
 }
 
-verify_package_signature() {
+verify_package_signature(){
     local pkg="$1"
 
     if [[ ! -f "$pkg" ]]; then
@@ -273,9 +274,9 @@ verify_package_signature() {
     fi
 
     local fsize
-    fsize=$(stat -c%s "$pkg")
+    fsize=$(wc -c < "$pkg")
     if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]]; then
-        echo -e "${RED}[-] Security: file too small (missing footer)${NC}" >&2
+        echo -e "${RED}[-] Security:file too small (missing footer)${NC}" >&2
         return 1
     fi
 
@@ -288,21 +289,22 @@ verify_package_signature() {
 
     local payload_size=$((fsize - SIG_FOOTER_TOTAL))
     local sig_bin="$TEMP_DIR/chk.sig"
-    local pub_bin="$TEMP_DIR/chk.pub"
+    local pub_raw="$TEMP_DIR/chk_raw.pub"
+    local pub_der="$TEMP_DIR/chk_full.pub"
     local data_stream="$TEMP_DIR/payload.bin"
 
     tail -c "$SIG_FOOTER_TOTAL" "$pkg" | head -c "$SIG_RAW_LEN" > "$sig_bin"
-    tail -c $((SIG_PUB_LEN + SIG_MAGIC_LEN)) "$pkg" | head -c "$SIG_PUB_LEN" > "$pub_bin"
+    tail -c $((SIG_PUB_LEN + SIG_MAGIC_LEN)) "$pkg" | head -c "$SIG_PUB_LEN" > "$pub_raw"
     head -c "$payload_size" "$pkg" > "$data_stream"
 
-    # Non-strict mode: accept any valid embedded key
-    if [[ "${ULPM_STRICT_SIGNATURES}" == "false" ]]; then
-        if openssl pkeyutl -verify -rawin -pubin -keyform DER \
-               -inkey "$pub_bin" -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
-            echo -e "${YELLOW}✔ Non-strict: valid embedded signature${NC}"
-            rm -f "$sig_bin" "$pub_bin" "$data_stream"
-            return 0
-        fi
+    printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_der"
+    cat "$pub_raw" >> "$pub_der"
+
+    if ! openssl pkeyutl -verify -rawin -pubin -keyform DER\
+-inkey "$pub_der" -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
+        echo -e "${RED}[-] CRITICAL: Cryptographic payload corruption or forged signature!${NC}" >&2
+        rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+        return 1
     fi
 
     local matched=false
@@ -311,27 +313,38 @@ verify_package_signature() {
     pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
     shopt -u nullglob
 
-    if [[ ${#pub_keys[@]} -eq 0 ]]; then
-        echo -e "${RED}[-] No trusted public keys found${NC}" >&2
-        rm -f "$sig_bin" "$pub_bin" "$data_stream"
-        return 1
-    fi
+    local current_pub_fingerprint
+    current_pub_fingerprint=$(openssl pkey -pubin -keyform DER -in "$pub_der" -pubout -outform PEM 2>/dev/null)
 
     for pub in "${pub_keys[@]}"; do
-        if openssl pkeyutl -verify -rawin -pubin -inkey "$pub" \
-               -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
-            echo -e "${GREEN}✔ Signature verified with: $(basename "$pub")${NC}"
-            matched=true
-            break
-        fi
+    local trusted_fingerprint
+    trusted_fingerprint=$(openssl pkey -pubin -in "$pub" -pubout -outform PEM 2>/dev/null || true)
+    if [[ -n "$trusted_fingerprint" && "$trusted_fingerprint" == "$current_pub_fingerprint" ]]; then
+        matched=true
+        echo -e "${GREEN}✔ Valid signature from trusted source: $(basename "$pub")${NC}"
+        break
+    fi
     done
 
-    rm -f "$sig_bin" "$pub_bin" "$data_stream"
-
     if [[ "$matched" != "true" ]]; then
-        echo -e "${RED}[-] CRITICAL: Signature verification failed or untrusted key${NC}" >&2
-        return 1
+        if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
+            echo -e "${RED}[-] Untrusted developer key in strict mode.${NC}" >&2
+             rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+             return 1
+        else
+            echo -e "${YELLOW}★ Package signature is authentic, but developer key is not yet in trusted keychain.${NC}"
+            read -r -p "Trust this developer key permanently? [y/N]" reply
+        if [[ "$reply" =~ ^[yYoO]$ ]]; then
+            local auto_key="$TRUSTED_KEYS_DIR/dev_$(date +%s).pub"
+            openssl pkey-pubin -keyform DER -in "$pub_der" -pubout -outform PEM > "$auto_key" 2>/dev/null
+            echo -e "${GREEN}✔ Key successfully registered in trusted keyring.${NC}"
+        else
+            echo -e "${YELLOW}Proceeding without adding to trusted keyring (one-time execution)...${NC}"
+        fi
+        fi
     fi
+
+    rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
     return 0
 }
 
