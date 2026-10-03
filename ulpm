@@ -1055,26 +1055,28 @@ cmd_list() {
 }
 
 usage() {
-printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
-printf "%b\n" "  ULPM - Universal Linux Package Manager (LPK Engine v3.1)" 
-printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
-printf "%b\n" "${YELLOW}Usage:${NC} ${CYANulpm${NC} <command> [options]" 
-
-printf "%b\n" "${YELLOW}Core:${NC}"
-  printf "%b\n" "  ${CYAN}stream${NC} <url|owner/repo> [args]  ${GRAY}Ephemeral launch from web/RAM${NC}"
-  printf "%b\n" "  ${CYAN}run${NC} [--offline] <pkg|id|url>    ${GRAY}Run in Bubblewrap sandbox${NC}"
-  printf "%b\n" "  ${CYAN}install, -i${NC} <source> [name]     ${GRAY}Install (.lpk / AppImage / deb / rpm / GitHub...)${NC}"
-  printf "%b\n" "  ${CYAN}pack${NC} <source> [name] [out]      ${GRAY}Create signed .lpk${NC}"
-  printf "%b\n" "  ${CYAN}deb-pack${NC} <pkg|deb> [name]       ${GRAY}Pack with recursive APT dependencies${NC}"
-  printf "%b\n" "  ${CYAN}upgrade, -u${NC}                     ${GRAY}Update GitHub-tracked packages${NC}"
-  printf "%b\n" "  ${CYAN}remove, -r${NC} <id>                 ${GRAY}Uninstall${NC}"
-  printf "%b\n" "  ${CYAN}list, -l${NC}                        ${GRAY}List installed packages${NC}"
-
-printf "%b\n" "${YELLOW}Cryptography:${NC}"
-  printf "%b\n" "  ${CYAN}keygen${NC} [name]                   ${GRAY}Generate Ed25519 keypair${NC}"
-  printf "%b\n" "  ${CYAN}sign${NC} <file.lpk> [privkey]       ${GRAY}Embed signature footer${NC}"
-  printf "%b\n" "  ${CYAN}trust${NC} <file.pub>                ${GRAY}Trust a public key${NC}"
-printf "%b\n" "${BLUE}---------------------------------------------------------${NC}"
+    cat <<EOF
+---------------------------------------------------------
+| ULPM - Universal Linux Package Manager (LPK Engine v3.1)
+---------------------------------------------------------
+| Usage: ulpm <command> [options]
+---------------------------------------------------------
+| Core:
+|  stream <url|owner/repo> [args] |Ephemeral launch from web/RAM
+|  run [--offline] <pkg|id|url>    Run in Bubblewrap sandbox
+|  install, -i <source> [name]     Install (.lpk / AppImage / deb / rpm / GitHub...)
+|  pack <source> [name] [out]      Create signed .lpk
+|  deb-pack <pkg|deb> [name]       Pack with recursive APT dependencies
+|  upgrade, -u                     Update GitHub-tracked packages
+|  remove, -r <id>                 Uninstall
+|  list, -l                        List installed packages
+|
+| Cryptography:
+|  keygen [name]                   Generate Ed25519 keypair
+|  sign <file.lpk> [privkey]       Embed signature footer
+|  trust <file.pub>                Trust a public key
+---------------------------------------------------------
+EOF
     exit 0
 }
 
