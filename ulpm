@@ -218,41 +218,44 @@ cmd_keygen() {
 }
 
 cmd_sign() {
-    local pkg_path="${1:-}"
-    local priv_key="${2:-$DEFAULT_KEY}"
+local pkg_path="${1:-}"
+local priv_key="${2:-$DEFAULT_KEY}"
 
-    if [[ -z "$pkg_path" || ! -f "$pkg_path" ]]; then
-        echo -e "${RED}[-] Specify a valid .lpk file to sign${NC}" >&2
-        return 1
-    fi
-    if [[ ! -f "$priv_key" ]]; then
-        echo -e "${RED}[-] Private key not found: $priv_key${NC}" >&2
-        return 1
-    fi
+if [[ -z "$pkg_path" || ! -f "$pkg_path" ]]; then
+echo -e "${RED}[-] Specify a valid .lpk file to sign${NC}" >&2
+return 1
+fi
+if [[ ! -f "$priv_key" ]]; then
+echo -e "${RED}[-] Private key not found: $priv_key${NC}" >&2
+return 1
+fi
 
-    local file_size
-    file_size=$(stat -c %s "$pkg_path")
-    if [[ "$file_size" -ge $SIG_FOOTER_TOTAL ]]; then
-        local check_magic
-        check_magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg_path" 2>/dev/null || true)
-        if [[ "$check_magic" == "$SIG_MAGIC" ]]; then
-            echo -e "${YELLOW}[!] Stripping old signature footer...${NC}"
-            truncate -s "-$SIG_FOOTER_TOTAL" "$pkg_path"
-        fi
-    fi
+local file_size
+file_size=$(wc -c < "$pkg_path")
+if [[ "$file_size" -ge $SIG_FOOTER_TOTAL ]]; then
+local check_magic
+check_magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg_path" 2>/dev/null || true)
+if [[ "$check_magic" == "$SIG_MAGIC" ]]; then
+truncate -s "-$SIG_FOOTER_TOTAL" "$pkg_path"
+fi
+fi
 
-    local pub_raw="$TEMP_DIR/pub_raw.bin"
-    local sig_raw="$TEMP_DIR/sig_raw.bin"
+local pub_raw="$TEMP_DIR/pub_raw.bin"
+local sig_raw="$TEMP_DIR/sig_raw.bin"
 
-    openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw"
+openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw"
 
-    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_raw" 2>/dev/null; then
-        echo -e "${RED}[-] Ed25519 signing failed${NC}" >&2
-        return 1
-    fi
+if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_raw" 2>/dev/null; then
+echo -e "${RED}[-] Ed25519 signing failed${NC}" >&2
+return1
+fi
 
-    cat "$sig_raw" "$pub_raw" <(printf "%s" "$SIG_MAGIC") >> "$pkg_path"
-    echo -e "${GREEN}✔ Package signed (embedded footer)${NC}"
+cat "$sig_raw" "$pub_raw" > "$TEMP_DIR/footer.bin"
+printf "%s" "$SIG_MAGIC" >> "$TEMP_DIR/footer.bin"
+cat "$TEMP_DIR/footer.bin" >> "$pkg_path"
+rm -f "$TEMP_DIR/footer.bin" "$pub_raw" "$sig_raw"
+
+echo -e "${GREEN}✔Package signed (embedded footer)${NC}"
 }
 
 cmd_trust() {
@@ -265,87 +268,84 @@ cmd_trust() {
         echo -e "${GREEN}✔ Key added to trusted keyring${NC}"
 }
 
-verify_package_signature(){
-    local pkg="$1"
+verify_package_signature() {
+local pkg="$1"
 
-    if [[ ! -f "$pkg" ]]; then
-        echo -e "${RED}[-] Package not found: $pkg${NC}" >&2
-        return 1
-    fi
+if [[ ! -f "$pkg" ]]; then
+echo -e "${RED}[-] Package not found: $pkg${NC}" >&2
+return 1
+fi
 
-    local fsize
-    fsize=$(wc -c < "$pkg")
-    if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]]; then
-        echo -e "${RED}[-] Security:file too small (missing footer)${NC}" >&2
-        return 1
-    fi
+local fsize
+fsize=$(wc-c < "$pkg")
+if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]];then
+echo -e "${RED}[-] Security: file too small (missing footer)${NC}" >&2
+return 1
+fi
 
-    local magic
-    magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg")
-    if [[ "$magic" != "$SIG_MAGIC" ]]; then
-        echo -e "${RED}[-] Security: missing LPK signature magic${NC}" >&2
-        return 1
-    fi
+local magic
+magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg")
+if [[ "$magic" != "$SIG_MAGIC" ]]; then
+echo -e "${RED}[-] Security: missing LPK signature magic${NC}" >&2
+return 1
+fi
 
-    local payload_size=$((fsize - SIG_FOOTER_TOTAL))
-    local sig_bin="$TEMP_DIR/chk.sig"
-    local pub_raw="$TEMP_DIR/chk_raw.pub"
-    local pub_der="$TEMP_DIR/chk_full.pub"
-    local data_stream="$TEMP_DIR/payload.bin"
+local payload_size=$((fsize -SIG_FOOTER_TOTAL))
+local sig_bin="$TEMP_DIR/chk.sig"
+local pub_raw="$TEMP_DIR/chk_raw.pub"
+local pub_der="$TEMP_DIR/chk_full.pub"
+local data_stream="$TEMP_DIR/payload.bin"
 
-    tail -c "$SIG_FOOTER_TOTAL" "$pkg" | head -c "$SIG_RAW_LEN" > "$sig_bin"
-    tail -c $((SIG_PUB_LEN + SIG_MAGIC_LEN)) "$pkg" | head -c "$SIG_PUB_LEN" > "$pub_raw"
-    head -c "$payload_size" "$pkg" > "$data_stream"
+head -c "$payload_size" "$pkg" > "$data_stream"
+tail -c "$SIG_FOOTER_TOTAL" "$pkg"| head -c "$SIG_RAW_LEN" > "$sig_bin"
+tail -c $((SIG_PUB_LEN + SIG_MAGIC_LEN)) "$pkg" | head -c "$SIG_PUB_LEN" > "$pub_raw"
 
-    printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_der"
-    cat "$pub_raw" >> "$pub_der"
+printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_der"
+cat "$pub_raw">> "$pub_der"
 
-    if ! openssl pkeyutl -verify -rawin -pubin -keyform DER\
+if ! openssl pkeyutl -verify -rawin -pubin -keyform DER \
 -inkey "$pub_der" -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
-        echo -e "${RED}[-] CRITICAL: Cryptographic payload corruption or forged signature!${NC}" >&2
-        rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-        return 1
-    fi
+echo -e "${RED}[-] CRITICAL: Cryptographic payload corruption or forged signature!${NC}" >&2
+rm -f"$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+return 1
+fi
 
-    local matched=false
-    local pub_keys=()
-    shopt -s nullglob
-    pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
-    shopt -u nullglob
+local matched=false
+local pub_keys=()
+shopt -s nullglob
+pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
+shopt -u nullglob
 
-    local current_pub_fingerprint
-    current_pub_fingerprint=$(openssl pkey -pubin -keyform DER -in "$pub_der" -pubout -outform PEM 2>/dev/null)
+local current_pub_fingerprint
+current_pub_fingerprint=$(openssl pkey -pubin -keyform DER -in "$pub_der" -pubout -outform PEM 2>/dev/null)
 
-    for pub in "${pub_keys[@]}"; do
-    local trusted_fingerprint
-    trusted_fingerprint=$(openssl pkey -pubin -in "$pub" -pubout -outform PEM 2>/dev/null || true)
-    if [[ -n "$trusted_fingerprint" && "$trusted_fingerprint" == "$current_pub_fingerprint" ]]; then
-        matched=true
-        echo -e "${GREEN}✔ Valid signature from trusted source: $(basename "$pub")${NC}"
-        break
-    fi
-    done
+for pub in "${pub_keys[@]}"; do
+local trusted_fingerprint
+trusted_fingerprint=$(openssl pkey -pubin -in "$pub" -pubout -outform PEM 2>/dev/null || true)
+if [[ -n "$trusted_fingerprint" && "$trusted_fingerprint" == "$current_pub_fingerprint" ]]; then
+matched=true
+break
+fi
+done
 
-    if [[ "$matched" != "true" ]]; then
-        if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
-            echo -e "${RED}[-] Untrusted developer key in strict mode.${NC}" >&2
-             rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-             return 1
-        else
-            echo -e "${YELLOW}★ Package signature is authentic, but developer key is not yet in trusted keychain.${NC}"
-            read -r -p "Trust this developer key permanently? [y/N]" reply
-        if [[ "$reply" =~ ^[yYoO]$ ]]; then
-            local auto_key="$TRUSTED_KEYS_DIR/dev_$(date +%s).pub"
-            openssl pkey-pubin -keyform DER -in "$pub_der" -pubout -outform PEM > "$auto_key" 2>/dev/null
-            echo -e "${GREEN}✔ Key successfully registered in trusted keyring.${NC}"
-        else
-            echo -e "${YELLOW}Proceeding without adding to trusted keyring (one-time execution)...${NC}"
-        fi
-        fi
-    fi
+if [[ "$matched" != "true" ]]; then
+if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
+echo -e "${RED}[-] Untrusted developer keyin strict mode.${NC}" >&2
+rm -f "$sig_bin" "$pub_raw""$pub_der" "$data_stream"
+return 1
+else
+echo -e "${YELLOW}★ Package signature is authentic, but developer key is not yet trusted.${NC}"
+read -r -p "Trust this developer key permanently? [y/N] " reply
+if [[ "$reply" =~ ^[yYoO]$ ]]; then
+local auto_key="$TRUSTED_KEYS_DIR/dev_$(date +%s).pub"
+openssl pkey-pubin -keyform DER -in "$pub_der" -pubout -outform PEM > "$auto_key" 2>/dev/null
+echo -e "${GREEN}✔ Key successfully registered in trusted keyring.${NC}"
+fi
+fi
+fi
 
-    rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-    return 0
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+return 0
 }
 
 # ============================================================
