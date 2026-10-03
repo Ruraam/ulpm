@@ -964,7 +964,7 @@ echo -e "${GREEN}✔ Removed $id.${NC}"
 }
 
 cmd_list() {
-printf "%b%\n" "${BOLD}${CYAN}Installed ULPM Packages:${NC}"
+printf "%b\n" "${BOLD}${CYAN}Installed ULPM Packages:${NC}"
 echo -e "${BLUE}---------------------------------------------------------${NC}"
 if [ -s "$ULPM_DB" ]; then
 while IFS='|' read -r id name ver repo _; do
