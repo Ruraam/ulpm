@@ -115,7 +115,7 @@ sudo apk add bubblewrap squashfuse fuse3 squashfs-tools openssl jq file curl
 
 ---
 
-## 📖 Usage Guide
+## 📖 Usage Guide (you can use .lpk file in Releases pages for testing)
 
 ### 1. Ephemeral Streaming & Demos (`stream`)
 Stream remote applications directlyinto volatile RAM/tmpfs. Perfect for instant trials, demo software, or running single-use tools without writing them to disk:
