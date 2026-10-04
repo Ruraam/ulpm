@@ -268,7 +268,7 @@ od|truncate|tail|head|dd|realpath|mktemp) echo "coreutils" ;;
 esac
 }
 
-REQUIRED_CMDS=(squashfuse mksquashfs bwrap jq file curl openssl cmp od truncate tail headdd realpath mktemp)
+REQUIRED_CMDS=(squashfuse mksquashfs bwrap jq file curl openssl cmp od truncate tail head dd realpath mktemp)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
 command-v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
