@@ -598,7 +598,7 @@ return 0
 
 validate_manifest() {
 local manifest="$1"
-if ! jq -e --arg json max_version "$ULPM_FORMAT_VERSION" '
+if ! jq -e --argjson max_version "$ULPM_FORMAT_VERSION" '
 type == "object" and
 ((.format_version // 1) | type == "number" and . == floor and . >= 1 and . <=$max_version) and
 (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") and (contains("..") | not)) and
@@ -612,7 +612,7 @@ type == "object" and
 (split("/") | all(.[]; . != ".."))) and
 ((.chromium // false) | type == "boolean") and
 ((.network // true) | type == "boolean")
-'"$manifest" >/dev/null 2>&1; then
+' "$manifest" >/dev/null 2>&1; then
 echo -e "${RED}[-] Invalidor unsafe manifest${NC}" >&2
 return 1
 fi
@@ -1016,10 +1016,10 @@ fi
 
 # jq builds the manifest: names / paths are escaped properly (no heredoc injection).
 jq -n \
---arg json fv "$ULPM_FORMAT_VERSION" \
+--argjson fv "$ULPM_FORMAT_VERSION" \
 --arg id "$app_id" --arg name "$app_name" --arg version "$version_hint" \
 --arg arch "$target_arch" --arg exec "$detected_exec" --arg icon "$icon_manifest" \
---arg json chromium "$is_chromium" \
+--argjson chromium "$is_chromium" \
 '{format_version:$fv, id:$id,name:$name, version:$version, arch:$arch,
 exec:$exec, icon:$icon, chromium:$chromium, network:true}' \
 > "$work_dir/meta/manifest.json"
