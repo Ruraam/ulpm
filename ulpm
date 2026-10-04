@@ -806,8 +806,8 @@ echo -e "${RED}[-] unsquashfs (squashfs-tools) required for AppImage${NC}" >&2
 return 1
 fi
 local offset appimg_tmp
-if ! offset=$(appimage_squashfs_offset"$src"); then
-echo -e "${RED}[-] Unsupported AppImage (not a type-2 ELF AppImage)${NC}" >&2
+if ! offset=$(appimage_squashfs_offset "$src"); then
+echo -e "${RED}[-] Unsupported AppImage (not a type -2 ELF AppImage)${NC}" >&2
 return 1
 fi
 # "hsqs"= 68 73 71 73 (hex compare: binary-safe)
