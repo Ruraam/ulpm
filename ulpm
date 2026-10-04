@@ -603,14 +603,14 @@ type == "object" and
 ((.format_version // 1) | type == "number" and . == floor and . >= 1 and . <=$max_version) and
 (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") and (contains("..") | not)) and
 (.name | type == "string" and length > 0 and length <= 128) and
-((.version // "1.0.0") | type == "string" and length >0 and length <= 64) and
-(.exec | type == "string" and length >0 and length <= 4096 and
+((.version // "1.0.0") | type == "string" and length > 0 and length <= 64) and
+(.exec | type == "string" and length > 0 and length <= 4096 and
 (startswith("/") | not) and
-(split("/")| all(.[]; . != "" and . != "." and . != ".."))) and
+(split("/") | all(.[]; . != "" and . != "." and . != ".."))) and
 ((.icon //"") | type == "string" and length <= 4096 and
-(startswith("/") | not)and
+(startswith("/") | not) and
 (split("/") | all(.[]; . != ".."))) and
-((.chromium // false)| type == "boolean") and
+((.chromium // false) | type == "boolean") and
 ((.network // true) | type == "boolean")
 '"$manifest" >/dev/null 2>&1; then
 echo -e "${RED}[-] Invalidor unsafe manifest${NC}" >&2
