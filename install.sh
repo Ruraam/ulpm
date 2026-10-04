@@ -66,7 +66,7 @@ done
 
 if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
 TTY_IN=""
-if[ -t 0 ]; then
+if [ -t 0 ]; then
 TTY_IN="-"
 elif [ -r /dev/tty ]; then
 TTY_IN="/dev/tty"
@@ -215,7 +215,7 @@ done
 rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
 rm -f "$data_home/applications/ulpm-open.desktop" "$data_home/mime/packages/application-x-lpk.xml"
 find "$data_home/applications" -maxdepth 1 -type f -name 'ulpm-*.desktop' -delete 2>/dev/null || true
-find "$data_home/icons/hicolor/512x512/apps" -maxdepth1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
+find "$data_home/icons/hicolor/512x512/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
 
 for path in "$config_home/mimeapps.list" "$data_home/applications/mimeapps.list"; do
 [ -f "$path" ] && sed -i '/^application\/x-lpk=ulpm-open\.desktop;/d' "$path" 2>/dev/null || true
@@ -261,9 +261,9 @@ command-v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
 done
 command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || MISSING+=("fuse3")
 
-if[ "${#MISSING[@]}" -gt 0 ]; then
+if [ "${#MISSING[@]}" -gt 0 ]; then
 warn "Missing tools: ${MISSING[*]}"
-if[ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
+if [ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
 if confirm "${BOLD}Install missing packages automatically with $PM? [y/N]: ${NC}"; then
 PKGS=()
 for c in "${MISSING[@]}"; do
@@ -282,7 +282,7 @@ esac
 command -v xdg-dbus-proxy >/dev/null 2>&1 || {
 case "$PM" in
 apt-get) priv apt-get install -y xdg-dbus-proxy >/dev/null 2>&1 || true ;;
-pacman)  priv pacman-S --needed --noconfirm xdg-dbus-proxy >/dev/null 2>&1 || true ;;
+pacman)  priv pacman -S --needed --noconfirm xdg-dbus-proxy >/dev/null 2>&1 || true ;;
 dnf)     priv dnf install -y xdg-dbus-proxy >/dev/null 2>&1 || true ;;
 esac
 }
@@ -308,8 +308,8 @@ fi
 
 info "Installing ULPM into ${BOLD}$INSTALL_ROOT${NC}..."
 
-TMP_DIR="$(mktemp -d"${TMPDIR:-/tmp}/ulpm-install.XXXXXX")"
-trap 'rm -rf "$TMP_DIR"'EXIT
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ulpm-install.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # 1. Download executables and modules
 mkdir -p "$TMP_DIR/lib"
@@ -330,7 +330,7 @@ fi
 
 for f in "${FILES[@]}"; do
 if [ "$LOCAL_BUILD" = true ] && [ -f "./$f" ]; then
-cp"./$f" "$TMP_DIR/$f"
+cp "./$f" "$TMP_DIR/$f"
 else
 info "Downloading $f..."
 curl -fsSL --retry 2 "$BASE_URL/$f" -o "$TMP_DIR/$f" || die "Failed to download $f from GitHub ($BASE_URL/$f)"
@@ -385,7 +385,7 @@ zsh)  add_path_line "$HOME/.zshrc" ;;
 bash) add_path_line "$HOME/.bashrc" ;;
 *)    add_path_line "$HOME/.profile" ;;
 esac
-add_path_line"$HOME/.profile"
+add_path_line "$HOME/.profile"
 
 envd="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d/60-ulpm.conf"
 mkdir -p "$(dirname "$envd")"
