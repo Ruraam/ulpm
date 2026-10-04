@@ -792,7 +792,7 @@ shnum=$(od -An -tu2 -j48 -N2 "$f" | tr -d ' \n')
 *) return 1 ;;
 esac
 [[ -n "$shoff" && -n "$shentsize" && -n "$shnum" && "$shnum" -gt 0 ]] || return 1
-echo$((shoff + shentsize * shnum))
+echo $((shoff + shentsize * shnum))
 }
 
 extract_any_payload() {
