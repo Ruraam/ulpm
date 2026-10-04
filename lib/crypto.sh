@@ -140,29 +140,34 @@ fi
 require_openssl3 || return 1
 
 local payload_size=$((fsize - SIG_FOOTER_TOTAL))
-local footer_off=$payload_size
 local sig_bin="$TEMP_DIR/chk.sig"
 local pub_raw="$TEMP_DIR/chk_raw.pub"
 local pub_der="$TEMP_DIR/chk_full.pub"
+local payload_tmp="$TEMP_DIR/chk_payload.bin"
 
-dd if="$pkg" of="$sig_bin" bs=1 skip="$footer_off" count="$SIG_RAW_LEN" status=none
-dd if="$pkg" of="$pub_raw" bs=1 skip=$((footer_off + SIG_RAW_LEN)) count="$SIG_PUB_LEN" status=none
+tail -c "$SIG_FOOTER_TOTAL""$pkg" > "$TEMP_DIR/footer_extracted.bin"
+head -c "$SIG_RAW_LEN" "$TEMP_DIR/footer_extracted.bin" > "$sig_bin"
+tail -c "+$((SIG_RAW_LEN + 1))" "$TEMP_DIR/footer_extracted.bin" | head -c "$SIG_PUB_LEN" > "$pub_raw"
+rm -f "$TEMP_DIR/footer_extracted.bin"
 
 if [[ "$(wc -c < "$sig_bin")" -ne $SIG_RAW_LEN || "$(wc -c < "$pub_raw")" -ne $SIG_PUB_LEN ]]; then
 echo -e "${RED}[-] Corrupted signature footer${NC}" >&2
-rm -f "$sig_bin" "$pub_raw" "$pub_der"
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$payload_tmp"
 return 1
 fi
 
 printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_der"
 cat "$pub_raw" >> "$pub_der"
 
-if ! head -c "$payload_size" "$pkg" | openssl pkeyutl -verify -rawin -pubin -keyform DER \
--inkey "$pub_der" -sigfile "$sig_bin" &>/dev/null; then
+head -c "$payload_size" "$pkg" > "$payload_tmp"
+
+if ! openssl pkeyutl -verify -rawin -pubin -keyform DER \
+-inkey "$pub_der" -sigfile "$sig_bin"-in "$payload_tmp" 2>/dev/null; then
 echo -e "${RED}[-] CRITICAL: Signature verification failed! Package is corrupted or tampered.${NC}" >&2
-rm -f "$sig_bin" "$pub_raw" "$pub_der"
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$payload_tmp"
 return 1
 fi
+rm -f "$payload_tmp"
 
 LAST_SIG_FPR=$(openssl dgst -sha256 -r "$pub_raw" 2>/dev/null | cut -d' ' -f1)
 
