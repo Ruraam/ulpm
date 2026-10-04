@@ -1048,7 +1048,7 @@ echo -e "${RED}[-] Usage: ulpm deb-pack <package|file.deb> [name]${NC}" >&2
 return 1
 fi
 
-if ! command-v apt-get &>/dev/null || ! command -v apt-cache &>/dev/null; then
+if ! command -v apt-get &>/dev/null || ! command -v apt-cache &>/dev/null; then
 echo -e "${RED}[-] apt-get / apt-cache required${NC}" >&2
 return 1
 fi
