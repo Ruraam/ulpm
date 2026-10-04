@@ -504,7 +504,7 @@ return 1
 fi
 
 local fsize
-fsize=$(wc-c < "$pkg")
+fsize=$(wc -c < "$pkg")
 if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]]; then
 echo -e "${RED}[-] Security: file too small (missing signature footer)${NC}" >&2
 return 1
