@@ -18,9 +18,9 @@
 ---
 
 >[!NOTE]
-> ### 🚀 Release Status: v3.2 beta
+> ### 🚀 Release Status: v3.3 beta
 >
-> **ULPM Engine v3.2** powers the autonomous **`.lpk` Format v3** specification.
+> **ULPM Engine v3.3** powers the autonomous **`.lpk` Format v3** specification.
 >
 > - **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`) and Ed25519 TOFU cryptographic key pinning.
 > - **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, and zero background resource footprint.
