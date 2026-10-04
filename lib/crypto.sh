@@ -145,13 +145,18 @@ local pub_raw="$TEMP_DIR/chk_raw.pub"
 local pub_der="$TEMP_DIR/chk_full.pub"
 local payload_tmp="$TEMP_DIR/chk_payload.bin"
 
-tail -c "$SIG_FOOTER_TOTAL""$pkg" > "$TEMP_DIR/footer_extracted.bin"
-head -c "$SIG_RAW_LEN" "$TEMP_DIR/footer_extracted.bin" > "$sig_bin"
-tail -c "+$((SIG_RAW_LEN + 1))" "$TEMP_DIR/footer_extracted.bin" | head -c "$SIG_PUB_LEN" > "$pub_raw"
+tail -c "$SIG_FOOTER_TOTAL" "$pkg" > "$TEMP_DIR/footer_extracted.bin"
+
+dd if="$TEMP_DIR/footer_extracted.bin" of="$sig_bin" bs=1 count="$SIG_RAW_LEN" status=none
+dd if="$TEMP_DIR/footer_extracted.bin" of="$pub_raw" bs=1 skip="$SIG_RAW_LEN" count="$SIG_PUB_LEN" status=none
 rm -f "$TEMP_DIR/footer_extracted.bin"
 
-if [[ "$(wc -c < "$sig_bin")" -ne $SIG_RAW_LEN || "$(wc -c < "$pub_raw")" -ne $SIG_PUB_LEN ]]; then
-echo -e "${RED}[-] Corrupted signature footer${NC}" >&2
+local sig_sz pub_sz
+sig_sz=$(wc -c < "$sig_bin")
+pub_sz=$(wc -c < "$pub_raw")
+
+if [[ "$sig_sz" -ne "$SIG_RAW_LEN" || "$pub_sz" -ne "$SIG_PUB_LEN" ]]; then
+echo -e "${RED}[-] Corrupted signature footer (got sig: ${sig_sz}/${SIG_RAW_LEN}, pub: ${pub_sz}/${SIG_PUB_LEN})${NC}" >&2
 rm -f "$sig_bin" "$pub_raw" "$pub_der" "$payload_tmp"
 return 1
 fi
@@ -162,7 +167,7 @@ cat "$pub_raw" >> "$pub_der"
 head -c "$payload_size" "$pkg" > "$payload_tmp"
 
 if ! openssl pkeyutl -verify -rawin -pubin -keyform DER \
--inkey "$pub_der" -sigfile "$sig_bin"-in "$payload_tmp" 2>/dev/null; then
+-inkey "$pub_der" -sigfile "$sig_bin" -in "$payload_tmp" 2>/dev/null; then
 echo -e "${RED}[-] CRITICAL: Signature verification failed! Package is corrupted or tampered.${NC}" >&2
 rm -f "$sig_bin" "$pub_raw" "$pub_der" "$payload_tmp"
 return 1
@@ -203,7 +208,7 @@ echo -e "${YELLOW}[!]Signature is valid, but this publisher is not in your trust
 echo -e "${GRAY}    Fingerprint (sha256): $LAST_SIG_FPR${NC}" >&2
 echo -e "${GRAY}    Integrity is verified; publisher identity is not independently established.${NC}">&2
 echo -e "${GRAY}    Use 'ulpm trust <file.pub>' to trust this publisher, or${NC}" >&2
-echo -e "${GRAY}    ULPM_REQUIRE_TRUSTED_KEYS=trueto reject unknown publishers.${NC}" >&2
+echo -e "${GRAY}    ULPM_REQUIRE_TRUSTED_KEYS=true to reject unknown publishers.${NC}" >&2
 fi
 fi
 
