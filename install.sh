@@ -169,7 +169,7 @@ local tmp
 tmp="$(mktemp)"
 awk '
 /# Added by ULPM installer/ { skip=1; next }
-/# Added by ULPM \(graphical sessions do not read ~/.bashrc\)/{ skip=1; next }
+/# Added by ULPM \(graphical sessions do not read ~/.bashrc\)/ { skip=1; next }
 skip && /^[[:space:]]*export PATH=/ { skip=0; next }
 skip { skip=0 }
 { print }
@@ -349,7 +349,7 @@ if [ "$LOCAL_BUILD" = true ] && [ -f "./$f" ]; then
 cp "./$f" "$TMP_DIR/$f"
 else
 info "Downloading $f..."
-curl -fsSL --retry 2 "$BASE_URL/$f" -o "$TMP_DIR/$f" || die "Failed to download $f from GitHub ($BASE_URL/$f)"
+curl -fL --progress-bar --retry 2 "$BASE_URL/$f" -o "$TMP_DIR/$f" || die "Failed to download $f from GitHub ($BASE_URL/$f)"
 fi
 done
 
