@@ -45,7 +45,7 @@ INSTALL_DEPS=true
 INTEGRATE=true
 UNINSTALL=false
 
-while[ $# -gt 0 ]; do
+while [ $# -gt 0 ]; do
 case "$1" in
 --user)         MODE="user" ;;
 --system)       MODE="system" ;;
