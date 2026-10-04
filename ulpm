@@ -190,7 +190,7 @@ trap 'exit 143' TERM
 
 require_openssl3() {
 local major
-major=$(openssl version 2>/dev/null | awk '{print $2}' | cut -d. -f1)
+major=$(openssl version 2>/dev/null | awk '{print $2}' | cut -d. -f1 | tr -d '\r')
 
 if [ -n "$major" ] && [ "$major" -ge 3 ] 2>/dev/null; then
 return 0
