@@ -146,7 +146,7 @@ bundle_libs() {
   [[ ${#targets[@]} -eq 0 ]] && return 0
 
   local added=1 pass=0 max_passes=6 t bname lib_file
-  while[[ $added -gt 0 && $pass -lt $max_passes ]]; do
+  while [[ $added -gt 0 && $pass -lt $max_passes ]]; do
     added=0
       pass=$((pass + 1))
       while IFS= read -r lib_file; do
