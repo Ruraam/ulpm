@@ -26,6 +26,19 @@ else
 BOLD='' RED='' GREEN='' CYAN='' YELLOW='' NC=''
 fi
 
+print_banner() {
+if [[ -n "${NO_COLOR:-}" || ! -t 1 ]]; then
+echo "=== ULPM (Universal Linux Package Manager) ==="
+return 0
+fi
+echo -e
+"\033[0;97m▐\033[0;96m██\033[0;37m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
+echo -e "\033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
+echo -e "\033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
+echo -e "\033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
+echo -e "\033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+}
+
 REPO="Ruraam/ulpm"
 REF="${ULPM_REF:-main}"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
@@ -73,6 +86,8 @@ TTY_IN="/dev/tty"
 fi
 
 if [ -n "$TTY_IN" ]; then
+clear
+print_banner
 echo
 echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager (LPK Engine v3.3)${NC}"
 echo "  1) Rootless installation (User: ~/.local/bin)"
@@ -268,7 +283,7 @@ if confirm "${BOLD}Install missing packages automatically with $PM? [y/N]: ${NC}
 PKGS=()
 for c in "${MISSING[@]}"; do
 p="$(pkg_for "$c")"
-case " ${PKGS[*]-} "in *" $p "*) ;; *) PKGS+=("$p") ;; esac
+case " ${PKGS[*]-} " in *" $p "*) ;; *) PKGS+=("$p") ;; esac
 done
 resolve_elevate
 case "$PM" in
