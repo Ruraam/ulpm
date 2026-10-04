@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 #
 # ULPM - Universal Linux Package Manager
-# LPK Engine v3.2 (Hardened sandbox, X11-compatible)
+# LPK Engine v3.3 (Hardened sandbox, X11-compatible)
 #
 # Lightweight, rootless, zero-daemon, sandboxed package manager
 # powered by Bubblewrap + SquashFS + Ed25519
 #
 # Environment:
-#   ULPM_STRICT_SIGNATURES=true|false  Reject unsigned / untrusted packages (default: true)
-#   ULPM_DBUS_MODE=proxy|full|none     Session D-Bus exposure in the sandbox (default: proxy)
+#   ULPM_STRICT_SIGNATURES=true|false  Reject unsigned packages (default:true)
+#   ULPM_REQUIRE_TRUSTED_KEYS=true|false  Reject valid signatures from unknownpublishers (default: false)
+#   ULPM_DBUS_MODE=proxy|full|none     SessionD-Bus exposure in the sandbox (default: proxy)
 #   ULPM_DBUS_EXTRA="--talk=..."       Extra xdg-dbus-proxy arguments (proxy mode)
 #   ULPM_SHARE_PID=true|false          Share the host PID namespace (default: false)
-#   ULPM_API_CACHE_TTL=<minutes>       GitHub API cache lifetime (default: 15)
+#   ULPM_CLEARENV=true|false           Start apps with a clean, whitelisted environment (default: true)
+#   ULPM_ENV_PASSTHROUGH="A B"         Extra host variables to forward when ULPM_CLEARENV=true
+#   ULPM_NO_INTEGRATION=true|false     Never touch MIME / desktop / PATH integration (default: false)
+#   ULPM_TMPDIR=<dir>                  Scratch directory for builds / verification (default: $TMPDIR or /tmp)
+#   ULPM_API_CACHE_TTL=<minutes>GitHub API cache lifetime (default: 15)
 #
 
 set -euo pipefail
@@ -23,16 +28,20 @@ set -euo pipefail
 ULPM_FORMAT_VERSION=3
 : "${ULPM_API_CACHE_TTL:=15}"
 : "${ULPM_STRICT_SIGNATURES:=true}"
+: "${ULPM_REQUIRE_TRUSTED_KEYS:=false}"
 : "${ULPM_DBUS_MODE:=proxy}"
 : "${ULPM_SHARE_PID:=false}"
+: "${ULPM_CLEARENV:=true}"
+: "${ULPM_NO_INTEGRATION:=false}"
 
 SIG_MAGIC="LPKSIG01"
 SIG_MAGIC_LEN=8
 SIG_RAW_LEN=64
 SIG_PUB_LEN=32
-SIG_FOOTER_TOTAL=104   # 64 + 32 + 8
+SIG_FOOTER_TOTAL=104   # 64 +32 + 8
 
-# Colors
+# Colors (disabled when not attached to a terminal, or when NO_COLOR is set:
+# keeps logs and desktop launches free of escape sequences)
 BOLD='\033[1m'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,6 +50,43 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 GRAY='\033[0;90m'
 NC='\033[0m'
+if [[ -n "${NO_COLOR:-}" || ! -t 1 || ! -t 2 ]]; then
+BOLD='' RED='' GREEN='' YELLOW='' BLUE='' CYAN='' GRAY='' NC=''
+fi
+
+# ============================================================
+# Self location & PATH self-healing
+# ============================================================
+# Desktop launches (file manager double-click, .desktop files) do not read
+# ~/.bashrc, so ~/.local/bin is usually missing from their PATH. ulpm therefore
+# (1) always knows its own absolute path, (2)puts its own directory and the
+# standard system directories back into PATH for itself and for its children.
+
+ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
+ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
+fi
+ULPM_BIN_DIR=""
+[[ -n "$ULPM_BIN" ]] && ULPM_BIN_DIR="${ULPM_BIN%/*}"
+
+_path_add() {
+# $1 = dir, $2 = "front" |"back"
+[[ -n "$1" && -d "$1" ]] || return 0
+case ":${PATH:-}:" in
+*":$1:"*) return 0 ;;
+esac
+if [[ "${2:-back}" == "front" ]]; then
+PATH="$1${PATH:+:$PATH}"
+else
+PATH="${PATH:+$PATH:}$1"
+fi
+}
+_path_add "$ULPM_BIN_DIR" front
+for _d in "$HOME/.local/bin" /usr/local/bin /usr/bin /bin /usr/local/sbin /usr/sbin /sbin; do
+_path_add "$_d" back
+done
+unset _d
+export PATH
 
 # Runtime globals (initialised here so that `set -u` and traps are safe)
 FUSERMOUNT="fusermount"
@@ -49,7 +95,7 @@ LAST_SIG_FPR=""
 RUN_MNT_DIR=""
 RUN_DBUS_DIR=""
 RUN_DBUS_PID=""
-ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+INST_MNT_DIR=""
 
 # ============================================================
 # Paths (100% rootless)
@@ -70,71 +116,121 @@ TRUSTED_KEYS_DIR="$CONF_DIR/trusted_keys"
 DEFAULT_KEY="$CONF_DIR/ulpm_ed25519.key"
 CONF_FILE="$CONF_DIR/ulpm.conf"
 
-# ============================================================
+#============================================================
 # Cleanup & runtime initialisation
 # ============================================================
 
+unmount_dir() {
+local d="${1:-}"
+[[ -n "$d" ]] || return 0
+"${FUSERMOUNT:-fusermount}" -u "$d" 2>/dev/null \
+|| "${FUSERMOUNT:-fusermount}" -u -z "$d" 2>/dev/null || true
+rmdir "$d" 2>/dev/null || true
+}
+
 cleanup_temp() {
-    if [[ -n "${TEMP_DIR:-}" ]]; then
-        rm -rf -- "$TEMP_DIR" 2>/dev/null || true
-    fi
+if [[ -n "${INST_MNT_DIR:-}" ]]; then
+unmount_dir "$INST_MNT_DIR"
+INST_MNT_DIR=""
+fi
+if [[ -n "${TEMP_DIR:-}" ]]; then
+rm -rf -- "$TEMP_DIR" 2>/dev/null || true
+fi
+}
+
+cleanup_instance_dbus_only() {
+if [[ -n "${RUN_DBUS_PID:-}" ]]; then
+kill "$RUN_DBUS_PID" 2>/dev/null || true
+wait "$RUN_DBUS_PID" 2>/dev/null || true
+RUN_DBUS_PID=""
+fi
+if [[ -n "${RUN_DBUS_DIR:-}" ]]; then
+rm -rf -- "$RUN_DBUS_DIR"2>/dev/null || true
+RUN_DBUS_DIR=""
+fi
 }
 
 cleanup_instance() {
-    if [[ -n "${RUN_DBUS_PID:-}" ]]; then
-        kill "$RUN_DBUS_PID" 2>/dev/null || true
-        wait "$RUN_DBUS_PID" 2>/dev/null || true
-        RUN_DBUS_PID=""
-    fi
-    if [[ -n "${RUN_DBUS_DIR:-}" ]]; then
-        rm -rf -- "$RUN_DBUS_DIR" 2>/dev/null || true
-        RUN_DBUS_DIR=""
-    fi
-    if [[ -n "${RUN_MNT_DIR:-}" ]]; then
-        "${FUSERMOUNT:-fusermount}" -u "$RUN_MNT_DIR" 2>/dev/null \
-            || "${FUSERMOUNT:-fusermount}" -u -z "$RUN_MNT_DIR" 2>/dev/null || true
-        rmdir "$RUN_MNT_DIR" 2>/dev/null || true
-        RUN_MNT_DIR=""
-    fi
+cleanup_instance_dbus_only
+if [[ -n "${RUN_MNT_DIR:-}" ]]; then
+unmount_dir "$RUN_MNT_DIR"
+RUN_MNT_DIR=""
+fi
 }
 
 init_runtime() {
-    local required_cmds=(squashfuse mksquashfs bwrap jq file curl openssl tail head truncate cmp od)
-    local cmd
-    for cmd in "${required_cmds[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            echo -e "${RED}[-] Missing required tool: ${BOLD}$cmd${NC}" >&2
-            exit 1
-        fi
-    done
+local required_cmds=(squashfuse mksquashfs bwrap jq file curl openssl tail head truncate cmp od dd realpath mktemp)
+local cmd
+for cmd in "${required_cmds[@]}"; do
+if ! command -v "$cmd" &>/dev/null; then
+echo -e "${RED}[-] Missing required tool: ${BOLD}$cmd${NC}" >&2
+exit 1
+fi
+done
 
-    if command -v fusermount3 &>/dev/null; then
-        FUSERMOUNT="fusermount3"
-    elif command -v fusermount &>/dev/null; then
-        FUSERMOUNT="fusermount"
-    else
-        echo -e "${RED}[-] Missing required tool: ${BOLD}fusermount3 / fusermount${NC}" >&2
-        exit 1
-    fi
+if command -vfusermount3 &>/dev/null; then
+FUSERMOUNT="fusermount3"
+elif command -v fusermount &>/dev/null; then
+FUSERMOUNT="fusermount"
+else
+echo -e "${RED}[-] Missing required tool: ${BOLD}fusermount3 / fusermount${NC}" >&2
+exit 1
+fi
 
-    mkdir -p "$ULPM_APPS" "$CACHE_API_DIR" "$CACHE_PKG_DIR" \
-        "$DESKTOP_DIR" "$ICON_DIR" "$TRUSTED_KEYS_DIR"
-    touch "$ULPM_DB"
+mkdir -p "$ULPM_APPS" "$CACHE_API_DIR" "$CACHE_PKG_DIR" \
+"$DESKTOP_DIR""$ICON_DIR" "$TRUSTED_KEYS_DIR"
+chmod 700 "$CONF_DIR" "$TRUSTED_KEYS_DIR" 2>/dev/null || true
+touch "$ULPM_DB"
 
-    TEMP_DIR=$(mktemp -d "/tmp/ulpm.XXXXXX")
-    trap cleanup_temp EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+TEMP_DIR=$(mktemp -d "${ULPM_TMPDIR:-${TMPDIR:-/tmp}}/ulpm.XXXXXX")
+trap cleanup_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 }
 
 require_openssl3() {
-    local ver
-    ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}')
-    if [[ "$ver" =~ ^OpenSSL\ ([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 3 )); then
-        return 0
-    fi
-    echo -e "${RED}[-] OpenSSL >= 3.0 is required for Ed25519 (found: ${ver:-unknown})${NC}" >&2
-    return 1
+local ver
+ver=$(openssl version 2>/dev/null | awk '{print $1""$2}')
+if [[ "$ver" =~ ^OpenSSL\ ([0-9]+)\. ]] &&(( BASH_REMATCH[1] >= 3 )); then
+return 0
+fi
+echo -e "${RED}[-] OpenSSL >= 3.0 is required for Ed25519 (found: ${ver:-unknown})${NC}" >&2
+return 1
+}
+
+# ============================================================
+# Binary-safe helpers
+# ============================================================
+# NEVER capture binary data with $(...): bash drops NUL bytesand prints
+# "warning: command substitution: ignored null byte in input". A SquashFS image
+# is zero-padded to a 4KiB boundary, so the tail of a freshly built (still
+# unsigned) .lpk is full of NULs. Everything binary is compared as hex instead.
+
+hex_at() {          # hex_at <file> <offset> <count>
+dd if="$1" bs=1 skip="$2" count="$3" status=none 2>/dev/null \
+| od -An -v -tx1 | tr-d ' \n'
+}
+
+hex_tail() {        # hex_tail <file> <count>
+tail -c "$2" "$1" 2>/dev/null | od -An -v-tx1 | tr -d ' \n'
+}
+
+SIG_MAGIC_HEX="$(printf '%s' "$SIG_MAGIC" | od -An -v -tx1 | tr -d ' \n')"
+
+has_sig_footer() {
+[[ "$(hex_tail "$1" "$SIG_MAGIC_LEN")" == "$SIG_MAGIC_HEX" ]]
+}
+
+# Turns file:// URIs (what file managers hand to %U) into plain paths.
+normalize_target() {
+local t="${1:-}"
+if [[ "$t" == file://* ]]; then
+t="${t#file://}"
+t="${t#localhost}"
+[[ "$t" == *%00* ]] && return 1
+t="$(printf'%b' "${t//%/\\x}")"
+fi
+printf '%s' "$t"
 }
 
 # ============================================================
@@ -142,49 +238,49 @@ require_openssl3() {
 # ============================================================
 
 detect_arch() {
-    local m
-    m="$(uname -m)"
-    case "$m" in
-        x86_64|amd64)  echo "amd64" ;;
-        aarch64|arm64) echo "arm64" ;;
-        armv7*|armhf)  echo "armhf" ;;
-        i386|i686)     echo "i386" ;;
-        riscv64)       echo "riscv64" ;;
-        *)             echo "$m" ;;
-    esac
+local m
+m="$(uname -m)"
+case "$m" in
+x86_64|amd64)  echo "amd64" ;;
+aarch64|arm64) echo "arm64" ;;
+armv7*|armhf)  echo "armhf" ;;
+i386|i686)     echo "i386" ;;
+riscv64)       echo "riscv64" ;;
+*)             echo "$m" ;;
+esac
 }
 
 SYS_ARCH=$(detect_arch)
 
 # ARCH_REGEX is matched on asset *names* only, as a whole token
-# (bounded by non-alphanumeric characters), see filter_arch().
+# (boundedby non-alphanumeric characters), see filter_arch().
 ARCH_EXCLUDE_REGEX=""
 case "$SYS_ARCH" in
-    amd64) ARCH_REGEX="x86_64|x86-64|amd64|x64" ;;
-    arm64) ARCH_REGEX="aarch64|arm64|armv8" ;;
-    armhf) ARCH_REGEX="armv7l|armv7|armhf|arm" ;;
-    i386)  ARCH_REGEX="i386|i686|x86"
-           ARCH_EXCLUDE_REGEX="x86[_-]64|amd64|x64" ;;
-    *)     ARCH_REGEX="$SYS_ARCH" ;;
+amd64) ARCH_REGEX="x86_64|x86-64|amd64|x64" ;;
+arm64) ARCH_REGEX="aarch64|arm64|armv8" ;;
+armhf) ARCH_REGEX="armv7l|armv7|armhf|arm" ;;
+i386)  ARCH_REGEX="i386|i686|x86"
+ARCH_EXCLUDE_REGEX="x86[_-]64|amd64|x64" ;;
+*)     ARCH_REGEX="$SYS_ARCH" ;;
 esac
 
 filter_arch() {
-    local include="$1" line name
-    local b='[^[:alnum:]]'
-    local re_in="(^|${b})(${include})(${b}|\$)"
-    local re_ex=""
-    if [[ -n "${ARCH_EXCLUDE_REGEX:-}" ]]; then
-        re_ex="(^|${b})(${ARCH_EXCLUDE_REGEX})(${b}|\$)"
-    fi
-    while IFS= read -r line; do
-        name="${line%%$'\t'*}"
-        name="${name,,}"
-        [[ "$name" =~ $re_in ]] || continue
-        if [[ -n "$re_ex" && "$name" =~ $re_ex ]]; then
-            continue
-        fi
-        printf '%s\n' "$line"
-    done
+local include="$1" line name
+local b='[^[:alnum:]]'
+local re_in="(^|${b})(${include})(${b}|\$)"
+local re_ex=""
+if [[ -n "${ARCH_EXCLUDE_REGEX:-}" ]]; then
+re_ex="(^|${b})(${ARCH_EXCLUDE_REGEX})(${b}|\$)"
+fi
+while IFS= read -r line; do
+name="${line%%$'\t'*}"
+name="${name,,}"
+[[ "$name" =~ $re_in ]] ||continue
+if [[ -n "$re_ex" && "$name" =~ $re_ex ]]; then
+continue
+fi
+printf '%s\n' "$line"
+done
 }
 
 # ============================================================
@@ -193,71 +289,72 @@ filter_arch() {
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 if [[ -z "$GITHUB_TOKEN" && -f "$CONF_FILE" ]]; then
-    raw_token=$(grep -E '^GITHUB_TOKEN=' "$CONF_FILE" 2>/dev/null | cut -d'=' -f2- || true)
-    GITHUB_TOKEN=$(echo "$raw_token" | tr -d "\"'")
+raw_token=$(grep -E '^GITHUB_TOKEN=' "$CONF_FILE" 2>/dev/null | cut-d'=' -f2- || true)
+GITHUB_TOKEN=$(echo "$raw_token" | tr -d "\"'")
 fi
 
 fetch_github_api() {
-    local endpoint="${1#https://api.github.com/}"
-    endpoint="${endpoint#/}"
-    local ttl="${2:-$ULPM_API_CACHE_TTL}"
-    local cache_key cache_file
-    cache_key=$(echo "$endpoint" | tr '/' '_')
-    cache_file="${CACHE_API_DIR}/${cache_key}.json"
+local endpoint="${1#https://api.github.com/}"
+endpoint="${endpoint#/}"
+local ttl="${2:-$ULPM_API_CACHE_TTL}"
+[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=15
+local cache_key cache_file
+cache_key=$(echo "$endpoint" | tr '/' '_')
+cache_file="${CACHE_API_DIR}/${cache_key}.json"
 
-    if [[ -f "$cache_file" ]]; then
-        if [[ "$ttl" -eq 0 ]]; then
-            rm -f "$cache_file"
-        elif [[ -z "$(find "$cache_file" -mmin "+$ttl" 2>/dev/null)" ]]; then
-            # find prints the file only when it is older than $ttl minutes:
-            # empty output means the cache is still fresh.
-            cat "$cache_file"
-            return 0
-        fi
-    fi
+if [[ -f "$cache_file" ]]; then
+if [[ "$ttl" -eq 0 ]]; then
+rm -f "$cache_file"
+elif [[ -z "$(find "$cache_file" -mmin "+$ttl" 2>/dev/null)" ]]; then
+# find prints the file only when it is older than $ttl minutes:
+# empty output means thecache is still fresh.
+cat "$cache_file"
+return 0
+fi
+fi
 
-    local auth_header=()
-    if [[ -n "$GITHUB_TOKEN" ]]; then
-        auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    fi
+local auth_header=()
+if [[ -n "$GITHUB_TOKEN" ]]; then
+auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
+fi
 
-    local response
-    response=$(curl -sS --connect-timeout 10 --max-time 25 --retry 2 \
-        ${auth_header[@]+"${auth_header[@]}"} \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: ulpm-client" \
-        "https://api.github.com/${endpoint}" 2>/dev/null) || true
+local response
+response=$(curl -sS --connect-timeout 10 --max-time 25 --retry 2 \
+${auth_header[@]+"${auth_header[@]}"} \
+-H "Accept: application/vnd.github+json"\
+-H "User-Agent: ulpm-client" \
+"https://api.github.com/${endpoint}" 2>/dev/null) || true
 
-    if [[ -n "$response" ]] && echo "$response" | jq -e . >/dev/null 2>&1; then
-        echo "$response" > "$cache_file"
-        echo "$response"
-        return 0
-    fi
+if [[ -n "$response" ]]&& echo "$response" | jq -e . >/dev/null 2>&1; then
+echo"$response" > "$cache_file"
+echo "$response"
+return 0
+fi
 
-    if [[ -f "$cache_file" ]]; then
-        cat "$cache_file"
-        return 0
-    fi
-    return 1
+if [[ -f "$cache_file" ]]; then
+cat "$cache_file"
+return0
+fi
+return 1
 }
 
 find_lpk_download_url() {
-    local json="$1" regex="$2"
-    echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
-        | grep -iE '\.lpk$' \
-        | filter_arch "$regex" \
-        | head -n1 \
-        | cut -f2 || true
+local json="$1" regex="$2"
+echo "$json" | jq -r '.assets[]? |"\(.name)\t\(.browser_download_url)"' 2>/dev/null \
+|grep -iE '\.lpk$' \
+| filter_arch "$regex" \
+| head-n1 \
+| cut -f2 || true
 }
 
-find_archive_download_url() {
-    local json="$1" regex="$2"
-    echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
-        | grep -iE '\.(appimage|deb|rpm|tar\.gz|tar\.xz|tgz|tar\.zst|zip)$' \
-        | filter_arch "$regex" \
-        | grep -ivE "src|source|dev|doc|debug" \
-        | head -n1 \
-        | cut -f2 || true
+find_archive_download_url(){
+local json="$1" regex="$2"
+echo "$json" | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' 2>/dev/null \
+| grep -iE '\.(appimage|deb|rpm|tar\.gz|tar\.xz|tgz|tar\.zst|zip)$' \
+| filter_arch "$regex" \
+| grep -ivE "src|source|dev|doc|debug" \
+|head -n1 \
+| cut -f2 || true
 }
 
 # ============================================================
@@ -266,18 +363,18 @@ find_archive_download_url() {
 # Line format: id|name|version|repo|timestamp|signing-key-fingerprint
 
 db_replace_entry() {
-    local id="$1" line="${2:-}"
-    local escaped_id
-    escaped_id=$(printf '%s\n' "$id" | sed -e 's/[]\/$*.^[]/\\&/g')
-    (
-        if command -v flock &>/dev/null; then
-            flock -x 9
-        fi
-        sed -i "/^${escaped_id}|/d" "$ULPM_DB" 2>/dev/null || true
-        if [[ -n "$line" ]]; then
-            echo "$line" >> "$ULPM_DB"
-        fi
-    ) 9>"$ULPM_LOCK"
+localid="$1" line="${2:-}"
+local escaped_id
+escaped_id=$(printf '%s\n' "$id" | sed -e 's/[]\/$*.^[]/\\&/g')
+(
+if command -v flock &>/dev/null; then
+flock -x 9
+fi
+sed -i "/^${escaped_id}|/d" "$ULPM_DB" 2>/dev/null || true
+if [[ -n "$line" ]]; then
+echo "$line">> "$ULPM_DB"
+fi
+) 9>"$ULPM_LOCK"
 }
 
 # ============================================================
@@ -285,205 +382,214 @@ db_replace_entry() {
 # ============================================================
 
 ensure_default_key() {
-    [[ -f "$DEFAULT_KEY" ]] && return 0
-    require_openssl3 || return 1
+[[ -f "$DEFAULT_KEY" ]] && return 0
+require_openssl3 || return 1
 
-    echo -e "${CYAN}-> Generating default Ed25519 keypair...${NC}"
-    local pub_key="${DEFAULT_KEY%.key}.pub"
-    mkdir -p "$CONF_DIR"
+echo -e "${CYAN}-> Generating default Ed25519 keypair...${NC}"
+local pub_key="${DEFAULT_KEY%.key}.pub"
+mkdir -p "$CONF_DIR"
 
-    if ! openssl genpkey -algorithm ed25519 -out "$DEFAULT_KEY" 2>/dev/null; then
-        echo -e "${RED}[-] Failed to generate private key${NC}" >&2
-        return 1
-    fi
-    chmod 600 "$DEFAULT_KEY"
+if ! (umask077; openssl genpkey -algorithm ed25519 -out "$DEFAULT_KEY" 2>/dev/null); then
+echo -e "${RED}[-] Failed to generate private key${NC}" >&2
+return 1
+fi
+chmod 600 "$DEFAULT_KEY"
 
-    if ! openssl pkey -in "$DEFAULT_KEY" -pubout -out "$pub_key" 2>/dev/null; then
-        echo -e "${RED}[-] Failed to derive public key${NC}" >&2
-        rm -f "$DEFAULT_KEY" "$pub_key"
-        return 1
-    fi
+if ! openssl pkey -in "$DEFAULT_KEY" -pubout -out "$pub_key" 2>/dev/null; then
+echo -e "${RED}[-] Failed to derive public key${NC}" >&2
+rm -f "$DEFAULT_KEY" "$pub_key"
+return 1
+fi
 
-    cp -f "$pub_key" "$TRUSTED_KEYS_DIR/default.pub"
-    echo -e "${GREEN}✔ Default key created and trusted${NC}"
+cp -f "$pub_key""$TRUSTED_KEYS_DIR/default.pub"
+echo -e "${GREEN}✔ Default key createdand trusted${NC}"
 }
 
 cmd_keygen() {
-    local key_name="${1:-ulpm_ed25519}"
-    local priv_key="$CONF_DIR/${key_name}.key"
-    local pub_key="$CONF_DIR/${key_name}.pub"
+local key_name="${1:-ulpm_ed25519}"
+[[ "$key_name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo -e "${RED}[-] Invalid key name${NC}" >&2; return 1; }
+local priv_key="$CONF_DIR/${key_name}.key"
+local pub_key="$CONF_DIR/${key_name}.pub"
 
-    require_openssl3 || return 1
+require_openssl3|| return 1
+mkdir -p "$CONF_DIR" "$TRUSTED_KEYS_DIR"
 
-    if [[ -f "$priv_key" ]]; then
-        echo -e "${YELLOW}[!] Key already exists. Overwrite? (y/N)${NC}"
-        read -r reply || reply="n"
-        [[ ! "$reply" =~ ^[yYoO]$ ]] && return 0
-    fi
+if [[ -f "$priv_key" ]]; then
+echo -e "${YELLOW}[!] Key already exists.Overwrite? (y/N)${NC}"
+read -r reply || reply="n"
+[[ ! "$reply" =~ ^[yYoO]$ ]] && return 0
+fi
 
-    echo -e "${CYAN}-> Generating Ed25519 keypair: $key_name${NC}"
-    openssl genpkey -algorithm ed25519 -out "$priv_key" 2>/dev/null || return 1
-    chmod 600 "$priv_key"
-    openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null || return 1
-    cp -f "$pub_key" "$TRUSTED_KEYS_DIR/${key_name}.pub"
-    echo -e "${GREEN}✔ Key created and trusted: ${BOLD}$pub_key${NC}"
+echo -e "${CYAN}-> Generating Ed25519 keypair: $key_name${NC}"
+rm -f "$priv_key"
+(umask 077; openssl genpkey -algorithm ed25519 -out "$priv_key" 2>/dev/null) || return 1
+chmod 600 "$priv_key"
+openssl pkey -in "$priv_key" -pubout -out "$pub_key"2>/dev/null || return 1
+cp -f "$pub_key" "$TRUSTED_KEYS_DIR/${key_name}.pub"
+echo -e "${GREEN}✔ Key created and trusted: ${BOLD}$pub_key${NC}"
 }
 
 cmd_sign() {
-    local pkg_path="${1:-}"
-    local priv_key="${2:-$DEFAULT_KEY}"
+local pkg_path="${1:-}"
+local priv_key="${2:-$DEFAULT_KEY}"
 
-    if [[ -z "$pkg_path" || ! -f "$pkg_path" ]]; then
-        echo -e "${RED}[-] Specify a valid .lpk file to sign${NC}" >&2
-        return 1
-    fi
-    if [[ ! -f "$priv_key" ]]; then
-        echo -e "${RED}[-] Private key not found: $priv_key${NC}" >&2
-        return 1
-    fi
-    require_openssl3 || return 1
+if [[ -z "$pkg_path" || ! -f "$pkg_path" ]]; then
+echo -e "${RED}[-] Specify avalid .lpk file to sign${NC}" >&2
+return 1
+fi
+if [[ ! -f "$priv_key" ]]; then
+echo -e "${RED}[-] Private key not found: $priv_key${NC}" >&2
+return 1
+fi
+require_openssl3 || return 1
 
-    local file_size
-    file_size=$(wc -c < "$pkg_path")
-    if [[ "$file_size" -ge $SIG_FOOTER_TOTAL ]]; then
-        local check_magic
-        check_magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg_path" 2>/dev/null || true)
-        if [[ "$check_magic" == "$SIG_MAGIC" ]]; then
-            echo -e "${YELLOW}[!] Stripping old signature footer...${NC}"
-            truncate -s "-$SIG_FOOTER_TOTAL" "$pkg_path"
-        fi
-    fi
+local file_size
+file_size=$(wc -c < "$pkg_path")
+# Binary-safe check (see hex_tail): no NUL bytes ever go through $(...).
+if [[ "$file_size" -ge $SIG_FOOTER_TOTAL ]] && has_sig_footer "$pkg_path"; then
+echo -e "${YELLOW}[!] Stripping old signature footer...${NC}"
+truncate -s "-$SIG_FOOTER_TOTAL" "$pkg_path"
+fi
 
-    local pub_raw="$TEMP_DIR/pub_raw.bin"
-    local sig_raw="$TEMP_DIR/sig_raw.bin"
+local pub_raw="$TEMP_DIR/pub_raw.bin"
+local sig_raw="$TEMP_DIR/sig_raw.bin"
 
-    openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw"
+openssl pkey -in "$priv_key" -pubout -outform DER2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw"
 
-    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_raw" 2>/dev/null; then
-        echo -e "${RED}[-] Ed25519 signing failed${NC}" >&2
-        return 1
-    fi
+if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$pkg_path" -out "$sig_raw" 2>/dev/null; then
+echo -e"${RED}[-] Ed25519 signing failed${NC}" >&2
+return 1
+fi
 
-    cat "$sig_raw" "$pub_raw" > "$TEMP_DIR/footer.bin"
-    printf "%s" "$SIG_MAGIC" >> "$TEMP_DIR/footer.bin"
-    cat "$TEMP_DIR/footer.bin" >> "$pkg_path"
-    rm -f "$TEMP_DIR/footer.bin" "$pub_raw" "$sig_raw"
+if [[ "$(wc -c < "$sig_raw")" -ne $SIG_RAW_LEN || "$(wc -c < "$pub_raw")" -ne $SIG_PUB_LEN ]]; then
+echo -e "${RED}[-] Unexpected signature / key size, aborting${NC}" >&2
+rm -f "$pub_raw" "$sig_raw"
+return 1
+fi
 
-    echo -e "${GREEN}✔ Package signed (embedded footer)${NC}"
+cat "$sig_raw" "$pub_raw" > "$TEMP_DIR/footer.bin"
+printf "%s" "$SIG_MAGIC">> "$TEMP_DIR/footer.bin"
+cat "$TEMP_DIR/footer.bin" >> "$pkg_path"
+rm -f "$TEMP_DIR/footer.bin" "$pub_raw" "$sig_raw"
+
+echo -e "${GREEN}✔ Package signed (embedded footer)${NC}"
 }
 
 cmd_trust() {
-    local pub_key="${1:-}"
-    if [[ -z "$pub_key" || ! -f "$pub_key" ]]; then
-        echo -e "${RED}[-] Provide a valid .pub file${NC}" >&2
-        return 1
-    fi
-    cp -f "$pub_key" "$TRUSTED_KEYS_DIR/$(basename "$pub_key")"
-    echo -e "${GREEN}✔ Key added to trusted keyring${NC}"
+local pub_key="${1:-}"
+if [[ -z "$pub_key" || ! -f "$pub_key" ]]; then
+echo -e "${RED}[-] Provide a valid .pubfile${NC}" >&2
+return 1
+fi
+require_openssl3 || return1
+if ! openssl pkey -pubin -in "$pub_key" -noout2>/dev/null; then
+echo -e "${RED}[-] Not a valid PEM public key: $pub_key${NC}" >&2
+return 1
+fi
+cp -f "$pub_key" "$TRUSTED_KEYS_DIR/$(basename "$pub_key")"
+echo -e"${GREEN}✔ Key added to trusted keyring${NC}"
 }
 
 # Sets LAST_SIG_FPR (sha256 of the raw signing key) when the package carries
-# a valid signature; it is left empty for unsigned packages.
+# a valid signature; it is left emptyfor unsigned packages.
 verify_package_signature() {
-    local pkg="$1"
-    LAST_SIG_FPR=""
+local pkg="$1"
+LAST_SIG_FPR=""
 
-    if [[ ! -f "$pkg" ]]; then
-        echo -e "${RED}[-] Package not found: $pkg${NC}" >&2
-        return 1
-    fi
+if [[ ! -f "$pkg" ]]; then
+echo -e "${RED}[-] Package not found: $pkg${NC}" >&2
+return 1
+fi
 
-    local fsize
-    fsize=$(wc -c < "$pkg")
-    if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]]; then
-        echo -e "${RED}[-] Security: file too small (missing signature footer)${NC}" >&2
-        return 1
-    fi
+local fsize
+fsize=$(wc-c < "$pkg")
+if [[ "$fsize" -lt $SIG_FOOTER_TOTAL ]]; then
+echo -e "${RED}[-] Security: file too small (missing signature footer)${NC}" >&2
+return 1
+fi
 
-    local magic
-    magic=$(tail -c "$SIG_MAGIC_LEN" "$pkg")
-    if [[ "$magic" != "$SIG_MAGIC" ]]; then
-        echo -e "${YELLOW}[!] Warning: unsigned package (no LPK signature magic)${NC}"
-        if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
-            echo -e "${RED}[-] Strict mode: unsigned packages are rejected${NC}" >&2
-            return 1
-        fi
-        return 0
-    fi
+if ! has_sig_footer "$pkg"; then
+echo -e "${YELLOW}[!] Warning: unsigned package (no LPK signature magic)${NC}"
+if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
+echo -e "${RED}[-] Strict mode:unsigned packages are rejected${NC}" >&2
+return 1
+fi
+return 0
+fi
 
-    require_openssl3 || return 1
+require_openssl3 || return 1
 
-    local payload_size=$((fsize - SIG_FOOTER_TOTAL))
-    local sig_bin="$TEMP_DIR/chk.sig"
-    local pub_raw="$TEMP_DIR/chk_raw.pub"
-    local pub_der="$TEMP_DIR/chk_full.pub"
-    local data_stream="$TEMP_DIR/payload.bin"
+local payload_size=$((fsize -SIG_FOOTER_TOTAL))
+local footer_off=$payload_size
+local sig_bin="$TEMP_DIR/chk.sig"
+local pub_raw="$TEMP_DIR/chk_raw.pub"
+local pub_der="$TEMP_DIR/chk_full.pub"
+local data_stream="$TEMP_DIR/payload.bin"
 
-    # Extract signature and public key from footer
-    tail -c "$SIG_FOOTER_TOTAL" "$pkg" | head -c "$SIG_RAW_LEN" > "$sig_bin"
-    tail -c $((SIG_PUB_LEN + SIG_MAGIC_LEN)) "$pkg" | head -c "$SIG_PUB_LEN" > "$pub_raw"
-    head -c "$payload_size" "$pkg" > "$data_stream"
+# Extract signature and public key from the footer (dd: exact, no SIGPIPE games)
+dd if="$pkg" of="$sig_bin" bs=1 skip="$footer_off" count="$SIG_RAW_LEN" status=none
+dd if="$pkg" of="$pub_raw" bs=1 skip=$((footer_off + SIG_RAW_LEN)) count="$SIG_PUB_LEN" status=none
+head -c "$payload_size" "$pkg" > "$data_stream"
 
-    # Build DER structure: RFC 8410 prefix (12 bytes) + 32 raw bytes
-    printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_der"
-    cat "$pub_raw" >> "$pub_der"
+if [[ "$(wc -c < "$sig_bin")" -ne $SIG_RAW_LEN || "$(wc -c < "$pub_raw")" -ne $SIG_PUB_LEN ]]; then
+echo -e "${RED}[-] Corrupted signature footer${NC}" >&2
+rm -f "$sig_bin" "$pub_raw""$pub_der" "$data_stream"
+return 1
+fi
 
-    # Cryptographic verification
-    if ! openssl pkeyutl -verify -rawin -pubin -keyform DER \
-        -inkey "$pub_der" -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
-        echo -e "${RED}[-] CRITICAL: Signature verification failed! Package is corrupted or tampered.${NC}" >&2
-        rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-        return 1
-    fi
+# Build DER structure: RFC 8410 prefix (12 bytes) + 32 raw bytes
+printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' >"$pub_der"
+cat "$pub_raw" >> "$pub_der"
 
-    LAST_SIG_FPR=$(openssl dgst -sha256 -r "$pub_raw" 2>/dev/null | cut -d' ' -f1)
+# Cryptographicverification
+if ! openssl pkeyutl -verify -rawin -pubin -keyform DER \
+-inkey "$pub_der" -in "$data_stream" -sigfile "$sig_bin" &>/dev/null; then
+echo -e "${RED}[-] CRITICAL: Signature verification failed! Package is corrupted or tampered.${NC}" >&2
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+return 1
+fi
 
-    # Check against trusted keyring
-    local matched=false
-    local pub_keys=()
-    shopt -s nullglob
-    pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
-    shopt -u nullglob
+LAST_SIG_FPR=$(openssl dgst -sha256 -r "$pub_raw" 2>/dev/null | cut -d' ' -f1)
 
-    local trusted_pub
-    for trusted_pub in "${pub_keys[@]}"; do
-        local trusted_der="$TEMP_DIR/trusted_check.der"
-        openssl pkey -pubin -inform PEM -in "$trusted_pub" -outform DER -out "$trusted_der" 2>/dev/null || continue
+# Check against trusted keyring
+local matched=false
+local pub_keys=()
+shopt -s nullglob
+pub_keys=("$TRUSTED_KEYS_DIR"/*.pub)
+shopt -u nullglob
 
-        if cmp -s "$pub_der" "$trusted_der"; then
-            matched=true
-            echo -e "${GREEN}✔ Valid signature from trusted source: $(basename "$trusted_pub")${NC}"
-            rm -f "$trusted_der"
-            break
-        fi
-        rm -f "$trusted_der"
-    done
+local trusted_pub trusted_der
+for trusted_pub in ${pub_keys[@]+"${pub_keys[@]}"}; do
+trusted_der="$TEMP_DIR/trusted_check.der"
+openssl pkey -pubin -inform PEM -in "$trusted_pub" -outform DER -out "$trusted_der" 2>/dev/null ||continue
 
-    if [[ "$matched" != "true" ]]; then
-        if [[ "${ULPM_STRICT_SIGNATURES}" == "true" ]]; then
-            echo -e "${RED}[-] Untrusted developer key (strict mode enabled)${NC}" >&2
-            echo -e "${GRAY}    Key fingerprint (sha256): $LAST_SIG_FPR${NC}" >&2
-            echo -e "${GRAY}    Add the developer's .pub with 'ulpm trust <file.pub>', or retry with${NC}" >&2
-            echo -e "${GRAY}    ULPM_STRICT_SIGNATURES=false to review the key interactively.${NC}" >&2
-            rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-            return 1
-        else
-            echo -e "${YELLOW}★ Package signature is authentic, but developer key is not yet trusted.${NC}"
-            echo -e "${GRAY}  Key fingerprint (sha256): $LAST_SIG_FPR${NC}"
-            local reply="n"
-            read -r -p "Trust this developer key permanently? [y/N]: " reply || reply="n"
-            if [[ "$reply" =~ ^[yYoO]$ ]]; then
-                local auto_key="$TRUSTED_KEYS_DIR/dev_$(date +%s).pub"
-                openssl pkey -pubin -keyform DER -in "$pub_der" -pubout -outform PEM > "$auto_key" 2>/dev/null
-                echo -e "${GREEN}✔ Key added to trusted keyring: $auto_key${NC}"
-            else
-                echo -e "${CYAN}[*] Proceeding anyway (one-time execution)${NC}"
-            fi
-        fi
-    fi
+if cmp -s "$pub_der" "$trusted_der"; then
+matched=true
+echo -e "${GREEN}✔ Valid signature from trusted source: $(basename "$trusted_pub")${NC}"
+rm -f "$trusted_der"
+break
+fi
+rm -f "$trusted_der"
+done
 
-    rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
-    return 0
+if [[ "$matched" != "true" ]]; then
+if [[ "${ULPM_REQUIRE_TRUSTED_KEYS}" == "true" ]]; then
+echo -e "${RED}[-] Valid signature, but publisher key is not trusted (strict trust mode).${NC}" >&2
+echo -e "${GRAY}    Key fingerprint (sha256):$LAST_SIG_FPR${NC}" >&2
+echo -e "${GRAY}    Add thepublisher's .pub with 'ulpm trust <file.pub>'.${NC}" >&2
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+return 1
+else
+echo -e "${YELLOW}[!] Signature is valid, but this publisher is not in your trusted keyring.${NC}" >&2
+echo-e "${GRAY}    Fingerprint (sha256): $LAST_SIG_FPR${NC}">&2
+echo -e "${GRAY}    Integrity is verified; publisher identity is not independently established.${NC}" >&2
+echo -e "${GRAY}    Use 'ulpm trust <file.pub>' to trustthis publisher, or${NC}" >&2
+echo -e "${GRAY}    ULPM_REQUIRE_TRUSTED_KEYS=true to reject unknown publishers.${NC}" >&2
+fi
+fi
+
+rm -f "$sig_bin" "$pub_raw" "$pub_der" "$data_stream"
+return 0
 }
 
 # ============================================================
@@ -491,198 +597,325 @@ verify_package_signature() {
 # ============================================================
 
 validate_manifest() {
-    local manifest="$1"
-    if ! jq -e --argjson max_version "$ULPM_FORMAT_VERSION" '
-        type == "object" and
-        ((.format_version // 1) | type == "number" and . == floor and . >= 1 and . <= $max_version) and
-        (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") and (contains("..") | not)) and
-        (.name | type == "string" and length > 0 and length <= 128) and
-        ((.version // "1.0.0") | type == "string" and length > 0 and length <= 64) and
-        (.exec | type == "string" and length > 0 and length <= 4096 and
-            (startswith("/") | not) and
-            (split("/") | all(.[]; . != "" and . != "." and . != ".."))) and
-        ((.icon // "") | type == "string") and
-        ((.chromium // false) | type == "boolean") and
-        ((.network // true) | type == "boolean")
-    ' "$manifest" >/dev/null 2>&1; then
-        echo -e "${RED}[-] Invalid or unsafe manifest${NC}" >&2
-        return 1
-    fi
-    return 0
+local manifest="$1"
+if ! jq -e --argjson max_version "$ULPM_FORMAT_VERSION" '
+type == "object" and
+((.format_version // 1) | type == "number" and . == floor and . >= 1 and . <=$max_version) and
+(.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") and (contains("..") | not)) and
+(.name | type == "string" and length > 0 and length <= 128) and
+((.version // "1.0.0") | type == "string" and length >0 and length <= 64) and
+(.exec | type == "string" and length >0 and length <= 4096 and
+(startswith("/") | not) and
+(split("/")| all(.[]; . != "" and . != "." and . != ".."))) and
+((.icon //"") | type == "string" and length <= 4096 and
+(startswith("/") | not)and
+(split("/") | all(.[]; . != ".."))) and
+((.chromium // false)| type == "boolean") and
+((.network // true) | type == "boolean")
+'"$manifest" >/dev/null 2>&1; then
+echo -e "${RED}[-] Invalidor unsafe manifest${NC}" >&2
+return 1
+fi
+return 0
 }
 
 desktop_entry_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%s' "$value"
+local value="$1"
+value="${value//\\/\\\\}"
+value="${value//$'\n'/\\n}"
+value="${value//$'\r'/\\r}"
+value="${value//$'\t'/\\t}"
+printf '%s' "$value"
 }
 
 desktop_exec_quote() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//\`/\\\`}"
-    value="${value//\$/\\\$}"
-    value="${value//%/%%}"
-    printf '"%s"' "$value"
+local value="$1"
+value="${value//\\/\\\\}"
+value="${value//\"/\\\"}"
+value="${value//\`/\\\`}"
+value="${value//\$/\\\$}"
+value="${value//%/%%}"
+printf '"%s"' "$value"
+}
+
+# ============================================================
+# Desktop / MIME / PATH integration
+#============================================================
+
+# The Exec line always uses the ABSOLUTE path of ulpm: a desktop launcherdoes
+# not inherit the PATH of your interactive shell.
+write_desktop_entry() {
+local id="$1" name="$2" icon="$3"
+mkdir -p "$DESKTOP_DIR"
+cat > "$DESKTOP_DIR/ulpm-$id.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$(desktop_entry_escape "$name")
+Exec=$(desktop_exec_quote "$ULPM_BIN") run "$id" %U
+Icon=$icon
+Terminal=false
+Categories=Utility;Network;Development;AudioVideo;Graphics;
+StartupNotify=true
+EOF
+}
+
+# Rewrites every installed launcher (used when the ulpm binary moved).
+refresh_desktop_entries() {
+[[ -s "$ULPM_DB" ]]|| return 0
+local id name icon
+while IFS='|' read -r id name _; do
+if [[ -z "$id" || ! -f "$DESKTOP_DIR/ulpm-$id.desktop" ]]; then
+continue
+fi
+icon="$id"
+if [[ -f "$ICON_DIR/$id.png" ]]; then
+icon="$ICON_DIR/$id.png"
+fi
+write_desktop_entry "$id" "$name" "$icon"
+done < "$ULPM_DB"
+}
+
+# Makes the *.lpk files double-clickable and puts ulpm on the PATH of
+# graphical sessions. Idempotent.
+cmd_integrate() {
+local quiet=false
+[[ "${1:-}" == "quiet" ]] && quiet=true
+say() { [[ "$quiet" == "true" ]] || echo -e "$@"; }
+
+if [[ -z "$ULPM_BIN" || ! -x "$ULPM_BIN" ]]; then
+echo -e "${RED}[-] Cannot determine the absolutepath of ulpm${NC}" >&2
+return 1
+fi
+
+local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+local conf_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+local mime_dir="$data_home/mime"
+
+# 1) MIME type + default handler for *.lpk
+mkdir -p "$mime_dir/packages" "$DESKTOP_DIR"
+cat > "$mime_dir/packages/application-x-lpk.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+<mime-type type="application/x-lpk">
+<comment>ULPM package</comment>
+<glob pattern="*.lpk" weight="80"/>
+<sub-class-of type="application/octet-stream"/>
+</mime-type>
+</mime-info>
+EOF
+
+cat > "$DESKTOP_DIR/ulpm-open.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=ULPM Package Launcher
+Comment=Run LPK packages in the ULPMsandbox
+Exec=$(desktop_exec_quote "$ULPM_BIN") run %f
+Icon=application-x-executable
+Terminal=false
+NoDisplay=true
+MimeType=application/x-lpk;
+Categories=System;
+EOF
+
+if command -v update-mime-database >/dev/null 2>&1; then
+update-mime-database "$mime_dir" >/dev/null 2>&1 || true
+fi
+if command -v xdg-mime >/dev/null 2>&1; then
+xdg-mime default ulpm-open.desktop application/x-lpk >/dev/null 2>&1 || true
+fi
+update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 ||true
+refresh_desktop_entries
+say "${GREEN}✔ .lpk files are now associated with ulpm${NC}"
+
+# 2) PATH for graphical sessions (only for per-user install directories)
+if [[ "$ULPM_BIN_DIR" == "$HOME"/* ]]; then
+local envd="$conf_home/environment.d/60-ulpm.conf"
+mkdir -p "$(dirname "$envd")"
+printf 'PATH=%s:${PATH}\n' "$ULPM_BIN_DIR"> "$envd"
+
+local prof="$HOME/.profile"
+touch "$prof"
+if ! grep -qF "$ULPM_BIN_DIR" "$prof" 2>/dev/null; then
+{
+echo ""
+echo "# Added by ULPM (graphical sessions do not read ~/.bashrc)"
+echo "export PATH=\"$ULPM_BIN_DIR:\$PATH\""
+} >> "$prof"
+fi
+say "${GREEN}✔ $ULPM_BIN_DIR added to the graphical-session PATH (re-login to apply)${NC}"
+fi
+
+mkdir -p "$ULPM_DATA"
+printf '%s\n' "$ULPM_BIN" > "$ULPM_DATA/.integrated"
+return 0
+}
+
+# Runs silently once, and again whenever the ulpm binary has moved.
+ensure_integration() {
+[[ "$ULPM_NO_INTEGRATION" == "true" ]] && return 0
+[[ -n "$ULPM_BIN" && -x "$ULPM_BIN" ]] || return 0
+local current=""
+if [[ -f "$ULPM_DATA/.integrated" ]]; then
+current="$(cat "$ULPM_DATA/.integrated" 2>/dev/null || true)"
+fi
+[[ "$current" == "$ULPM_BIN" ]] && return 0
+cmd_integrate quiet || true
+return 0
 }
 
 # ============================================================
 # Extraction & Fat-bundling
 # ============================================================
 
-# Computes the offset of the SquashFS payload of a type-2 AppImage by reading
-# the ELF header (end of the section header table) with od, without ever
+# Computes the offset of the SquashFSpayload of a type-2 AppImage by reading
+# the ELF header (end of the section header table) withod, without ever
 # executing the file. Little-endian ELF only (all supported architectures).
 appimage_squashfs_offset() {
-    local f="$1" class shoff shentsize shnum
-    [[ "$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')" == "7f454c46" ]] || return 1
-    [[ "$(od -An -tu1 -j5 -N1 "$f" | tr -d ' \n')" == "1" ]] || return 1
-    class=$(od -An -tu1 -j4 -N1 "$f" | tr -d ' \n')
-    case "$class" in
-        2)
-            shoff=$(od -An -tu8 -j40 -N8 "$f" | tr -d ' \n')
-            shentsize=$(od -An -tu2 -j58 -N2 "$f" | tr -d ' \n')
-            shnum=$(od -An -tu2 -j60 -N2 "$f" | tr -d ' \n')
-            ;;
-        1)
-            shoff=$(od -An -tu4 -j32 -N4 "$f" | tr -d ' \n')
-            shentsize=$(od -An -tu2 -j46 -N2 "$f" | tr -d ' \n')
-            shnum=$(od -An -tu2 -j48 -N2 "$f" | tr -d ' \n')
-            ;;
-        *) return 1 ;;
-    esac
-    [[ -n "$shoff" && -n "$shentsize" && -n "$shnum" && "$shnum" -gt 0 ]] || return 1
-    echo $((shoff + shentsize * shnum))
+local f="$1" class shoff shentsize shnum
+[[ "$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')" == "7f454c46" ]] || return 1
+[[ "$(od -An -tu1 -j5 -N1 "$f" | tr -d ' \n')" == "1" ]] || return1
+class=$(od -An -tu1 -j4 -N1 "$f" | tr -d ' \n')
+case "$class" in
+2)
+shoff=$(od -An-tu8 -j40 -N8 "$f" | tr -d ' \n')
+shentsize=$(od -An-tu2 -j58 -N2 "$f" | tr -d ' \n')
+shnum=$(od -An -tu2 -j60 -N2 "$f" | tr -d ' \n')
+;;
+1)
+shoff=$(od -An -tu4 -j32-N4 "$f" | tr -d ' \n')
+shentsize=$(od -An -tu2 -j46 -N2 "$f" | tr -d ' \n')
+shnum=$(od -An -tu2 -j48 -N2 "$f" | tr -d ' \n')
+;;
+*) return 1 ;;
+esac
+[[ -n "$shoff" && -n "$shentsize" && -n "$shnum" && "$shnum" -gt 0 ]] || return 1
+echo$((shoff + shentsize * shnum))
 }
 
 extract_any_payload() {
-    local src="$1" dest="$2"
+localsrc="$1" dest="$2"
 
-    if [[ -d "$src" ]]; then
-        cp -a "$src"/. "$dest/"
-    elif [[ "$src" =~ \.(appimage|AppImage)$ ]]; then
-        if ! command -v unsquashfs &>/dev/null; then
-            echo -e "${RED}[-] unsquashfs (squashfs-tools) required for AppImage${NC}" >&2
-            return 1
-        fi
-        local offset magic appimg_tmp
-        if ! offset=$(appimage_squashfs_offset "$src"); then
-            echo -e "${RED}[-] Unsupported AppImage (not a type-2 ELF AppImage)${NC}" >&2
-            return 1
-        fi
-        magic=$(dd if="$src" bs=1 skip="$offset" count=4 2>/dev/null || true)
-        if [[ "$magic" != "hsqs" ]]; then
-            echo -e "${RED}[-] No SquashFS payload found in AppImage${NC}" >&2
-            return 1
-        fi
-        appimg_tmp=$(mktemp -d "$TEMP_DIR/appimage.XXXXXX")
-        if unsquashfs -no-progress -f -d "$appimg_tmp/squashfs-root" -o "$offset" "$src" >/dev/null 2>&1 \
-            && [[ -d "$appimg_tmp/squashfs-root" ]]; then
-            cp -a "$appimg_tmp/squashfs-root"/. "$dest/"
-            rm -rf "$appimg_tmp"
-        else
-            rm -rf "$appimg_tmp"
-            echo -e "${RED}[-] Failed to extract AppImage${NC}" >&2
-            return 1
-        fi
-    elif [[ "$src" =~ \.deb$ ]]; then
-        dpkg-deb -x "$src" "$dest"
-    elif [[ "$src" =~ \.rpm$ ]]; then
-        if command -v rpm2cpio &>/dev/null; then
-            (cd "$dest" && rpm2cpio "$src" | cpio -idm --quiet)
-        elif command -v bsdtar &>/dev/null; then
-            bsdtar -xf "$src" -C "$dest"
-        else
-            echo -e "${RED}[-] rpm2cpio or bsdtar required for .rpm${NC}" >&2
-            return 1
-        fi
-    elif [[ "$src" =~ \.zip$ ]]; then
-        unzip -q -o "$src" -d "$dest"
-    else
-        tar -xf "$src" -C "$dest"
-    fi
+if [[ -d "$src" ]]; then
+cp -a"$src"/. "$dest/"
+elif [[ "$src" =~ \.(appimage|AppImage)$ ]];then
+if ! command -v unsquashfs &>/dev/null; then
+echo -e"${RED}[-] unsquashfs (squashfs-tools) required for AppImage${NC}" >&2
+return 1
+fi
+local offset appimg_tmp
+if ! offset=$(appimage_squashfs_offset"$src"); then
+echo -e "${RED}[-] Unsupported AppImage (not a type-2 ELF AppImage)${NC}" >&2
+return 1
+fi
+# "hsqs"= 68 73 71 73 (hex compare: binary-safe)
+if [[ "$(hex_at "$src" "$offset" 4)" != "68737173" ]]; then
+echo -e "${RED}[-] No SquashFS payload found in AppImage${NC}" >&2
+return 1
+fi
+appimg_tmp=$(mktemp -d "$TEMP_DIR/appimage.XXXXXX")
+if unsquashfs -no-progress -f -d"$appimg_tmp/squashfs-root" -o "$offset" "$src" >/dev/null 2>&1 \
+&& [[ -d "$appimg_tmp/squashfs-root" ]]; then
+cp -a "$appimg_tmp/squashfs-root"/. "$dest/"
+rm -rf"$appimg_tmp"
+else
+rm -rf "$appimg_tmp"
+echo -e "${RED}[-] Failed to extract AppImage${NC}" >&2
+return 1
+fi
+elif [[ "$src" =~ \.deb$ ]]; then
+dpkg-deb -x "$src" "$dest"
+elif [[ "$src" =~ \.rpm$ ]]; then
+if command -v rpm2cpio&>/dev/null; then
+(cd "$dest" && rpm2cpio "$src" | cpio -idm --quiet)
+elif command -v bsdtar &>/dev/null; then
+bsdtar -xf "$src" -C "$dest"
+else
+echo -e "${RED}[-] rpm2cpio or bsdtar required for .rpm${NC}" >&2
+return1
+fi
+elif [[ "$src" =~ \.zip$ ]]; then
+unzip -q-o "$src" -d "$dest"
+else
+tar -xf "$src" -C "$dest"
+fi
 }
 
 is_system_lib() {
-    local bname="$1"
-    [[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so) ]] && return 0
-    [[ "$bname" =~ ^(libGL|libEGL|libGLESv|libdrm|libvulkan|libX11|libXext|libXrender|libXrandr) ]] && return 0
-    [[ "$bname" =~ ^(libasound|libpulse|libwayland|libffi|libz\.so|libbz2|liblzma|libnss|libnspr) ]] && return 0
-    return 1
+local bname="$1"
+[[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so) ]] && return 0
+[[ "$bname" =~ ^(libGL|libEGL|libGLESv|libdrm|libvulkan|libX11|libXext|libXrender|libXrandr) ]] && return 0
+[[ "$bname" =~ ^(libasound|libpulse|libwayland|libffi|libz\.so|libbz2|liblzma|libnss|libnspr) ]] && return 0
+return 1
 }
 
-# Host dynamic loader, used with --list instead of ldd: the loader of the host
-# is always the one that runs, never the PT_INTERP requested by an untrusted ELF.
+# Host dynamic loader,used with --list instead of ldd: the loader of the host
+# is always the one that runs, neverthe PT_INTERP requested by an untrusted ELF.
 find_host_loader() {
-    local cand
-    for cand in \
-        /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
-        /lib/ld-linux-aarch64.so.1 /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 \
-        /lib/ld-linux-armhf.so.3 /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3 \
-        /lib/ld-linux.so.2 /lib/i386-linux-gnu/ld-linux.so.2 \
-        /lib/ld-linux-riscv64-lp64d.so.1 /lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1 \
-        /lib/ld-musl-*.so.1; do
-        if [[ -x "$cand" ]]; then
-            echo "$cand"
-            return 0
-        fi
-    done
-    return 1
+local cand
+for cand in \
+/lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+/lib/ld-linux-aarch64.so.1/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\
+/lib/ld-linux-armhf.so.3 /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3 \
+/lib/ld-linux.so.2 /lib/i386-linux-gnu/ld-linux.so.2 \
+/lib/ld-linux-riscv64-lp64d.so.1 /lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1 \
+/lib/ld-musl-*.so.1; do
+if [[ -x "$cand" ]]; then
+echo "$cand"
+return 0
+fi
+done
+return 1
 }
 
 bundle_libs() {
-    local root_dir="$1"
-    local bin_path="$2"
-    local lib_dest="$root_dir/lib"
+local root_dir="$1"
+local bin_path="$2"
+local lib_dest="$root_dir/lib"
 
-    mkdir -p "$lib_dest"
-    echo -e "${CYAN}-> Inspecting shared libraries (fat bundle)...${NC}"
+mkdir -p "$lib_dest"
+echo-e "${CYAN}-> Inspecting shared libraries (fat bundle)...${NC}"
 
-    local loader
-    if ! loader=$(find_host_loader); then
-        echo -e "${YELLOW}[!] No host dynamic loader found, skipping library bundling${NC}" >&2
-        return 0
-    fi
+local loader
+if ! loader=$(find_host_loader); then
+echo -e "${YELLOW}[!] No host dynamic loader found, skipping library bundling${NC}" >&2
+return 0
+fi
 
-    local targets=()
-    if file -b "$bin_path" 2>/dev/null | grep -q "ELF"; then
-        targets+=("$bin_path")
-    fi
+local targets=()
+if file -b "$bin_path" 2>/dev/null | grep -q "ELF";then
+targets+=("$bin_path")
+fi
 
-    while IFS= read -r f; do
-        [[ -n "$f" ]] && targets+=("$f")
-    done < <(find "$root_dir" -type f -executable 2>/dev/null | while read -r cand; do
-        file -b "$cand" 2>/dev/null | grep -q "ELF" && echo "$cand"
-    done || true)
+while IFS= read -r f; do
+[[ -n "$f" ]] && targets+=("$f")
+done < <(find "$root_dir" -type f -executable 2>/dev/null | while read -r cand; do
+file -b "$cand"2>/dev/null | grep -q "ELF" && echo "$cand"
+done || true)
 
-    [[ ${#targets[@]} -eq 0 ]] && return 0
+[[ ${#targets[@]} -eq 0 ]] && return 0
 
-    local added=1 t
-    while [[ $added -gt 0 ]]; do
-        added=0
-        while IFS= read -r lib_file; do
-            if [[ -n "$lib_file" && -f "$lib_file" ]]; then
-                local bname
-                bname=$(basename "$lib_file")
-                if ! is_system_lib "$bname"; then
-                    if [[ ! -f "$lib_dest/$bname" ]]; then
-                        cp -u -L "$lib_file" "$lib_dest/$bname" 2>/dev/null || true
-                        added=$((added + 1))
-                    fi
-                fi
-            fi
-        done < <(
-            for t in "${targets[@]}" "$lib_dest"/*; do
-                if [[ -f "$t" ]]; then
-                    "$loader" --list "$t" 2>/dev/null || true
-                fi
-            done | grep -oE '/[^ ]+' || true
-        )
-    done
+local added=1 t bname lib_file
+while [[ $added -gt 0 ]]; do
+added=0
+while IFS= read -r lib_file; do
+if [[ -n "$lib_file" && -f "$lib_file" ]]; then
+bname=$(basename "$lib_file")
+if ! is_system_lib "$bname"; then
+if [[ ! -f "$lib_dest/$bname" ]]; then
+cp-u -L "$lib_file" "$lib_dest/$bname" 2>/dev/null ||true
+added=$((added + 1))
+fi
+fi
+fi
+done < <(
+for t in "${targets[@]}" "$lib_dest"/*; do
+if [[ -f "$t" ]]; then
+"$loader" --list "$t" 2>/dev/null || true
+fi
+done | grep -oE '/[^ ]+' || true
+)
+done
+return 0
 }
 
 # ============================================================
@@ -690,575 +923,678 @@ bundle_libs() {
 # ============================================================
 
 lpk_pack() {
-    local source_input="$1"
-    local raw_name="${2:-}"
-    local out_pkg="${3:-}"
-    local version_hint="${4:-latest}"
+local source_input="$1"
+local raw_name="${2:-}"
+local out_pkg="${3:-}"
+local version_hint="${4:-latest}"
 
-    ensure_default_key || return 1
+ensure_default_key || return 1
 
-    local base_clean app_name app_id work_dir target_arch
-    base_clean=$(basename "$source_input")
-    base_clean="${base_clean%%.*}"
-    app_name="${raw_name:-$base_clean}"
-    app_name=$(echo "$app_name" | tr -cd 'a-zA-Z0-9._-')
-    app_id="io.lpk.${app_name,,}"
-    target_arch="$SYS_ARCH"
+local base_clean app_name app_id work_dir target_arch
+base_clean=$(basename "$source_input")
+base_clean="${base_clean%%.*}"
+app_name="${raw_name:-$base_clean}"
+app_name=$(echo "$app_name" | tr -cd 'a-zA-Z0-9._-')
+if [[ -z "$app_name" || "$app_name" == .* ]]; then
+echo -e "${RED}[-] Invalid package name (use letters, digits,'.', '_' or '-')${NC}" >&2
+return 1
+fi
+app_id="io.lpk.${app_name,,}"
+target_arch="$SYS_ARCH"
 
-    [[ -z "$out_pkg" ]] && out_pkg="${app_name}_${target_arch}.lpk"
+[[ -z "$out_pkg" ]] && out_pkg="${app_name}_${target_arch}.lpk"
 
-    if [[ -d "$source_input" && -f "$source_input/meta/manifest.json" && -d "$source_input/root" ]]; then
-        echo -e "${CYAN}-> Pre-structured LPK detected → ${BOLD}$out_pkg${NC}"
-        validate_manifest "$source_input/meta/manifest.json" || return 1
-        rm -f "$out_pkg"
-        mksquashfs "$source_input" "$out_pkg" -comp zstd -noappend -reproducible -quiet || return 1
-        cmd_sign "$out_pkg" "$DEFAULT_KEY"
-        return 0
-    fi
+if [[ -d "$source_input" && -f "$source_input/meta/manifest.json" && -d "$source_input/root" ]]; then
+echo -e "${CYAN}-> Pre-structured LPK detected → ${BOLD}$out_pkg${NC}"
+validate_manifest "$source_input/meta/manifest.json" || return 1
+rm -f "$out_pkg"
+mksquashfs "$source_input" "$out_pkg" -comp zstd -noappend -reproducible -quiet || return 1
+cmd_sign "$out_pkg" "$DEFAULT_KEY"
+return 0
+fi
 
-    work_dir=$(mktemp -d "/tmp/ulpm_build_XXXXXX")
-    mkdir -p "$work_dir/root" "$work_dir/meta"
+work_dir=$(mktemp -d "${ULPM_TMPDIR:-${TMPDIR:-/tmp}}/ulpm_build_XXXXXX")
+mkdir -p "$work_dir/root" "$work_dir/meta"
 
-    echo -e "${CYAN}-> Extracting payload...${NC}"
-    if ! extract_any_payload "$source_input" "$work_dir/root"; then
-        rm -rf "$work_dir"
-        return 1
-    fi
+echo -e "${CYAN}-> Extracting payload...${NC}"
+if ! extract_any_payload "$source_input" "$work_dir/root"; then
+rm -rf"$work_dir"
+return 1
+fi
 
-    local entries=("$work_dir/root"/*)
-    if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
-        mv "${entries[0]}"/* "$work_dir/root/" 2>/dev/null || true
-        rmdir "${entries[0]}" 2>/dev/null || true
-    fi
+local entries=("$work_dir/root"/*)
+if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}"] ]; then
+mv "${entries[0]}"/* "$work_dir/root/" 2>/dev/null|| true
+rmdir "${entries[0]}" 2>/dev/null || true
+fi
 
-    local detected_exec=""
-    while IFS= read -r f; do
-        local fname
-        fname=$(basename "$f")
-        if [[ "${fname,,}" =~ ^(${app_name,,}|${base_clean,,})$ ]]; then
-            detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
-            break
-        fi
-    done < <(find "$work_dir/root" -maxdepth 4 -type f -executable 2>/dev/null || true)
+local detected_exec="" f fname
+while IFS= read -r f; do
+fname=$(basename "$f")
+if[[ "${fname,,}" =~ ^(${app_name,,}|${base_clean,,})$ ]]; then
+detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
+break
+fi
+done < <(find "$work_dir/root" -maxdepth 4-type f -executable 2>/dev/null || true)
 
-    if [[ -z "$detected_exec" ]]; then
-        while IFS= read -r f; do
-            if file -b "$f" 2>/dev/null | grep -q "ELF.*executable"; then
-                detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
-                break
-            fi
-        done < <(find "$work_dir/root" -maxdepth 4 -type f -executable 2>/dev/null || true)
-    fi
+if[[ -z "$detected_exec" ]]; then
+while IFS= read -r f; do
+if file -b "$f"2>/dev/null | grep -q "ELF.*executable"; then
+detected_exec=$(realpath --relative-to="$work_dir/root" "$f")
+break
+fi
+done < <(find "$work_dir/root" -maxdepth 4 -type f -executable 2>/dev/null|| true)
+fi
 
-    if [[ -z "$detected_exec" ]]; then
-        detected_exec=$(find "$work_dir/root" -maxdepth 3 -type f -executable 2>/dev/null | head -n1 || true)
-        [[ -n "$detected_exec" ]] && detected_exec=$(realpath --relative-to="$work_dir/root" "$detected_exec")
-    fi
+if [[ -z "$detected_exec" ]]; then
+detected_exec=$(find "$work_dir/root" -maxdepth 3 -type f -executable 2>/dev/null | head -n1 || true)
+[[ -n "$detected_exec" ]] && detected_exec=$(realpath --relative-to="$work_dir/root" "$detected_exec")
+fi
 
-    if [[ -z "$detected_exec" ]]; then
-        echo -e "${RED}[-] No executable binary found${NC}" >&2
-        rm -rf "$work_dir"
-        return 1
-    fi
+if[[ -z "$detected_exec" ]]; then
+echo -e "${RED}[-] No executable binary found${NC}" >&2
+rm -rf "$work_dir"
+return 1
+fi
 
-    bundle_libs "$work_dir/root" "$work_dir/root/$detected_exec"
+bundle_libs "$work_dir/root" "$work_dir/root/$detected_exec"
 
-    local best_icon icon_manifest=""
-    best_icon=$(find "$work_dir/root" -type f \( -iname "*.png" -o -iname "*.svg" \) 2>/dev/null \
-        | grep -iE "512|256|128|logo|icon|app" | head -n1 || true)
-    if [[ -n "$best_icon" && -f "$best_icon" ]]; then
-        cp -f "$best_icon" "$work_dir/meta/icon.png"
-        icon_manifest="meta/icon.png"
-    fi
+local best_icon icon_manifest=""
+best_icon=$(find "$work_dir/root" -typef \( -iname "*.png" -o -iname "*.svg" \) 2>/dev/null \
+| grep -iE "512|256|128|logo|icon|app" | head -n1 || true)
+if [[ -n "$best_icon" && -f "$best_icon" ]]; then
+cp -f "$best_icon" "$work_dir/meta/icon.png"
+icon_manifest="meta/icon.png"
+fi
 
-    local is_chromium=false
-    if grep -qiE "chromium|electron" "$work_dir/root/$detected_exec" 2>/dev/null || \
-        [[ "$detected_exec" =~ (brave|chrome|chromium|electron) ]]; then
-        is_chromium=true
-    fi
+local is_chromium=false
+if grep -qiE "chromium|electron" "$work_dir/root/$detected_exec" 2>/dev/null || \
+[[ "$detected_exec" =~ (brave|chrome|chromium|electron) ]]; then
+is_chromium=true
+fi
 
-    cat > "$work_dir/meta/manifest.json" <<EOF
-{
-  "format_version": $ULPM_FORMAT_VERSION,
-  "id": "$app_id",
-  "name": "$app_name",
-  "version": "$version_hint",
-  "arch": "$target_arch",
-  "exec": "$detected_exec",
-  "icon": "$icon_manifest",
-  "chromium": $is_chromium,
-  "network": true
-}
-EOF
+# jq builds the manifest: names / paths are escaped properly (no heredoc injection).
+jq -n \
+--argjson fv "$ULPM_FORMAT_VERSION" \
+--arg id "$app_id" --arg name "$app_name" --arg version "$version_hint"\
+--arg arch "$target_arch" --arg exec "$detected_exec" --arg icon "$icon_manifest" \
+--argjson chromium "$is_chromium" \
+'{format_version:$fv, id:$id,name:$name, version:$version, arch:$arch,
+exec:$exec, icon:$icon, chromium:$chromium, network:true}' \
+> "$work_dir/meta/manifest.json"
 
-    echo -e "  ${CYAN}-> Creating SquashFS [${BOLD}$target_arch${NC}] → ${BOLD}$out_pkg${NC}"
-    rm -f "$out_pkg"
-    if ! mksquashfs "$work_dir" "$out_pkg" -comp zstd -noappend -reproducible -quiet; then
-        rm -rf "$work_dir"
-        return 1
-    fi
-    rm -rf "$work_dir"
+validate_manifest "$work_dir/meta/manifest.json" || { rm -rf "$work_dir"; return 1; }
 
-    cmd_sign "$out_pkg" "$DEFAULT_KEY"
-    return 0
+echo-e "  ${CYAN}-> Creating SquashFS [${BOLD}$target_arch${NC}${CYAN}] → ${BOLD}$out_pkg${NC}"
+rm -f "$out_pkg"
+if ! mksquashfs"$work_dir" "$out_pkg" -comp zstd -noappend -reproducible -quiet;then
+rm -rf "$work_dir"
+return 1
+fi
+rm -rf "$work_dir"
+
+cmd_sign "$out_pkg" "$DEFAULT_KEY"
+return 0
 }
 
 lpk_pack_from_apt() {
-    local pkg_input="${1:-}"
-    local app_name_hint="${2:-}"
-    local out_pkg="${3:-}"
+local pkg_input="${1:-}"
+local app_name_hint="${2:-}"
+local out_pkg="${3:-}"
 
-    if [[ -z "$pkg_input" ]]; then
-        echo -e "${RED}[-] Usage: ulpm deb-pack <package|file.deb> [name]${NC}" >&2
-        return 1
-    fi
+if[[ -z "$pkg_input" ]]; then
+echo -e "${RED}[-] Usage: ulpm deb-pack <package|file.deb> [name]${NC}" >&2
+return 1
+fi
 
-    if ! command -v apt-get &>/dev/null || ! command -v apt-cache &>/dev/null; then
-        echo -e "${RED}[-] apt-get / apt-cache required${NC}" >&2
-        return 1
-    fi
+if ! command-v apt-get &>/dev/null || ! command -v apt-cache &>/dev/null;then
+echo -e "${RED}[-] apt-get / apt-cache required${NC}" >&2
+return 1
+fi
 
-    local build_dir deb_dir root_dir
-    build_dir=$(mktemp -d "/tmp/ulpm_apt_XXXXXX")
-    deb_dir="$build_dir/debs"
-    root_dir="$build_dir/root"
-    mkdir -p "$deb_dir" "$root_dir"
+local build_dir deb_dir root_dir
+build_dir=$(mktemp -d"${ULPM_TMPDIR:-${TMPDIR:-/tmp}}/ulpm_apt_XXXXXX")
+deb_dir="$build_dir/debs"
+root_dir="$build_dir/root"
+mkdir -p"$deb_dir" "$root_dir"
 
-    local target_pkg="$pkg_input"
-    if [[ -f "$pkg_input" && "$pkg_input" =~ \.deb$ ]]; then
-        target_pkg=$(dpkg-deb -f "$pkg_input" Package 2>/dev/null || basename "$pkg_input" .deb)
-        cp -f "$pkg_input" "$deb_dir/"
-    fi
+local target_pkg="$pkg_input"
+if[[ -f "$pkg_input" && "$pkg_input" =~ \.deb$ ]]; then
+target_pkg=$(dpkg-deb -f "$pkg_input" Package 2>/dev/null || basename "$pkg_input" .deb)
+cp -f "$pkg_input" "$deb_dir/"
+fi
 
-    local app_name="${app_name_hint:-$target_pkg}"
-    echo -e "${BLUE}::${NC} Fetching APT dependencies for '${target_pkg}'..."
+local app_name="${app_name_hint:-$target_pkg}"
+echo -e "${BLUE}::${NC} Fetching APT dependencies for '${target_pkg}'..."
 
-    (
-        cd "$deb_dir" || exit 1
-        [[ ! -f "$pkg_input" ]] && apt-get download "$target_pkg" 2>/dev/null || true
-        apt-cache depends --recurse --no-recommends --no-suggests "$target_pkg" 2>/dev/null \
-            | grep -E "Depends:" | awk '{print $2}' | grep -v "<" | sort -u \
-            | grep -vE "^(libc6|base-files|dpkg|debconf|sensible-utils|init-system-helpers)$" \
-            | xargs -r apt-get download 2>/dev/null || true
-    )
+(
+cd "$deb_dir" || exit 1
+[[ ! -f "$pkg_input" ]] && apt-get download "$target_pkg" 2>/dev/null || true
+apt-cache depends --recurse --no-recommends --no-suggests "$target_pkg" 2>/dev/null \
+| grep-E "Depends:" | awk '{print $2}' | grep -v "<" | sort -u \
+| grep -vE "^(libc6|base-files|dpkg|debconf|sensible-utils|init-system-helpers)$" \
+| xargs -r apt-get download 2>/dev/null || true
+)
 
-    for deb in "$deb_dir"/*.deb; do
-        [[ -f "$deb" ]] && dpkg-deb -x "$deb" "$root_dir"
-    done
+local deb
+for deb in "$deb_dir"/*.deb; do
+[[ -f "$deb" ]] && dpkg-deb -x "$deb" "$root_dir"
+done
 
-    find "$root_dir" -type f \( -name "ld-linux*.so*" -o -name "libc.so*" \) -delete 2>/dev/null || true
+find "$root_dir" -type f \( -name "ld-linux*.so*" -o -name "libc.so*" \) -delete 2>/dev/null || true
 
-    local pack_status=0
-    lpk_pack "$root_dir" "$app_name" "$out_pkg" || pack_status=$?
-    rm -rf "$build_dir"
-    return $pack_status
+local pack_status=0
+lpk_pack "$root_dir" "$app_name" "$out_pkg" || pack_status=$?
+rm -rf "$build_dir"
+return $pack_status
 }
 
 # ============================================================
 # Installation & Runtime
 # ============================================================
 
+STAGE_PKG=""
+
+release_inst_mount() {
+if[[ -n "${INST_MNT_DIR:-}" ]]; then
+unmount_dir "$INST_MNT_DIR"
+INST_MNT_DIR=""
+fi
+}
+
+drop_stage() {
+if[[ -n "${STAGE_PKG:-}" ]]; then
+rm -f -- "$STAGE_PKG" 2>/dev/null || true
+STAGE_PKG=""
+fi
+}
+
 lpk_install_file() {
-    local pkg="$1"
-    local repo_origin="${2:-local}"
-    local version_override="${3:-}"
+local pkg="$1"
+local repo_origin="${2:-local}"
+local version_override="${3:-}"
 
-    if ! verify_package_signature "$pkg"; then
-        echo -e "${RED}[-] Installation aborted: signature check failed${NC}" >&2
-        return 1
-    fi
+pkg="$(normalize_target "$pkg")" || { echo -e "${RED}[-] Invalid path${NC}" >&2; return 1; }
+if [[ ! -f "$pkg" ]]; then
+echo -e "${RED}[-] Package not found: $pkg${NC}" >&2
+return 1
+fi
 
-    # Key pinning: an update must be signed by the key used at first install.
-    if [[ -n "${ULPM_PINNED_FPR:-}" && "$LAST_SIG_FPR" != "$ULPM_PINNED_FPR" ]]; then
-        local got="${LAST_SIG_FPR:0:16}"
-        echo -e "${RED}[-] Update aborted: signing key differs from the one pinned at first install${NC}" >&2
-        echo -e "${GRAY}    pinned: ${ULPM_PINNED_FPR:0:16}...  got: ${got:-unsigned}${NC}" >&2
-        echo -e "${GRAY}    If this change is legitimate: ulpm remove <id>, then install again.${NC}" >&2
-        return 1
-    fi
+#Work on a private staged copy: what is verified is exactly what gets
+# mounted and installed (no swap betweencheck and use).
+STAGE_PKG="$(mktemp "$ULPM_APPS/.stage.XXXXXX")"
+if ! cp -f -- "$pkg" "$STAGE_PKG"; then
+echo -e "${RED}[-] Cannot copy package into $ULPM_APPS${NC}" >&2
+drop_stage
+return 1
+fi
 
-    local mnt_tmp
-    mnt_tmp=$(mktemp -d /tmp/ulpm_inst_XXXXXX)
+if ! verify_package_signature "$STAGE_PKG"; then
+echo -e "${RED}[-] Installation aborted: signature check failed${NC}" >&2
+drop_stage
+return 1
+fi
 
-    cleanup_inst_mount() {
-        "$FUSERMOUNT" -u "$mnt_tmp" 2>/dev/null || "$FUSERMOUNT" -u -z "$mnt_tmp" 2>/dev/null || true
-        rmdir "$mnt_tmp" 2>/dev/null || true
-    }
+# Key pinning: an update must be signed by the key used atfirst install.
+if[[ -n "${ULPM_PINNED_FPR:-}" && "$LAST_SIG_FPR" != "$ULPM_PINNED_FPR" ]]; then
+local got="${LAST_SIG_FPR:0:16}"
+echo -e "${RED}[-] Update aborted: signingkey differs from the one pinned at first install${NC}" >&2
+echo -e "${GRAY}pinned: ${ULPM_PINNED_FPR:0:16}...  got: ${got:-unsigned}${NC}" >&2
+echo -e "${GRAY}    If this change is legitimate: ulpm remove<id>, then install again.${NC}" >&2
+drop_stage
+return 1
+fi
 
-    if ! squashfuse "$pkg" "$mnt_tmp" 2>/dev/null; then
-        echo -e "${RED}[-] Failed to mount package${NC}" >&2
-        rmdir "$mnt_tmp" 2>/dev/null || true
-        return 1
-    fi
+local mnt_tmp
+mnt_tmp=$(mktemp -d "${ULPM_TMPDIR:-${TMPDIR:-/tmp}}/ulpm_inst_XXXXXX")
+INST_MNT_DIR="$mnt_tmp"
 
-    local manifest="$mnt_tmp/meta/manifest.json"
-    if [[ ! -f "$manifest" ]] || ! validate_manifest "$manifest"; then
-        cleanup_inst_mount
-        return 1
-    fi
+if ! squashfuse "$STAGE_PKG" "$mnt_tmp" 2>/dev/null; then
+echo -e "${RED}[-] Failed to mount package${NC}" >&2
+rmdir "$mnt_tmp" 2>/dev/null || true
+INST_MNT_DIR=""
+drop_stage
+return 1
+fi
 
-    local id name version icon_file exec_file
-    id=$(jq -r '.id' "$manifest")
-    name=$(jq -r '.name' "$manifest")
-    version=$(jq -r '.version // "1.0.0"' "$manifest")
-    icon_file=$(jq -r '.icon // empty' "$manifest")
-    exec_file=$(jq -r '.exec' "$manifest")
+local manifest="$mnt_tmp/meta/manifest.json"
+if[[ ! -f "$manifest" ]] || ! validate_manifest "$manifest"; then
+release_inst_mount
+drop_stage
+return 1
+fi
 
-    local package_root exec_real
-    package_root=$(realpath -e -- "$mnt_tmp")
-    exec_real=$(realpath -e -- "$package_root/root/$exec_file" 2>/dev/null || true)
-    if [[ -z "$exec_real" || ! -x "$exec_real" ]]; then
-        echo -e "${RED}[-] Manifest executable missing or not executable${NC}" >&2
-        cleanup_inst_mount
-        return 1
-    fi
+local id name version icon_file exec_file
+id=$(jq -r '.id' "$manifest")
+name=$(jq -r '.name' "$manifest")
+version=$(jq -r '.version // "1.0.0"' "$manifest")
+icon_file=$(jq-r '.icon // empty' "$manifest")
+exec_file=$(jq -r '.exec' "$manifest")
 
-    echo -e "${BLUE}::${NC} Installing ${BOLD}$name${NC} ($id)..."
+local package_root exec_real
+package_root=$(realpath -e -- "$mnt_tmp")
+exec_real=$(realpath -e -- "$package_root/root/$exec_file" 2>/dev/null || true)
+if[[ -z "$exec_real" || ! -x "$exec_real" ]]; then
+echo -e "${RED}[-] Manifest executable missing or not executable${NC}" >&2
+release_inst_mount
+drop_stage
+return 1
+fi
 
-    local target_pkg="$ULPM_APPS/$id.lpk"
-    cp -f "$pkg" "$target_pkg"
+echo -e "${BLUE}::${NC} Installing ${BOLD}$name${NC} ($id)..."
 
-    local target_icon="$id"
-    if [[ -n "$icon_file" && -f "$package_root/$icon_file" ]]; then
-        cp -f "$package_root/$icon_file" "$ICON_DIR/$id.png"
-        target_icon="$ICON_DIR/$id.png"
-    fi
+# Icon: must resolve INSIDE the package (no symlink / .. escape to host files).
+local target_icon="$id" icon_real=""
+if [[ -n "$icon_file" ]]; then
+icon_real=$(realpath -e -- "$package_root/$icon_file" 2>/dev/null ||true)
+if[[ -n "$icon_real" && -f "$icon_real" && "$icon_real" == "$package_root/"* ]]; then
+cp -f -- "$icon_real" "$ICON_DIR/$id.png"
+target_icon="$ICON_DIR/$id.png"
+fi
+fi
 
-    cleanup_inst_mount
+release_inst_mount
 
-    cat > "$DESKTOP_DIR/ulpm-$id.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=$(desktop_entry_escape "$name")
-Exec=$(desktop_exec_quote "$ULPM_BIN") run "$id" %U
-Icon=$target_icon
-Terminal=false
-Categories=Utility;Network;Development;AudioVideo;Graphics;
-StartupNotify=true
-EOF
+local target_pkg="$ULPM_APPS/$id.lpk"
+chmod644 "$STAGE_PKG"
+mv -f -- "$STAGE_PKG" "$target_pkg"
+STAGE_PKG=""
 
-    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+write_desktop_entry "$id" "$name" "$target_icon"
 
-    local db_version="${version_override:-$version}"
-    db_replace_entry "$id" "${id}|${name}|${db_version}|${repo_origin}|$(date +%s)|${LAST_SIG_FPR:-}"
+update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 
-    echo -e "${GREEN}✔ '$name' installed successfully${NC}"
+local db_version="${version_override:-$version}"
+db_replace_entry "$id" "${id}|${name}|${db_version}|${repo_origin}|$(date +%s)|${LAST_SIG_FPR:-}"
+
+echo -e "${GREEN}✔ '$name' installed successfully${NC}"
 }
 
 # Prints the host path of the session bus socket (unix:path= addresses only).
 session_bus_socket() {
-    local run_user_dir="$1"
-    local addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}"
-    if [[ "$addr" =~ ^unix:path=([^,]+) ]] && [[ -S "${BASH_REMATCH[1]}" ]]; then
-        echo "${BASH_REMATCH[1]}"
-        return 0
-    fi
-    return 1
+local run_user_dir="$1"
+local addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}"
+if[[ "$addr" =~ ^unix:path=([^,]+) ]] &&[[ -S "${BASH_REMATCH[1]}" ]]; then
+echo "${BASH_REMATCH[1]}"
+return 0
+fi
+return 1
 }
 
-# Starts a filtering xdg-dbus-proxy; on success RUN_DBUS_DIR/bus is the
+# Starts a filtering xdg-dbus-proxy; on successRUN_DBUS_DIR/bus is the
 # filtered socket and RUN_DBUS_PID the proxy process.
 start_dbus_proxy() {
-    local run_user_dir="$1" app_id="$2"
-    local real_sock i
+local run_user_dir="$1" app_id="$2"
+local real_sock i
 
-    command -v xdg-dbus-proxy &>/dev/null || return 1
-    real_sock=$(session_bus_socket "$run_user_dir") || return 1
+command -v xdg-dbus-proxy &>/dev/null || return 1
+real_sock=$(session_bus_socket "$run_user_dir") || return 1
 
-    RUN_DBUS_DIR=$(mktemp -d "$run_user_dir/ulpm-dbus.XXXXXX" 2>/dev/null) || { RUN_DBUS_DIR=""; return 1; }
+RUN_DBUS_DIR=$(mktemp -d "$run_user_dir/ulpm-dbus.XXXXXX" 2>/dev/null) || { RUN_DBUS_DIR=""; return 1; }
 
-    local extra=()
-    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-        # shellcheck disable=SC2206
-        extra=($ULPM_DBUS_EXTRA)
-    fi
+local extra=()
+if[[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+# shellcheck disable=SC2206
+extra=($ULPM_DBUS_EXTRA)
+fi
 
-    xdg-dbus-proxy "unix:path=$real_sock" "$RUN_DBUS_DIR/bus" --filter \
-        --own="${app_id}.*" \
-        --own='org.mpris.MediaPlayer2.*' \
-        --talk=org.freedesktop.Notifications \
-        --talk=org.freedesktop.ScreenSaver \
-        --talk=org.freedesktop.PowerManagement.Inhibit \
-        --talk=org.freedesktop.portal.Desktop \
-        --talk=org.freedesktop.portal.Documents \
-        --talk=org.kde.StatusNotifierWatcher \
-        ${extra[@]+"${extra[@]}"} &
-    RUN_DBUS_PID=$!
+xdg-dbus-proxy "unix:path=$real_sock" "$RUN_DBUS_DIR/bus" --filter \
+--own="${app_id}.*" \
+--own='org.mpris.MediaPlayer2.*' \
+--talk=org.freedesktop.Notifications \
+--talk=org.freedesktop.ScreenSaver \
+--talk=org.freedesktop.PowerManagement.Inhibit \
+--talk=org.freedesktop.portal.Desktop \
+--talk=org.freedesktop.portal.Documents \
+--talk=org.kde.StatusNotifierWatcher \
+${extra[@]+"${extra[@]}"} &
+RUN_DBUS_PID=$!
 
-    for i in {1..30}; do
-        [[ -S "$RUN_DBUS_DIR/bus" ]] && break
-        kill -0 "$RUN_DBUS_PID" 2>/dev/null || break
-        sleep 0.1
-    done
+for i in {1..30}; do
+[[ -S "$RUN_DBUS_DIR/bus" ]] && break
+kill -0 "$RUN_DBUS_PID" 2>/dev/null || break
+sleep 0.1
+done
 
-    if [[ ! -S "$RUN_DBUS_DIR/bus" ]]; then
-        cleanup_instance_dbus_only
-        return 1
-    fi
-    return 0
+if[[ ! -S "$RUN_DBUS_DIR/bus" ]]; then
+cleanup_instance_dbus_only
+return 1
+fi
+return 0
 }
 
-cleanup_instance_dbus_only() {
-    if [[ -n "${RUN_DBUS_PID:-}" ]]; then
-        kill "$RUN_DBUS_PID" 2>/dev/null || true
-        wait "$RUN_DBUS_PID" 2>/dev/null || true
-        RUN_DBUS_PID=""
-    fi
-    if [[ -n "${RUN_DBUS_DIR:-}" ]]; then
-        rm -rf -- "$RUN_DBUS_DIR" 2>/dev/null || true
-        RUN_DBUS_DIR=""
-    fi
-}
+# Host variables forwarded into thesandbox when ULPM_CLEARENV=true.
+ENV_WHITELIST=(
+HOME USER LOGNAME LANGLANGUAGE TZ TERM COLORTERM
+DISPLAY XAUTHORITY WAYLAND_DISPLAY
+XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
+GDK_BACKEND GDK_SCALE GDK_DPI_SCALE GTK_THEME
+QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR
+XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
+__GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD __VK_LAYER_NV_optimus
+VK_ICD_FILENAMES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
+)
 
 lpk_run_isolated() {
-    local force_offline=false
-    while [[ "${1:-}" =~ ^-- ]]; do
-        case "$1" in
-            --offline|--no-net) force_offline=true; shift ;;
-            *) break ;;
-        esac
-    done
+local force_offline=false
+while [[ "${1:-}" =~ ^-- ]]; do
+case "$1" in
+--offline|--no-net) force_offline=true; shift ;;
+*) break ;;
+esac
+done
 
-    local target="${1:-}"
-    if [[ -z "$target" ]]; then
-        echo -e "${RED}[-] No target specified${NC}" >&2
-        return 1
-    fi
-    shift || true
+local target="${1:-}"
+if [[ -z "$target" ]];then
+echo -e "${RED}[-] No target specified${NC}" >&2
+return 1
+fi
+shift || true
 
-    local pkg_path=""
-    if [[ -f "$target" ]]; then
-        pkg_path="$(realpath "$target")"
-    elif [[ -f "$ULPM_APPS/$target.lpk" ]]; then
-        pkg_path="$ULPM_APPS/$target.lpk"
-    elif [[ -f "$ULPM_APPS/io.lpk.${target,,}.lpk" ]]; then
-        pkg_path="$ULPM_APPS/io.lpk.${target,,}.lpk"
-    elif [[ "$target" =~ ^https?:// ]] || [[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-        pkg_path=$(resolve_and_fetch_cached "$target") || return 1
-    else
-        echo -e "${RED}[-] Target '$target' could not be resolved${NC}" >&2
-        return 1
-    fi
+# Accept plain paths (any cwd), file:// URIs (file managers)and ids.
+if ! target="$(normalize_target "$target")"; then
+echo -e "${RED}[-] Invalid target${NC}" >&2
+return 1
+fi
 
-    if ! verify_package_signature "$pkg_path"; then
-        echo -e "${RED}[-] Launch aborted: signature check failed${NC}" >&2
-        return 1
-    fi
+local pkg_path=""
+if [[ -f "$target" ]]; then
+pkg_path="$(realpath -- "$target")"
+elif[[ -f "$ULPM_APPS/$target.lpk" ]]; then
+pkg_path="$ULPM_APPS/$target.lpk"
+elif[[ -f "$ULPM_APPS/io.lpk.${target,,}.lpk" ]]; then
+pkg_path="$ULPM_APPS/io.lpk.${target,,}.lpk"
+elif[[ "$target" == *.lpk && ! "$target" =~ ^https?:// ]]; then
+echo -e "${RED}[-] File not found: $target${NC}" >&2
+return1
+elif [[ "$target" =~ ^https?:// ]] ||[[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]];then
+pkg_path=$(resolve_and_fetch_cached "$target") || return 1
+else
+echo -e "${RED}[-] Target '$target' could not be resolved${NC}" >&2
+return 1
+fi
 
-    RUN_MNT_DIR=$(mktemp -d /tmp/ulpm_run_XXXXXX)
-    trap 'cleanup_instance; cleanup_temp' EXIT
+if ! verify_package_signature "$pkg_path"; then
+echo -e "${RED}[-] Launch aborted: signature check failed${NC}" >&2
+return 1
+fi
 
-    if ! squashfuse "$pkg_path" "$RUN_MNT_DIR" 2>/dev/null; then
-        echo -e "${RED}[-] Failed to mount SquashFS${NC}" >&2
-        cleanup_instance
-        return 1
-    fi
+RUN_MNT_DIR=$(mktemp -d "${ULPM_TMPDIR:-${TMPDIR:-/tmp}}/ulpm_run_XXXXXX")
+trap 'cleanup_instance; cleanup_temp' EXIT
 
-    local manifest="$RUN_MNT_DIR/meta/manifest.json"
-    if [[ ! -f "$manifest" ]] || ! validate_manifest "$manifest"; then
-        cleanup_instance
-        return 1
-    fi
+if ! squashfuse "$pkg_path" "$RUN_MNT_DIR"2>/dev/null; then
+echo -e "${RED}[-] Failed to mount SquashFS${NC}">&2
+cleanup_instance
+return 1
+fi
 
-    local app_id exec_bin is_chromium allow_net
-    app_id=$(jq -r '.id' "$manifest")
-    exec_bin=$(jq -r '.exec' "$manifest")
-    is_chromium=$(jq -r '.chromium // false' "$manifest")
-    allow_net=$(jq -r '.network // true' "$manifest")
+local manifest="$RUN_MNT_DIR/meta/manifest.json"
+if [[ ! -f "$manifest" ]] || ! validate_manifest "$manifest"; then
+cleanup_instance
+return 1
+fi
 
-    local app_data_dir="$HOME/.var/app/$app_id"
-    mkdir -p "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
+local app_id exec_bin is_chromium allow_net
+app_id=$(jq -r '.id' "$manifest")
+exec_bin=$(jq -r '.exec' "$manifest")
+is_chromium=$(jq -r '.chromium // false' "$manifest")
+allow_net=$(jq -r '.network // true' "$manifest")
 
-    local run_uid run_user_dir dl_dir exec_dir app_ld_path host_ca_bundle=""
-    run_uid="$(id -u)"
-    run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
-    dl_dir="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
-    # xdg-user-dir falls back to $HOME when unset: never expose the whole home.
-    if [[ -z "$dl_dir" || "$dl_dir" == "$HOME" || "$dl_dir" == "$HOME/" ]]; then
-        dl_dir="$HOME/Downloads"
-    fi
-    mkdir -p "$dl_dir"
-    exec_dir="$(dirname "/app/$exec_bin")"
-    app_ld_path="/app/lib:/app/usr/lib:/app/usr/lib/x86_64-linux-gnu:/app/usr/lib/aarch64-linux-gnu:$exec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+local app_data_dir="$HOME/.var/app/$app_id"
+mkdir -p "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
 
-    local ca
-    for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
-        [[ -f "$ca" ]] && { host_ca_bundle="$ca"; break; }
-    done
+local run_uid run_user_dir dl_dir exec_dir app_ld_path host_ca_bundle=""
+run_uid="$(id -u)"
+run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
+dl_dir="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+# xdg-user-dir falls back to $HOME when unset: never expose the whole home.
+if[[ -z "$dl_dir" || "$dl_dir" == "$HOME" || "$dl_dir" == "$HOME/" ]]; then
+dl_dir="$HOME/Downloads"
+fi
+mkdir-p "$dl_dir"
+exec_dir="$(dirname "/app/$exec_bin")"
+app_ld_path="/app/lib:/app/usr/lib:/app/usr/lib/x86_64-linux-gnu:/app/usr/lib/aarch64-linux-gnu:$exec_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-    local chromium_flags=()
-    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$RUN_MNT_DIR/root/$exec_bin" 2>/dev/null; then
-        chromium_flags=(
-            --no-sandbox
-            --test-type
-            --disable-gpu-sandbox
-            --disable-setuid-sandbox
-            --log-level=3
-        )
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            chromium_flags+=(--ozone-platform-hint=auto)
-        fi
-    fi
+local ca
+forca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
+if[[ -f "$ca" ]]; then
+host_ca_bundle="$ca"
+break
+fi
+done
 
-    # ---- Base sandbox ------------------------------------------------------
-    local bwrap_args=(
-        --die-with-parent
-        --new-session
-        --cap-drop ALL
-        --unshare-uts
-        --ro-bind /usr /usr
-        --ro-bind-try /lib /lib
-        --ro-bind-try /lib64 /lib64
-        --ro-bind-try /bin /bin
-        --ro-bind-try /sbin /sbin
-    )
+local chromium_flags=()
+if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$RUN_MNT_DIR/root/$exec_bin" 2>/dev/null; then
+chromium_flags=(
+--no-sandbox
+--test-type
+--disable-gpu-sandbox
+--disable-setuid-sandbox
+--log-level=3
+)
+if[[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+chromium_flags+=(--ozone-platform-hint=auto)
+fi
+fi
 
-    if [[ "$ULPM_SHARE_PID" != "true" ]]; then
-        bwrap_args+=(--unshare-pid)
-    fi
-    # SysV shared memory is how X11 clients talk to the X server (MIT-SHM):
-    # the IPC namespace is kept shared whenever an X11 display is in use.
-    if [[ -z "${DISPLAY:-}" ]]; then
-        bwrap_args+=(--unshare-ipc)
-    fi
+# ---- Base sandbox ------------------------------------------------------
+localbwrap_args=(
+--die-with-parent
+--new-session
+--cap-drop ALL
+--unshare-uts
+--unshare-cgroup-try
+--ro-bind /usr /usr
+--ro-bind-try /lib /lib
+--ro-bind-try /lib64 /lib64
+--ro-bind-try /bin /bin
+--ro-bind-try /sbin /sbin
+)
 
-    # /etc: only what applications actually need, not the whole directory.
-    local etc_item
-    for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
-        ssl ca-certificates pki crypto-policies fonts X11 xdg gtk-2.0 gtk-3.0 pulse vulkan glvnd \
-        localtime timezone os-release machine-id passwd group nsswitch.conf hosts; do
-        bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
-    done
+if[[ "$ULPM_SHARE_PID" != "true" ]]; then
+bwrap_args+=(--unshare-pid)
+fi
+# SysV shared memory is how X11 clients talk to the X server (MIT-SHM):
+# the IPC namespaceis kept shared whenever an X11 display is in use.
+if [[ -z "${DISPLAY:-}" ]]; then
+bwrap_args+=(--unshare-ipc)
+fi
 
-    bwrap_args+=(
-        --ro-bind /sys /sys
-        --proc /proc
-        --dev /dev
-        --tmpfs /dev/shm
-        --tmpfs /tmp
-        --dev-bind-try /dev/dri /dev/dri
-        --ro-bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
-        --ro-bind-try /usr/share/fonts /usr/share/fonts
-        --ro-bind-try /usr/share/themes /usr/share/themes
-        --ro-bind-try /usr/share/icons /usr/share/icons
-        --perms 0700 --dir "$run_user_dir"
-        --bind "$dl_dir" "$dl_dir"
-        --bind "$app_data_dir/config" "$HOME/.config"
-        --bind "$app_data_dir/data" "$HOME/.local/share"
-        --bind "$app_data_dir/cache" "$HOME/.cache"
-        --ro-bind "$RUN_MNT_DIR/root" /app
-    )
+# /etc: only what applications actually need, notthe whole directory.
+local etc_item
+for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
+ssl ca-certificates pki crypto-policies fontsX11 xdg gtk-2.0 gtk-3.0 pulse vulkan glvnd \
+localtimetimezone os-release machine-id passwd group nsswitch.conf hosts; do
+bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
+done
 
-    # Theme / font / icon binds must come AFTER the app config bind above,
-    # otherwise the bind on ~/.config would cover them.
-    bwrap_args+=(
-        --ro-bind-try "$HOME/.icons" "$HOME/.icons"
-        --ro-bind-try "$HOME/.themes" "$HOME/.themes"
-        --ro-bind-try "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-3.0"
-        --ro-bind-try "$HOME/.config/fontconfig" "$HOME/.config/fontconfig"
-    )
+bwrap_args+=(
+--ro-bind /sys /sys
+--proc /proc
+--dev /dev
+--tmpfs /dev/shm
+--tmpfs /tmp
+--dev-bind-try /dev/dri /dev/dri
+--ro-bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
+--ro-bind-try/usr/share/fonts /usr/share/fonts
+--ro-bind-try /usr/share/themes /usr/share/themes
+--ro-bind-try /usr/share/icons /usr/share/icons
+--perms 0700 --dir "$run_user_dir"
+--bind "$dl_dir" "$dl_dir"
+--bind "$app_data_dir/config" "$HOME/.config"
+--bind "$app_data_dir/data" "$HOME/.local/share"
+--bind "$app_data_dir/cache" "$HOME/.cache"
+--ro-bind "$RUN_MNT_DIR/root" /app
+)
 
-    # ---- Display: X11 (primary) and Wayland (optional) --------------------
-    if [[ -n "${DISPLAY:-}" ]]; then
-        local x_sock
-        if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
-            x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
-            bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
-        else
-            bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
-        fi
-        local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
-        if [[ -f "$xauth_file" ]]; then
-            bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
-        fi
-    fi
+# Theme / font / icon binds must come AFTER the app config bind above,
+# otherwise the bind on ~/.config would cover them.
+bwrap_args+=(
+--ro-bind-try "$HOME/.icons" "$HOME/.icons"
+--ro-bind-try "$HOME/.themes" "$HOME/.themes"
+--ro-bind-try "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-3.0"
+--ro-bind-try "$HOME/.config/fontconfig""$HOME/.config/fontconfig"
+)
 
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-        local wayland_sock
-        if [[ "$WAYLAND_DISPLAY" == /* ]]; then
-            wayland_sock="$WAYLAND_DISPLAY"
-        else
-            wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
-        fi
-        bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
-    fi
+# Dynamic file-passing: bind existing arguments passed to the CLI intothe sandbox
+local arg
+for arg in "$@"; do
+if[[ -e "$arg" ]]; then
+local real_arg
+real_arg="$(realpath -- "$arg" 2>/dev/null || true)"
+if [[ -n "$real_arg" && -e "$real_arg" ]]; then
+bwrap_args+=(--bind-try "$real_arg" "$real_arg")
+fi
+fi
+done
 
-    # ---- Audio: individual sockets instead of the whole runtime dir -------
-    local pulse_sock="$run_user_dir/pulse/native"
-    if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
-        pulse_sock="${BASH_REMATCH[1]}"
-    fi
-    bwrap_args+=(
-        --bind-try "$pulse_sock" "$pulse_sock"
-        --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
-    )
+# ---- Display: X11 (primary) and Wayland (optional) --------------------
+if [[ -n "${DISPLAY:-}" ]]; then
+local x_sock
+if[[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
+x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
+bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
+else
+bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+fi
+local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+if[[ -f "$xauth_file" ]]; then
+bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+fi
+fi
 
-    # ---- Session D-Bus -----------------------------------------------------
-    case "$ULPM_DBUS_MODE" in
-        none)
-            ;;
-        full)
-            local full_sock
-            if full_sock=$(session_bus_socket "$run_user_dir"); then
-                bwrap_args+=(--bind "$full_sock" "$run_user_dir/bus")
-            else
-                echo -e "${YELLOW}[!] No session bus socket found, D-Bus not exposed${NC}" >&2
-            fi
-            ;;
-        *)
-            if start_dbus_proxy "$run_user_dir" "$app_id"; then
-                bwrap_args+=(--bind "$RUN_DBUS_DIR/bus" "$run_user_dir/bus")
-            else
-                echo -e "${YELLOW}[!] Session D-Bus not exposed (xdg-dbus-proxy unavailable or no session bus).${NC}" >&2
-                echo -e "${GRAY}    Set ULPM_DBUS_MODE=full to share the real session bus.${NC}" >&2
-            fi
-            ;;
-    esac
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+local wayland_sock
+if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+wayland_sock="$WAYLAND_DISPLAY"
+else
+wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+fi
+bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
+fi
 
-    # ---- GPU ---------------------------------------------------------------
-    local dev
-    for dev in /dev/nvidia*; do
-        if [[ -e "$dev" ]]; then
-            bwrap_args+=(--dev-bind "$dev" "$dev")
-        fi
-    done
+# ---- Audio: individual sockets instead of the whole runtimedir -------
+local pulse_sock="$run_user_dir/pulse/native"
+if[[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
+pulse_sock="${BASH_REMATCH[1]}"
+fi
+bwrap_args+=(
+--bind-try "$pulse_sock" "$pulse_sock"
+--bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
+)
 
-    # ---- Network -----------------------------------------------------------
-    if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
-        bwrap_args+=(--unshare-net)
-    else
-        bwrap_args+=(
-            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
-            --ro-bind-try /run/resolvconf /run/resolvconf
-            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
-        )
-    fi
+# ---- Session D-Bus -----------------------------------------------------
+case "$ULPM_DBUS_MODE" in
+none)
+;;
+full)
+local full_sock
+if full_sock=$(session_bus_socket "$run_user_dir");then
+bwrap_args+=(--bind "$full_sock" "$run_user_dir/bus")
+else
+echo -e "${YELLOW}[!] No session bus socket found, D-Bus not exposed${NC}" >&2
+fi
+;;
+*)
+if start_dbus_proxy "$run_user_dir" "$app_id"; then
+bwrap_args+=(--bind "$RUN_DBUS_DIR/bus" "$run_user_dir/bus")
+else
+local fallback_sock
+if fallback_sock=$(session_bus_socket "$run_user_dir"); then
+echo -e "${YELLOW}[!] xdg-dbus-proxy unavailable: falling back todirect D-Bus access.${NC}" >&2
+bwrap_args+=(--bind "$fallback_sock" "$run_user_dir/bus")
+else
+echo -e "${YELLOW}[!] SessionD-Bus not exposed (no session bus found).${NC}" >&2
+fi
+fi
+;;
+esac
 
-    # ---- Environment -------------------------------------------------------
-    local env_args=(
-        --unsetenv GITHUB_TOKEN
-        --setenv PATH "/app/bin:/app/usr/bin:/usr/local/bin:/usr/bin:/bin"
-        --setenv XDG_RUNTIME_DIR "$run_user_dir"
-        --setenv XDG_CONFIG_DIRS "/app/etc/xdg:/etc/xdg"
-        --setenv XDG_DATA_DIRS "/app/usr/share:/app/share:/usr/local/share:/usr/share"
-        --setenv PULSE_SERVER "${PULSE_SERVER:-unix:$pulse_sock}"
-        --setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir"
-        --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
-        --setenv LD_LIBRARY_PATH "$app_ld_path"
-    )
-    if [[ -n "$host_ca_bundle" ]]; then
-        env_args+=(--setenv SSL_CERT_FILE "$host_ca_bundle")
-    fi
+# ---- GPU ---------------------------------------------------------------
+local dev
+for devin /dev/nvidia*; do
+if [[ -e "$dev" ]]; then
+bwrap_args+=(--dev-bind "$dev" "$dev")
+fi
+done
 
-    local rc=0
-    bwrap "${bwrap_args[@]}" "${env_args[@]}" \
-        --chdir /app \
-        "/app/$exec_bin" ${chromium_flags[@]+"${chromium_flags[@]}"} "$@" || rc=$?
+# ---- Network-----------------------------------------------------------
+if[[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
+bwrap_args+=(--unshare-net)
+else
+bwrap_args+=(
+--ro-bind-try /etc/resolv.conf /etc/resolv.conf
+--ro-bind-try /run/resolvconf /run/resolvconf
+--ro-bind-try /run/systemd/resolve /run/systemd/resolve
+)
+fi
 
-    cleanup_instance
-    trap cleanup_temp EXIT
-    return "$rc"
+# ---- Environment -------------------------------------------------------
+# Default: the app does NOT inheritthe host environment (tokens, API keys,
+# SSH_AUTH_SOCK, ...). Only a display /locale / GPU whitelist is forwarded.
+local env_args=()
+if[[ "$ULPM_CLEARENV" == "true" ]]; then
+env_args+=(--clearenv)
+localv
+for v in "${ENV_WHITELIST[@]}" ${ULPM_ENV_PASSTHROUGH:-}; do
+[[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+if [[ -n "${!v+x}" ]]; then
+env_args+=(--setenv "$v" "${!v}")
+fi
+done
+while IFS= read -rv; do
+if [[ -n "$v" ]]; then
+env_args+=(--setenv "$v" "${!v}")
+fi
+done < <(compgen -e | grep -E '^LC_[A-Z_]+$' || true)
+else
+env_args+=(--unsetenvGITHUB_TOKEN)
+fi
+env_args+=(
+--setenv PATH "$HOME/.local/bin:/app/bin:/app/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+--setenv TMPDIR "/tmp"
+--setenv XDG_RUNTIME_DIR "$run_user_dir"
+--setenv XDG_CONFIG_DIRS "/app/etc/xdg:/etc/xdg"
+--setenv XDG_DATA_DIRS "/app/usr/share:/app/share:/usr/local/share:/usr/share"
+--setenv PULSE_SERVER "${PULSE_SERVER:-unix:$pulse_sock}"
+--setenv PIPEWIRE_RUNTIME_DIR "$run_user_dir"
+--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
+--setenv LD_LIBRARY_PATH "$app_ld_path"
+)
+if [[ -n "$host_ca_bundle" ]]; then
+env_args+=(--setenv SSL_CERT_FILE "$host_ca_bundle")
+fi
+
+local rc=0
+bwrap "${bwrap_args[@]}" "${env_args[@]}" \
+--chdir /app \
+"/app/$exec_bin" ${chromium_flags[@]+"${chromium_flags[@]}"} "$@" || rc=$?
+
+cleanup_instance
+trap cleanup_temp EXIT
+return"$rc"
+}
+
+# `ulpm run` with diagnostics for launches without a terminal (double-click):
+# output goes to a log file and a desktop notification is shown on early failure.
+cmd_run() {
+local rc=0 start=$SECONDS log=""
+if [[ ! -t 2 ]]; then
+mkdir -p "$CACHE_DIR"
+log="$CACHE_DIR/last-run.log"
+if [[ -f "$log" ]] &&[[ "$(wc -c < "$log")" -gt 1048576 ]]; then
+: > "$log"
+fi
+printf '\n=== %s ulpm run %s ===\n' "$(date '+%F %T')" "$*" >> "$log"
+exec >>"$log" 2>&1
+fi
+lpk_run_isolated "$@"|| rc=$?
+if[[ $rc -ne 0 && -n "$log" && $((SECONDS - start)) -lt 5 ]] \
+&& command -v notify-send >/dev/null 2>&1; then
+notify-send -a ULPM -i dialog-error "ULPM: launch failed" "Details: $log" >/dev/null 2>&1 || true
+fi
+return"$rc"
 }
 
 # ============================================================
@@ -1267,83 +1603,86 @@ lpk_run_isolated() {
 
 # All human-readable messages go to stderr: stdout carries only the cache path.
 resolve_and_fetch_cached() {
-    local target="$1"
-    local dl_url="" cache_file=""
+localtarget="$1"
+local dl_url="" cache_file=""
 
-    if [[ "$target" =~ ^https?://.*\.lpk$ ]]; then
-        dl_url="$target"
-        local hash
-        hash=$(printf "%s" "$target" | md5sum | cut -d' ' -f1)
-        cache_file="$CACHE_PKG_DIR/${hash}.lpk"
-    else
-        local repo_path
-        repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
-        local release_json
-        release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
-        dl_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
-        if [[ -z "$dl_url" ]]; then
-            echo -e "${RED}[-] No .lpk found for this architecture${NC}" >&2
-            return 1
-        fi
-        local tag_name safe_repo
-        tag_name=$(echo "$release_json" | jq -r '.tag_name // "latest"')
-        safe_repo=$(echo "$repo_path" | tr '/' '_')
-        cache_file="$CACHE_PKG_DIR/${safe_repo}_${tag_name}.lpk"
-    fi
+if[[ "$target" =~ ^https?://.*\.lpk$ ]]; then
+dl_url="$target"
+local hash
+hash=$(printf"%s" "$target" | md5sum | cut -d' ' -f1)
+cache_file="$CACHE_PKG_DIR/${hash}.lpk"
+else
+local repo_path
+repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
+local release_json
+release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
+dl_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
+if[[ -z "$dl_url" ]]; then
+echo -e "${RED}[-] No .lpk foundfor this architecture${NC}" >&2
+return 1
+fi
+local tag_name safe_repo
+tag_name=$(echo "$release_json" | jq -r '.tag_name // "latest"')
+safe_repo=$(echo "$repo_path" | tr '/' '_')
+tag_name=$(echo "$tag_name" | tr -c 'A-Za-z0-9._\n-''_')
+cache_file="$CACHE_PKG_DIR/${safe_repo}_${tag_name}.lpk"
+fi
 
-    if [[ -f "$cache_file" ]]; then
-        echo -e "${CYAN}-> Checking for updates...${NC}" >&2
-        curl -fsSL --time-cond "$cache_file" -o "$cache_file.part" "$dl_url" 2>/dev/null || true
-        if [[ -s "$cache_file.part" ]]; then
-            mv -f "$cache_file.part" "$cache_file"
-            echo -e "${GREEN}✔ Updated${NC}" >&2
-        else
-            rm -f "$cache_file.part"
-            echo -e "${GREEN}✔ Cache up-to-date${NC}" >&2
-        fi
-    else
-        echo -e "${BLUE}::${NC} Downloading into cache..." >&2
-        curl -fsSL --progress-bar -o "$cache_file" "$dl_url" || { rm -f "$cache_file"; return 1; }
-    fi
+if [[ -f "$cache_file" ]]; then
+echo -e "${CYAN}-> Checkingfor updates...${NC}" >&2
+curl -fsSL --time-cond "$cache_file"-o "$cache_file.part" "$dl_url" 2>/dev/null || true
+if [[ -s "$cache_file.part" ]]; then
+mv -f "$cache_file.part" "$cache_file"
+echo -e "${GREEN}✔ Updated${NC}" >&2
+else
+rm -f "$cache_file.part"
+echo -e "${GREEN}✔ Cache up-to-date${NC}" >&2
+fi
+else
+echo -e "${BLUE}::${NC} Downloading into cache..." >&2
+curl -fsSL --progress-bar -o "$cache_file.part" "$dl_url" >&2 \
+&& mv -f "$cache_file.part" "$cache_file" \
+||{ rm -f "$cache_file.part" "$cache_file"; return 1; }
+fi
 
-    echo "$cache_file"
+echo "$cache_file"
 }
 
 cmd_stream() {
-    local target="${1:-}"
-    if [[ -z "$target" ]]; then
-        echo -e "${RED}[-] Usage: ulpm stream <url|owner/repo> [args...]${NC}" >&2
-        return 1
-    fi
-    shift || true
+local target="${1:-}"
+if [[ -z "$target" ]]; then
+echo -e "${RED}[-] Usage: ulpmstream <url|owner/repo> [args...]${NC}" >&2
+return 1
+fi
+shift || true
 
-    local tmp_lpk="$TEMP_DIR/streamed.lpk"
-    local dl_url=""
+local tmp_lpk="$TEMP_DIR/streamed.lpk"
+local dl_url=""
 
-    if [[ "$target" =~ ^https?://.*\.lpk$ ]]; then
-        dl_url="$target"
-    else
-        local repo_path
-        repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
-        local release_json
-        release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
-        dl_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
-        if [[ -z "$dl_url" ]]; then
-            echo -e "${RED}[-] No .lpk found for $repo_path${NC}" >&2
-            return 1
-        fi
-    fi
+if[[ "$target" =~ ^https?://.*\.lpk$ ]]; then
+dl_url="$target"
+else
+local repo_path
+repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
+local release_json
+release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
+dl_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
+if[[ -z "$dl_url" ]]; then
+echo -e "${RED}[-] No .lpk found for $repo_path${NC}" >&2
+return 1
+fi
+fi
 
-    echo -e "${BLUE}::${NC} Streaming to ephemeral storage..."
-    curl -fsSL --progress-bar -o "$tmp_lpk" "$dl_url" || return 1
+echo -e"${BLUE}::${NC} Streaming to ephemeral storage..."
+curl -fsSL --progress-bar -o"$tmp_lpk" "$dl_url" || return 1
 
-    echo -e "${CYAN}-> Launching ephemeral container...${NC}"
-    local rc=0
-    lpk_run_isolated "$tmp_lpk" "$@" || rc=$?
+echo -e "${CYAN}->Launching ephemeral container...${NC}"
+local rc=0
+lpk_run_isolated "$tmp_lpk" "$@" || rc=$?
 
-    rm -f "$tmp_lpk"
-    echo -e "${GREEN}✔ Ephemeral run finished – everything cleaned${NC}"
-    return "$rc"
+rm -f "$tmp_lpk"
+echo -e "${GREEN}✔ Ephemeral run finished – everything cleaned${NC}"
+return "$rc"
 }
 
 # ============================================================
@@ -1351,147 +1690,166 @@ cmd_stream() {
 # ============================================================
 
 cmd_install_target() {
-    local target="$1"
-    local app_name_hint="${2:-}"
+local target="${1:-}"
+local app_name_hint="${2:-}"
 
-    if [[ -f "$target" && "$target" =~ \.lpk$ ]]; then
-        lpk_install_file "$target" "local"
-        return $?
-    fi
+if [[ -z "$target" ]]; then
+echo-e "${RED}[-] Usage: ulpm install <file.lpk|AppImage|deb|rpm|owner/repo> [name]${NC}" >&2
+return 1
+fi
+target="$(normalize_target "$target")" || { echo -e "${RED}[-] Invalid target${NC}" >&2; return 1; }
 
-    if [[ -d "$target" || "$target" =~ \.(appimage|AppImage|deb|rpm|tar\..*|tgz|zip)$ ]]; then
-        local out_lpk="$TEMP_DIR/bundle_${SYS_ARCH}.lpk"
-        lpk_pack "$target" "$app_name_hint" "$out_lpk" || return 1
-        lpk_install_file "$out_lpk" "local"
-        return $?
-    fi
+if[[ -f "$target" && "$target" =~ \.lpk$ ]]; then
+lpk_install_file "$target" "local"
+return $?
+fi
 
-    local repo_path
-    repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')
-    local release_json
-    release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
+if[[ -d "$target" || "$target" =~ \.(appimage|AppImage|deb|rpm|tar\..*|tgz|zip)$ ]]; then
+local out_lpk="$TEMP_DIR/bundle_${SYS_ARCH}.lpk"
+lpk_pack "$target" "$app_name_hint" "$out_lpk" || return 1
+lpk_install_file "$out_lpk" "local"
+return $?
+fi
 
-    local tag
-    tag=$(echo "$release_json" | jq -r '.tag_name // empty' | tr -d '\r')
+local repo_path
+repo_path=$(echo "$target" | sed -E 's#^https?://github.com/##;s#/$##; s#\.git$##')
+local release_json
+release_json=$(fetch_github_api "repos/${repo_path}/releases/latest") || return 1
 
-    local lpk_url
-    lpk_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
+local tag
+tag=$(echo "$release_json" | jq -r '.tag_name // empty' | tr -d '\r')
 
-    if [[ -n "$lpk_url" ]]; then
-        local tmp_lpk="$TEMP_DIR/downloaded.lpk"
-        echo -e "${GREEN}✔ Downloading remote .lpk...${NC}"
-        curl -fsSL --progress-bar -o "$tmp_lpk" "$lpk_url" || return 1
-        lpk_install_file "$tmp_lpk" "$repo_path" "$tag"
-        return $?
-    fi
+local lpk_url
+lpk_url=$(find_lpk_download_url "$release_json" "$ARCH_REGEX")
 
-    local dl_url
-    dl_url=$(find_archive_download_url "$release_json" "$ARCH_REGEX")
-    if [[ -z "$dl_url" ]]; then
-        echo -e "${RED}[-] No compatible binary found${NC}" >&2
-        return 1
-    fi
+if[[ -n "$lpk_url" ]]; then
+local tmp_lpk="$TEMP_DIR/downloaded.lpk"
+echo -e "${GREEN}✔ Downloading remote .lpk...${NC}"
+curl -fsSL --progress-bar-o "$tmp_lpk" "$lpk_url" || return 1
+lpk_install_file "$tmp_lpk" "$repo_path" "$tag"
+return $?
+fi
 
-    local tmp_archive="$TEMP_DIR/archive_dl"
-    curl -fsSL --progress-bar -o "$tmp_archive" "$dl_url" || return 1
-    local auto_lpk="$TEMP_DIR/generated_${SYS_ARCH}.lpk"
-    lpk_pack "$tmp_archive" "${app_name_hint:-$(echo "$repo_path" | cut -d'/' -f2)}" "$auto_lpk" "${tag:-latest}" || return 1
-    lpk_install_file "$auto_lpk" "$repo_path" "$tag"
+local dl_url
+dl_url=$(find_archive_download_url "$release_json" "$ARCH_REGEX")
+if [[ -z "$dl_url" ]]; then
+echo -e "${RED}[-] Nocompatible binary found${NC}" >&2
+return 1
+fi
+
+# Keep the real extension: extract_any_payload dispatches on it.
+local dl_name="${dl_url##*/}"
+dl_name="${dl_name%%\?*}"
+local tmp_archive="$TEMP_DIR/archive_dl_$(printf '%s' "$dl_name" | tr -cd 'A-Za-z0-9._-')"
+curl -fsSL --progress-bar -o "$tmp_archive" "$dl_url" || return1
+local auto_lpk="$TEMP_DIR/generated_${SYS_ARCH}.lpk"
+lpk_pack "$tmp_archive" "${app_name_hint:-$(echo "$repo_path" |cut -d'/' -f2)}" "$auto_lpk" "${tag:-latest}" || return 1
+lpk_install_file "$auto_lpk" "$repo_path" "$tag"
 }
 
 cmd_upgrade() {
-    echo -e "${BOLD}${CYAN}Checking for updates...${NC}"
-    if [[ ! -s "$ULPM_DB" ]]; then
-        echo -e "${GRAY}No tracked packages installed.${NC}"
-        return 0
-    fi
+echo -e "${BOLD}${CYAN}Checking for updates...${NC}"
+if[[ ! -s "$ULPM_DB" ]]; then
+echo -e "${GRAY}No tracked packages installed.${NC}"
+return 0
+fi
 
-    # The DB is read on fd 3 so that prompts inside the loop (key trust) can
-    # still read from the terminal on stdin.
-    local id name ver repo ts fpr
-    while IFS='|' read -r -u 3 id name ver repo ts fpr; do
-        [[ "$repo" == "local" || -z "$repo" ]] && continue
-        local rel_data tag_remote
-        rel_data=$(fetch_github_api "repos/${repo}/releases/latest") || continue
-        tag_remote=$(echo "$rel_data" | jq -r '.tag_name // empty' | tr -d '\r')
+# The DB is read on fd 3 so that prompts inside the loop (key trust) can
+# still read from the terminal on stdin.
+local id name ver repo ts fpr
+while IFS='|' read -r -u 3 id name ver repo ts fpr; do
+[[ "$repo" == "local" || -z "$repo" ]] && continue
+local rel_data tag_remote
+rel_data=$(fetch_github_api "repos/${repo}/releases/latest") || continue
+tag_remote=$(echo "$rel_data" | jq -r '.tag_name // empty' | tr -d '\r')
 
-        if [[ -n "$tag_remote" && "${tag_remote#v}" != "${ver#v}" ]]; then
-            echo -e "  ${YELLOW}★ Update available for $name: $ver → $tag_remote${NC}"
-            ULPM_PINNED_FPR="${fpr:-}" cmd_install_target "$repo" "$name" \
-                || echo -e "  ${RED}[-] Update of $name failed${NC}" >&2
-        else
-            echo -e "  ${GREEN}✔ $name is up to date ($ver)${NC}"
-        fi
-    done 3< "$ULPM_DB"
+if[[ -n "$tag_remote" && "${tag_remote#v}" != "${ver#v}" ]]; then
+echo-e "  ${YELLOW}★ Update available for $name: $ver → $tag_remote${NC}"
+ULPM_PINNED_FPR="${fpr:-}" cmd_install_target "$repo" "$name" \
+|| echo-e "  ${RED}[-] Update of $name failed${NC}" >&2
+else
+echo -e "  ${GREEN}✔ $name is up to date ($ver)${NC}"
+fi
+done3< "$ULPM_DB"
 }
 
 cmd_remove() {
-    local target="${1:-}"
-    if [[ -z "$target" ]]; then
-        echo -e "${RED}[-] Specify package to remove${NC}" >&2
-        return 1
-    fi
+local target="${1:-}"
+if [[ -z "$target" ]]; then
+echo -e "${RED}[-] Specify package toremove${NC}" >&2
+return 1
+fi
+# The id ends up in rmpaths: only safe characters allowed.
+if[[ ! "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$target" == *..* ]]; then
+echo -e "${RED}[-] Invalid package id${NC}" >&2
+return 1
+fi
 
-    local id="io.lpk.${target,,}"
-    [[ "$target" =~ ^io\.lpk\. ]] && id="$target"
+local id="io.lpk.${target,,}"
+[[ "$target" =~ ^io\.lpk\. ]] && id="$target"
 
-    rm -f "$ULPM_APPS/$id.lpk" \
-        "$DESKTOP_DIR/ulpm-$id.desktop" \
-        "$ICON_DIR/$id.png"
+rm -f "$ULPM_APPS/$id.lpk" \
+"$DESKTOP_DIR/ulpm-$id.desktop" \
+"$ICON_DIR/$id.png"
 
-    db_replace_entry "$id" ""
-    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-    echo -e "${GREEN}✔ Removed $id${NC}"
+db_replace_entry "$id" ""
+update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+echo -e "${GREEN}✔ Removed $id${NC}"
 }
 
 cmd_list() {
-    echo -e "${BOLD}${CYAN}Installed ULPM packages:${NC}"
-    echo -e "${BLUE}---------------------------------------------------------${NC}"
-    if [[ -s "$ULPM_DB" ]]; then
-        while IFS='|' read -r id name ver repo _; do
-            printf "${BOLD}%-25s${NC} ${GREEN}%-12s${NC} ${GRAY}(%s)${NC}\n" "$name" "$ver" "$repo"
-        done < "$ULPM_DB"
-    else
-        echo -e "  ${GRAY}(No packages installed)${NC}"
-    fi
-    echo -e "${BLUE}---------------------------------------------------------${NC}"
+echo -e "${BOLD}${CYAN}Installed ULPM packages:${NC}"
+echo -e "${BLUE}---------------------------------------------------------${NC}"
+if[[ -s "$ULPM_DB" ]]; then
+while IFS='|' read -r id name ver repo _; do
+printf "${BOLD}%-25s${NC} ${GREEN}%-12s${NC} ${GRAY}(%s)${NC}\n""$name" "$ver" "$repo"
+done < "$ULPM_DB"
+else
+echo-e "  ${GRAY}(No packages installed)${NC}"
+fi
+echo -e "${BLUE}---------------------------------------------------------${NC}"
 }
 
 cmd_clean() {
-    local size
-    size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1 || true)
-    find "$CACHE_PKG_DIR" "$CACHE_API_DIR" -mindepth 1 -delete 2>/dev/null || true
-    echo -e "${GREEN}✔ Cache cleaned (was ${size:-0})${NC}"
+local size
+size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1 || true)
+find "$CACHE_PKG_DIR" "$CACHE_API_DIR" -mindepth 1 -delete 2>/dev/null || true
+echo -e "${GREEN}✔ Cache cleaned (was ${size:-0})${NC}"
 }
 
-usage() {
-    cat <<EOF
-ULPM - Universal Linux Package Manager (LPK Engine v3.2)
+usage(){
+cat <<EOF
+ULPM - Universal Linux Package Manager (LPK Engine v3.3)
 
 Usage: ulpm <command> [options]
 
 Core:
-  stream <url|owner/repo> [args]   Ephemeral launch from web/RAM
-  run [--offline] <pkg|id|url>     Run in Bubblewrap sandbox
-  install, -i <source> [name]      Install (.lpk / AppImage / deb / rpm / GitHub...)
-  pack <source> [name] [out]       Create signed .lpk
-  deb-pack <pkg|deb> [name]        Pack with recursive APT dependencies
-  upgrade, -u                      Update GitHub-tracked packages
-  remove, -r <id>                  Uninstall
-  list, -l                         List installed packages
-  clean                            Purge the package and API caches
+stream <url|owner/repo>[args]   Ephemeral launch from web/RAM
+run [--offline] <pkg|id|url>     Run in Bubblewrap sandbox (path, file:// URI or id)
+install, -i <source> [name]      Install (.lpk/ AppImage / deb / rpm / GitHub...)
+pack <source> [name] [out]       Createsigned .lpk
+deb-pack <pkg|deb> [name]        Pack with recursive APT dependencies
+upgrade, -u                      Update GitHub-tracked packages
+remove, -r <id>                  Uninstall
+list, -l                         List installed packages
+clean                            Purge the package and API caches
+integrate                        (Re)register *.lpk double-click + graphical PATH
 
 Cryptography:
-  keygen [name]                    Generate Ed25519 keypair
-  sign <file.lpk> [privkey]        Embed signature footer
-  trust <file.pub>                 Trust a public key
+keygen [name]                    Generate Ed25519 keypair
+sign <file.lpk> [privkey]        Embed signature footer
+trust <file.pub>                 Trust a public key
 
 Environment:
-  ULPM_STRICT_SIGNATURES=true|false  Reject unsigned/untrusted packages (default: true)
-  ULPM_DBUS_MODE=proxy|full|none     Session D-Bus exposure (default: proxy)
-  ULPM_SHARE_PID=true|false          Share host PID namespace (default: false)
+ULPM_STRICT_SIGNATURES=true|false  Reject unsigned packages (default: true)
+ULPM_REQUIRE_TRUSTED_KEYS=true|false  Reject unknown signing keys (default: false)
+ULPM_DBUS_MODE=proxy|full|none     Session D-Bus exposure (default: proxy)
+ULPM_SHARE_PID=true|false          Share host PID namespace (default: false)
+ULPM_CLEARENV=true|false           Clean, whitelisted app environment (default: true)
+ULPM_ENV_PASSTHROUGH="A B"         Extra host variables forwarded when CLEARENV=true
+ULPM_NO_INTEGRATION=true|false     Disable automatic MIME / PATH integration
 EOF
-    exit 0
+exit 0
 }
 
 # ============================================================
@@ -1504,26 +1862,31 @@ ACTION="$1"
 shift || true
 
 case "$ACTION" in
-    help|-h|--help) usage ;;
+help|-h|--help) usage ;;
 esac
 
 init_runtime
 
+if[[ "$ACTION" != "integrate" ]]; then
+ensure_integration
+fi
+
 case "$ACTION" in
-    stream)            cmd_stream "$@" ;;
-    run)               lpk_run_isolated "$@" ;;
-    install|-i|add|-a) cmd_install_target "$@" ;;
-    pack)              lpk_pack "$@" ;;
-    deb-pack)          lpk_pack_from_apt "$@" ;;
-    upgrade|-u)        cmd_upgrade ;;
-    remove|-r)         cmd_remove "$@" ;;
-    list|-l)           cmd_list ;;
-    clean)             cmd_clean ;;
-    keygen)            cmd_keygen "$@" ;;
-    sign)              cmd_sign "$@" ;;
-    trust)             cmd_trust "$@" ;;
-    *)
-        echo -e "${RED}[-] Unknown command: $ACTION${NC}"
-        usage
-        ;;
+stream)            cmd_stream "$@" ;;
+run)               cmd_run "$@" ;;
+install|-i|add|-a) cmd_install_target "$@" ;;
+pack)              lpk_pack "$@" ;;
+deb-pack)          lpk_pack_from_apt "$@" ;;
+upgrade|-u)        cmd_upgrade;;
+remove|-r)         cmd_remove "$@" ;;
+list|-l)           cmd_list;;
+clean)             cmd_clean ;;
+integrate)         cmd_integrate "$@" ;;
+keygen)            cmd_keygen "$@" ;;
+sign)              cmd_sign "$@" ;;
+trust)cmd_trust "$@" ;;
+*)
+echo -e "${RED}[-] Unknown command: $ACTION${NC}">&2
+usage
+;;
 esac
