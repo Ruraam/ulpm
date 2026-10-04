@@ -780,12 +780,12 @@ local f="$1" class shoff shentsize shnum
 class=$(od -An -tu1 -j4 -N1 "$f" | tr -d ' \n')
 case "$class" in
 2)
-shoff=$(od -An-tu8 -j40 -N8 "$f" | tr -d ' \n')
-shentsize=$(od -An-tu2 -j58 -N2 "$f" | tr -d ' \n')
+shoff=$(od -An -tu8 -j40 -N8 "$f" | tr -d ' \n')
+shentsize=$(od -An -tu2 -j58 -N2 "$f" | tr -d ' \n')
 shnum=$(od -An -tu2 -j60 -N2 "$f" | tr -d ' \n')
 ;;
 1)
-shoff=$(od -An -tu4 -j32-N4 "$f" | tr -d ' \n')
+shoff=$(od -An -tu4 -j32 -N4 "$f" | tr -d ' \n')
 shentsize=$(od -An -tu2 -j46 -N2 "$f" | tr -d ' \n')
 shnum=$(od -An -tu2 -j48 -N2 "$f" | tr -d ' \n')
 ;;
