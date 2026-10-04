@@ -189,13 +189,11 @@ trap 'exit 143' TERM
 }
 
 require_openssl3() {
-local raw_ver
-raw_ver=$(openssl version 2>/dev/null | true)
-if [[ "$raw_ver" =~ OpenSSL[[:space]]+([0-9]+)\. ]]; then
-major="${BASH_REMATCH[1]}"
-if (( major >=3)); then
-return 1
-fi
+local major
+major=$(openssl version 2>/dev/null | sed -E 's/^[^0-9]*([0-9+).*/\1/'] || true)
+
+if [[ -n "$major" && "$major" =~ ^[0-9]+$ ]] && (( major >=3 )); then
+return 0
 fi
 
 echo -e "${RED}[-] OpenSSL >= 3.0 is required for Ed25519 (found: ${ver:-unknown})${NC}" >&2
