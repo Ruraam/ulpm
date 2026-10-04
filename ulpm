@@ -22,35 +22,35 @@ ACTION="$1"
 shift || true
 
 case "$ACTION" in
-help|-h|--help) usage ;;
-version|-v|--version)
-echo "ULPM Engine v3.3 (.lpk spec v3)"
-exit 0
-;;
+    help|-h|--help) usage ;;
+    version|-v|--version)
+        echo "ULPM Engine v3.3 (.lpk spec v3)"
+        exit 0
+        ;;
 esac
 
 init_runtime
 
 if [[ "$ACTION" != "integrate" ]]; then
- ensure_integration
+    ensure_integration
 fi
 
 case "$ACTION" in
- stream) cmd_stream "$@" ;;
- run) cmd_run "$@" ;;
- install|-i|add|-a) cmd_install_target "$@" ;;
- pack) lpk_pack "$@" ;;
- deb-pack) lpk_pack_from_apt "$@" ;;
- upgrade|-u) cmd_upgrade ;;
- remove|-r) cmd_remove "$@" ;;
- list|-l) cmd_list ;;
- clean) cmd_clean ;;
- integrate) cmd_integrate "$@" ;;
- keygen) cmd_keygen "$@" ;;
- sign) cmd_sign "$@" ;;
- trust) cmd_trust "$@" ;;
- *)
- echo -e "${RED}[-] Unknown command: $ACTION${NC}" >&2
- usage
- ;;
+    stream) cmd_stream "$@" ;;
+    run) cmd_run "$@" ;;
+    install|-i|add|-a) cmd_install_target "$@" ;;
+    pack) lpk_pack "$@" ;;
+    deb-pack) lpk_pack_from_apt "$@" ;;
+    upgrade|-u) cmd_upgrade ;;
+    remove|-r) cmd_remove "$@" ;;
+    list|-l) cmd_list ;;
+    clean) cmd_clean ;;
+    integrate) cmd_integrate "$@" ;;
+    keygen) cmd_keygen "$@" ;;
+    sign) cmd_sign "$@" ;;
+    trust) cmd_trust "$@" ;;
+    *)
+        echo -e "${RED}[-] Unknown command: $ACTION${NC}" >&2
+        usage
+        ;;
 esac
