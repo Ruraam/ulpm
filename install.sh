@@ -5,7 +5,7 @@
 #
 # Usage:
 #   ./install.sh [options]
-#   curl -fsSL <raw-url>/install.sh | bash -s -- [options]
+#   curl -fsSL Ruraam/ulpm/install.sh | bash -s -- [options]
 #
 # Options:
 #   --user          Force rootless install (~/.local/bin or $XDG_BIN_HOME)
@@ -85,17 +85,17 @@ done
 if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ] && [ -t 0 ] && [ -t 1 ]; then
     echo
     echo -e "${BOLD}${CYAN}ULPM — Installation${NC}"
-    echo "  1) Installation rootless (utilisateur)"
-    echo "  2) Installation root (système)"
-    echo "  3) Désinstallation propre"
+    echo "  1) Rootless installation (user)"
+    echo "  2) Root installation (system)"
+    echo "  3) Clean uninstallation"
     echo
-    printf "Choix [1-3] : "
+    printf "Choice [1-3] : "
     read -r choice || choice=""
     case "$choice" in
         1) MODE="user" ;;
         2) MODE="system" ;;
         3) UNINSTALL=true ;;
-        *) die "Choix invalide." ;;
+        *) die "Invalid choice." ;;
     esac
 fi
 
@@ -199,26 +199,26 @@ uninstall_ulpm() {
     local found=false
 
     echo
-    echo "Cette opération supprime ULPM, les paquets LPK installés,"
-    echo "les clés de signature locales, le cache et l'intégration bureau."
-    echo "Les données applicatives dans ~/.var/app ne seront PAS supprimées."
+    echo "This operation removes ULPM, installed LPK packages,"
+    echo "local signing keys, cache, and desktop integration."
+    echo "Application data in ~/.var/app will NOT be removed."
     echo
 
     if [ "$ASSUME_YES" != true ]; then
         local reply=""
         if [ -t 0 ]; then
-            printf "Confirmer la désinstallation complète d'ULPM ? [y/N]: "
+            printf "Confirm complete uninstallation of ULPM? [y/N]: "
             read -r reply || reply=""
         elif ( : < /dev/tty ) 2>/dev/null; then
-            printf "Confirmer la désinstallation complète d'ULPM ? [y/N]: "
+            printf "Confirm complete uninstallation of ULPM? [y/N]: "
             read -r reply < /dev/tty || reply=""
         else
-            warn "Désinstallation interactive impossible sans terminal. Relance avec --uninstall --yes."
+            warn "Interactive uninstallation is not possible without a terminal. Restart with --uninstall --yes."
             return 1
         fi
         case "$reply" in
             [yY]|[yY][eE][sS]|[oO]|[oO][uU][iI]) ;;
-            *) info "Désinstallation annulée."; return 0 ;;
+            *) info "Uninstallation cancelled."; return 0 ;;
         esac
     fi
 
@@ -265,11 +265,11 @@ uninstall_ulpm() {
         && update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
 
     if [ "$found" = true ]; then
-        echo -e "${GREEN}✔ ULPM désinstallé.${NC}"
+        echo -e "${GREEN}✔ ULPM uninstalled.${NC}"
     else
-        echo -e "${GREEN}✔ Intégration et données ULPM nettoyées (binaire déjà absent).${NC}"
+        echo -e "${GREEN}✔ Integration and cleaned ULPM data (binary already absent).${NC}"
     fi
-    echo "Les données applicatives de ~/.var/app ont été conservées."
+    echo "Application data in ~/.var/app has been preserved."
 }
 
 PM=""
@@ -289,11 +289,11 @@ pkg_for() {
     case "$1" in
         mksquashfs)
             if [ "$PM" = "zypper" ]; then echo "squashfs"; else echo "squashfs-tools"; fi ;;
-        bwrap)                                   echo "bubblewrap" ;;
-        fuse3)                                   echo "fuse3" ;;
-        cmp)                                     echo "diffutils" ;;
+        bwrap)                                    echo "bubblewrap" ;;
+        fuse3)                                    echo "fuse3" ;;
+        cmp)                                      echo "diffutils" ;;
         od|truncate|tail|head|dd|realpath|mktemp) echo "coreutils" ;;
-        *)                                       echo "$1" ;;
+        *)                                        echo "$1" ;;
     esac
 }
 
