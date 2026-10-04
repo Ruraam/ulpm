@@ -190,7 +190,7 @@ trap 'exit 143' TERM
 
 require_openssl3() {
 local major
-major=$(openssl version 2>/dev/null | sed -E 's/^[^0-9]*([0-9+).*/\1/'] || true)
+major=$(openssl version 2>/dev/null | sed -E 's/^[^0-9]*([0-9+).*/\1/' || true)
 
 if [[ -n "$major" && "$major" =~ ^[0-9]+$ ]] && (( major >=3 )); then
 return 0
