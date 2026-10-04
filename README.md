@@ -1,11 +1,9 @@
 <div align="center">
-<img src="assets/ulpm-logo.svg" width="200" alt="ulpm logo" />
-<h1>ULPM & `.lpk`</h1>
+<img src="assets/ulpm-logo.svg" width="250" alt="ulpm logo" />
+<h1>ULPM - Universal Linux Package Manager & Autonomous Containerized Bundle Engine</h1>
  
-### **Universal Linux Package Manager & Autonomous Containerized Bundle Engine**
 
-
-<p><strong><em>Lightweight, rootless, zero-daemon, sandboxed application runtime for any Linux system.</em></strong></p>
+<p><strong><b><em>Lightweight, rootless, zero-daemon, sandboxed application runtime for any Linux system.</b></em></strong></p>
 
 [![License: MIT](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Format](https://img.shields.io/badge/Format-.lpk%20v3-orange.svg)](#the-lpk-format)
