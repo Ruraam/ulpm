@@ -20,9 +20,9 @@
 >
 > **ULPM Engine v3.3** powers the autonomous **`.lpk` Format v3** specification.
 >
-> - **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`) and Ed25519 TOFU cryptographic key pinning.
-> - **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, and zero background resource footprint.
-> - **Compatibility:** Validated on standard Linux distributions across minimal and enterprise hardware (amd64, arm64, armhf, i386, riscv64).
+> * **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`) and Ed25519 TOFU cryptographic key pinning.
+> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, and zero background resource footprint.
+> * **Compatibility:** Validated on standard Linux distributions across minimal and enterprise hardware (amd64, arm64, armhf, i386, riscv64).
 
 ---
 
@@ -81,16 +81,19 @@ ULPM is designed witha **zero-daemon, minimal-overhead** philosophy. Instead of 
 
 The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`, `xbps`), and sets up eithera **rootless** or **system-wide** installation.
 
-#### Rootless Install (Recommended)
-**Installs cleanly to `~/.local/bin/ulpm` without requiring root permissions:**
+#### Run Installation Dashboard
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
 ```
-#### System-Wide Install
-Installs globally to `/usr/local/bin/ulpm` for all users on the host:
-```bash
-curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | sudo bash
-```
+
+>[!NOTE]
+> Choice in Dashboard:
+>
+> * **1) Rootless Installation:**
+> Installs cleanly to `~/.local/bin/ulpm` without requiring root permissions:
+>
+> * **2) System-Wide Install**
+>Installs globally to `/usr/local/bin/ulpm` for all users on the host:
 
 ---
 
