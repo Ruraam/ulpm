@@ -254,6 +254,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - [x] Ephemeral RAM streaming execution (`ulpm stream`).
 - [x] Smart Cache with conditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
+- [x] Run sandboxed Debian XFCE via .lpk (No KVM or VirtualBox only with ULPM - bêta)
 
 ### Upcoming & Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
