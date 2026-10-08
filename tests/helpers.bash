@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # helpers.bash - Shared setup for ULPM bats tests
 
+# tests/helpers.bash
+ULPM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export ULPM_ROOT
+
+[ -x "$ULPM_ROOT/ulpm" ] || echo "WARNING: $ULPM_ROOT/ulpm missing or not executable" >&2
+
 setup_ulpm() {
-  export ULPM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   export LIB_DIR="$ULPM_ROOT/lib"
 
   source "$LIB_DIR/common.sh"
