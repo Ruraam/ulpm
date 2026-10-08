@@ -22,10 +22,10 @@ teardown() {
 }
 
 @test "paths are correctly defined under XDG" {
-  [[ "$ULPM_DATA" == *"/ulpm" ]]
-  [[ "$ULPM_APPS" == *"/apps" ]]
-  [[ "$CACHE_DIR" == *"/ulpm" ]]
-  [[ "$CONF_DIR" == *"/ulpm" ]]
+  [ "$ULPM_DATA"  = "$XDG_DATA_HOME/ulpm" ]
+  [ "$CACHE_DIR"  = "$XDG_CACHE_HOME/ulpm" ]
+  [ "$CONF_DIR"   = "$XDG_CONFIG_HOME/ulpm" ]
+  [[ "$ULPM_APPS" == "$ULPM_DATA/apps" ]]
 }
 
 @test "SIG_MAGIC and footer constants are correct" {
