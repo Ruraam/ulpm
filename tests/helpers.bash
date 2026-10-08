@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # helpers.bash - Shared setup for ULPM bats tests
 
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+ULPM_ROOT="$(git rev-parse --show-toplevel)"
+else
 ULPM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 export ULPM_ROOT
 
 chmod +x "$ULPM_ROOT/ulpm" 2>/dev/null || true
 export PATH="$ULPM_ROOT:$PATH"
 export ULPM_BIN="$ULPM_ROOT/ulpm"
-
-[ -x "$ULPM_ROOT/ulpm" ] || echo "WARNING: $ULPM_ROOT/ulpm missing or not executable" >&2
 
 setup_ulpm() {
 export LIB_DIR="$ULPM_ROOT/lib"
@@ -29,11 +31,11 @@ teardown_tmpdir() {
 if [[ -n "${TEST_TMP:-}" && -d "$TEST_TMP" ]]; then
 rm -rf -- "$TEST_TMP"
 fi
-return 0
+return0
 }
 
 assert_equal() {
-if [[ "$1" != "$2"]]; then
+if [[ "$1" != "$2" ]]; then
 echo "Expected: '$2'"
 echo "Actual:   '$1'"
 return 1
