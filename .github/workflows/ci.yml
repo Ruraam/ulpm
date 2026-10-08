@@ -5,7 +5,10 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  workflow_dispatch:          # Permet de lancer manuellement
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,6 +21,7 @@ jobs:
   lint:
     name: ShellCheck & Syntax
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,27 +31,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck
-        run: |
-          # Tous les scripts Bash
-          find . -type f \( -name "*.sh" -o -name "ulpm" -o -name "install.sh" \) \
-            -not -path "./.git/*" \
-            -print0 | xargs -0 shellcheck --severity=error --severity=warning --severity=info \
-            --exclude=SC1091,SC2034,SC2086,SC2155,SC2015,SC2016 || true
-
-          # Version stricte (échoue sur error + warning)
-          #find . -type f \( -name "*.sh" -o -name "ulpm" -o -name "install.sh" \) \
-          #  -not -path "./.git/*" \
-          #  -print0 | xargs -0 shellcheck --severity=error --severity=warning \
-          #  --exclude=SC1091  # source de fichiers locaux
-
       - name: Bash syntax check (bash -n)
         run: |
-          set -e
           for f in ulpm install.sh lib/*.sh; do
             echo "Checking syntax: $f"
             bash -n "$f"
           done
+
+      - name: ShellCheck (errors, blocking)
+        run: |
+          find . -type f \( -name "*.sh" -o -name "ulpm" \) -not -path "./.git/*" -print0 \
+            | xargs -0 shellcheck -x --severity=error --exclude=SC1090,SC1091
+
+      - name: ShellCheck (warnings, report only)
+        continue-on-error: true
+        run: |
+          find . -type f \( -name "*.sh" -o -name "ulpm" \) -not -path "./.git/*" -print0 \
+            | xargs -0 shellcheck -x --severity=warning \
+              --exclude=SC1090,SC1091,SC2034,SC2086,SC2155,SC2015,SC2016
 
   # --------------------------------------------------
   # 2. Tests (bats)
@@ -55,7 +56,8 @@ jobs:
   test:
     name: Tests (bats)
     runs-on: ubuntu-latest
-    needs: lint                    # Attend que le lint passe
+    needs: lint
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,39 +76,39 @@ jobs:
             openssl \
             file \
             coreutils \
-            xdg-dbus-proxy
+            xdg-dbus-proxy \
+            xdg-utils \
+            shared-mime-info
+
+      - name: Allow unprivileged user namespaces (bubblewrap)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Make scripts executable
+        run: chmod +x ulpm install.sh lib/*.sh
 
       - name: Run bats tests
-        run: |
-          # Si tu n’as pas encore de tests, ce step passera en créant un dossier vide
-          if [ -d "tests" ]; then
-            bats tests/ --tap
-          else
-            echo "No tests/ directory yet — skipping"
-            mkdir -p tests
-            echo "#!/usr/bin/env bats" > tests/placeholder.bats
-            echo "@test \"placeholder\" { true; }" >> tests/placeholder.bats
-            bats tests/ --tap
-          fi
+        run: bats --tap tests/
 
   # --------------------------------------------------
-  # 3. Matrix multi-distro (optionnel mais très pro)
+  # 3. Matrix multi-distro (smoke test)
   # --------------------------------------------------
   matrix:
-    name: Compatibility
+    name: Compatibility (${{ matrix.image }})
     runs-on: ubuntu-latest
     needs: lint
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         image:
           - ubuntu:24.04
           - debian:bookworm
-          - fedora:40
+          - debian:trixie
+          - fedora:latest
           - archlinux:latest
     container:
       image: ${{ matrix.image }}
-      options: --privileged   # nécessaire pour bubblewrap / user namespaces
+      options: --privileged
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,14 +119,24 @@ jobs:
             apt-get update
             apt-get install -y bash bubblewrap squashfs-tools squashfuse fuse3 jq curl openssl file coreutils
           elif command -v dnf >/dev/null; then
-            dnf install -y bash bubblewrap squashfs-tools squashfuse fuse3 jq curl openssl file coreutils
+            dnf install -y --allowerasing bash bubblewrap squashfs-tools squashfuse fuse3 jq curl openssl file coreutils
           elif command -v pacman >/dev/null; then
             pacman -Syu --noconfirm bash bubblewrap squashfs-tools squashfuse fuse3 jq curl openssl file coreutils
+          else
+            echo "No supported package manager in this image" >&2
+            exit 1
           fi
 
-      - name: Syntax + basic smoke test
+      - name: Syntax + smoke test
         run: |
-          bash -n ulpm
-          bash -n install.sh
-          ./ulpm version || true
-          ./ulpm help || true
+          for f in ulpm install.sh lib/*.sh; do
+            bash -n "$f"
+          done
+          chmod +x ulpm
+          # Sans "|| true" : un échec doit faire rougir le job.
+          ./ulpm version
+          ./ulpm help > /dev/null
+          if ./ulpm thiscommanddoesnotexist > /dev/null 2>&1; then
+            echo "an unknown command must exit with a non-zero status" >&2
+            exit 1
+          fi
