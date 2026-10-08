@@ -41,7 +41,6 @@ teardown() {
 }
 
 @test "init_runtime creates required directories" {
-  # On force l'appel (il a besoin des outils installés)
   if command -v squashfuse >/dev/null && command -v bwrap >/dev/null; then
     init_runtime
     [ -d "$ULPM_APPS" ]
