@@ -41,13 +41,10 @@ teardown() {
 }
 
 @test "init_runtime creates required directories" {
-  if command -v squashfuse >/dev/null && command -v bwrap >/dev/null; then
-    init_runtime
-    [ -d "$ULPM_APPS" ]
-    [ -d "$CACHE_API_DIR" ]
-    [ -d "$TRUSTED_KEYS_DIR" ]
-    [ -f "$ULPM_DB" ]
-  else
-    skip "Missing runtime tools (squashfuse/bwrap)"
-  fi
+  run init_runtime
+  [ "$status" -eq 0 ]
+  [ -d "$ULPM_APPS" ]
+  [ -d "$CACHE_API_DIR" ]
+  [ -d "$TRUSTED_KEYS_DIR" ]
+  [ -f "$ULPM_DB" ]
 }
