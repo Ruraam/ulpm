@@ -14,16 +14,20 @@ setup_ulpm() {
 }
 
 setup_tmpdir() {
-  export TEST_TMP=$(mktemp -d /tmp/ulpm-test.XXXXXX)
+  TEST_TMP="$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/ulpm-test.XXXXXX")"
+  export TEST_TMP
+  export HOME="$TEST_TMP/home"
   export XDG_DATA_HOME="$TEST_TMP/data"
   export XDG_CACHE_HOME="$TEST_TMP/cache"
   export XDG_CONFIG_HOME="$TEST_TMP/config"
-  export HOME="$TEST_TMP/home"
   mkdir -p "$HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
 }
 
 teardown_tmpdir() {
-  [[ -n "${TEST_TMP:-}" && -d "$TEST_TMP" ]] && rm -rf -- "$TEST_TMP"
+  if [[ -n "${TEST_TMP:-}" && -d "$TEST_TMP" ]]; then
+    rm -rf -- "$TEST_TMP"
+  fi
+  return 0
 }
 
 assert_equal() {
