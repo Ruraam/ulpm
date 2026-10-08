@@ -2,6 +2,12 @@
 
 load helpers
 
+# tests/helpers.bash
+ULPM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export ULPM_ROOT
+
+[ -x "$ULPM_ROOT/ulpm" ] || echo "WARNING: $ULPM_ROOT/ulpm missing or not executable" >&2
+
 setup() {
   setup_tmpdir
 }
