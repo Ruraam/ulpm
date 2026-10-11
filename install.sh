@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ULPM Official Installer (Modular v3.3)
+# ULPM Official Installer (Modular v4.0.0)
 # Supports rootless (~/.local/bin) and system-wide (/usr/local/bin)
 #
 # Usage:
@@ -27,12 +27,24 @@ else
     BOLD='' RED='' GREEN='' CYAN='' YELLOW='' GRAY='' NC=''
 fi
 
+info() { echo -e "${CYAN}::${NC} $*"; }
+warn() { echo -e "${YELLOW}[!] $*${NC}" >&2; }
+die()  { echo -e "${RED}[X] $*${NC}" >&2; exit 1; }
+
+if ! command -v curl >/dev/null 2>&1 && { [ ! -f "./bin/ulpm" ] && [ ! -f "./ulpm" ]; }; then
+    die "curl is required to download components. Please install it first (e.g. sudo apt install curl)."
+fi
+
 print_banner() {
-    clear
-    if [[ -n "${NO_COLOR:-}" || ! -t 1 ]]; then
-        echo "=== ULPM (Universal Linux Package Manager) ==="
+    local term_cols
+    term_cols=$(tput cols 2>/dev/null || echo 80)
+
+    if [[ -n "${NO_COLOR:-}" || ! -t 1 || "$term_cols" -lt 80 ]]; then
+        echo -e "\n=== ULPM (Universal Linux Package Manager v4.0.0) ===\n"
         return 0
     fi
+
+    clear
     echo -e "              \033[0;97m▐\033[0;96m██\033[0;37m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
     echo -e "              \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
     echo -e "              \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
@@ -43,10 +55,6 @@ print_banner() {
 REPO="Ruraam/ulpm"
 REF="${ULPM_REF:-main}"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
-
-info() { echo -e "${CYAN}::${NC} $*"; }
-warn() { echo -e "${YELLOW}[!] $*${NC}" >&2; }
-die()  { echo -e "${RED}[X] $*${NC}" >&2; exit 1; }
 
 # ------------------------------------------------------------
 # Arguments & Menu
@@ -90,7 +98,7 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
 
     if [ -n "$TTY_IN" ]; then
         echo
-        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager (LPK Engine v3.3)${NC}"
+        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager (LPK Engine v4.0.0)${NC}"
         echo "  1) Rootless installation (User: ~/.local/bin)"
         echo "  2) System-wide installation (Root: /usr/local/bin)"
         echo "  3) Clean uninstallation"
@@ -199,7 +207,7 @@ uninstall_ulpm() {
     fi
 
     local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm")
-    local share_dirs=("$data_home/ulpm/lib" "/usr/local/lib/ulpm")
+    local lib_dirs=("$HOME/.local/lib/ulpm" "/usr/local/lib/ulpm" "$data_home/ulpm/engine")
 
     for path in "${targets[@]}"; do
         if [ -e "$path" ] || [ -L "$path" ]; then
@@ -213,7 +221,7 @@ uninstall_ulpm() {
         fi
     done
 
-    for dir in "${share_dirs[@]}"; do
+    for dir in "${lib_dirs[@]}"; do
         if [ -d "$dir" ]; then
             if [ -w "$(dirname "$dir")" ]; then
                 rm -rf -- "$dir"
@@ -260,17 +268,74 @@ for pm in apt-get pacman dnf zypper apk xbps-install; do
 done
 
 pkg_for() {
-    case "$1" in
-        mksquashfs) [ "$PM" = "zypper" ] && echo "squashfs" || echo "squashfs-tools" ;;
-        bwrap)      echo "bubblewrap" ;;
-        fuse3)      echo "fuse3" ;;
-        cmp)        echo "diffutils" ;;
-        od|truncate|tail|head|dd|realpath|mktemp) echo "coreutils" ;;
-        *)          echo "$1" ;;
+    local cmd="$1"
+    case "$cmd" in
+        mksquashfs)
+            case "$PM" in
+                zypper) echo "squashfs" ;;
+                *)      echo "squashfs-tools" ;;
+            esac
+            ;;
+        bwrap)
+            echo "bubblewrap"
+            ;;
+        fuse3)
+            echo "fuse3"
+            ;;
+        xdg-dbus-proxy)
+            echo "xdg-dbus-proxy"
+            ;;
+        cmp)
+            echo "diffutils"
+            ;;
+        ldd)
+            case "$PM" in
+                apt-get) echo "libc-bin" ;;
+                apk)     echo "musl-utils" ;;
+                *)       echo "glibc" ;;
+            esac
+            ;;
+        od|truncate|tail|head|dd|realpath|mktemp)
+            echo "coreutils"
+            ;;
+        find)
+            echo "findutils"
+            ;;
+        awk)
+            echo "gawk"
+            ;;
+        tar)
+            echo "tar"
+            ;;
+        *)
+            echo "$cmd"
+            ;;
     esac
 }
 
-REQUIRED_CMDS=(squashfuse mksquashfs bwrap jq file curl openssl cmp od truncate tail head dd realpath mktemp)
+REQUIRED_CMDS=(
+    squashfuse
+    mksquashfs
+    bwrap
+    xdg-dbus-proxy
+    jq
+    file
+    curl
+    openssl
+    cmp
+    od
+    truncate
+    tail
+    head
+    dd
+    realpath
+    mktemp
+    find
+    awk
+    tar
+    ldd
+)
+
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
@@ -290,86 +355,91 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
             case "$PM" in
                 apt-get)      priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
                 pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
-                dnf)          priv dnf install -y "${PKGS[@]}";;
+                dnf)          priv dnf install -y "${PKGS[@]}" ;;
                 zypper)       priv zypper --non-interactive install "${PKGS[@]}" ;;
                 apk)          priv apk add "${PKGS[@]}" ;;
                 xbps-install) priv xbps-install -Sy "${PKGS[@]}" ;;
             esac
-            command -v xdg-dbus-proxy >/dev/null 2>&1 || {
-                case "$PM" in
-                    apt-get) priv apt-get install -y xdg-dbus-proxy >/dev/null 2>&1 || true ;;
-                    pacman)  priv pacman -S --needed --noconfirm xdg-dbus-proxy >/dev/null 2>&1 || true ;;
-                    dnf)     priv dnf install -y xdg-dbus-proxy >/dev/null 2>&1 || true ;;
-                esac
-            }
         fi
+    elif [ -z "$PM" ]; then
+        warn "No supported package manager detected."
+        info "Please install the missing tools manually using your system package manager: ${MISSING[*]}"
     fi
 fi
 
 # ------------------------------------------------------------
-# Paths & Installation targets
+# Paths & Installation targets (Aligned with ULPM v4.0.0)
 # ------------------------------------------------------------
 
 NEED_PRIV=false
 if [ "$MODE" = "system" ]; then
     BIN_DIR="/usr/local/bin"
-    INSTALL_ROOT="/usr/local/lib/ulpm"
+    LIB_DIR="/usr/local/lib/ulpm"
     [ "$(id -u)" -ne 0 ] && NEED_PRIV=true
 else
     BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-    INSTALL_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm/engine"
+    LIB_DIR="$HOME/.local/lib/ulpm"
 fi
 
 [ "$NEED_PRIV" = true ] && resolve_elevate
 
-info "Installing ULPM into ${BOLD}$INSTALL_ROOT${NC}..."
+info "Installing ULPM into ${BOLD}$BIN_DIR/ulpm${NC} (Libs: ${BOLD}$LIB_DIR${NC})..."
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ulpm-install.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# 1. Download executables and modules
-mkdir -p "$TMP_DIR/lib"
-FILES=(
-    "ulpm"
-    "lib/common.sh"
-    "lib/crypto.sh"
-    "lib/db.sh"
-    "lib/packaging.sh"
-    "lib/sandbox.sh"
-    "lib/cli.sh"
+# 1. Modules v4.0.0
+MODULES=(
+    "utils.sh"
+    "crypto.sh"
+    "sandbox.sh"
+    "pack.sh"
+    "deb.sh"
+    "run.sh"
+    "stream.sh"
+    "manage.sh"
 )
 
-LOCAL_BUILD=false
-if [ -f "./ulpm" ] && [ -d "./lib" ]; then
-    LOCAL_BUILD=true
+mkdir -p "$TMP_DIR/lib"
+
+# Retrieve / copy the ulpm binary
+if [ -f "./bin/ulpm" ]; then
+    cp "./bin/ulpm" "$TMP_DIR/ulpm"
+elif [ -f "./ulpm" ]; then
+    cp "./ulpm" "$TMP_DIR/ulpm"
+else
+    info "Downloading bin/ulpm..."
+    curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" || die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
 fi
 
-for f in "${FILES[@]}"; do
-    if [ "$LOCAL_BUILD" = true ] && [ -f "./$f" ]; then
-        cp "./$f" "$TMP_DIR/$f"
+# Retrieve / copy the 8 lib/*.sh modules
+for m in "${MODULES[@]}"; do
+    if [ -f "./lib/$m" ]; then
+        cp "./lib/$m" "$TMP_DIR/lib/$m"
     else
-        info "Downloading $f..."
-        curl -fL --progress-bar --retry 2 "$BASE_URL/$f" -o "$TMP_DIR/$f" || die "Failed to download $f from GitHub ($BASE_URL/$f)"
+        info "Downloading lib/$m..."
+        curl -fL --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" || die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
     fi
 done
 
-bash -n "$TMP_DIR/ulpm" || die "Syntax error detected in downloaded ulpm!"
+bash -n "$TMP_DIR/ulpm" || die "Syntax error detected in ulpm executable!"
+for m in "${MODULES[@]}"; do
+    bash -n "$TMP_DIR/lib/$m" || die "Syntax error detected in module lib/$m!"
+done
 
-# 2. Deploy to final directory
+# 2. Final deployment
 if [ "$NEED_PRIV" = true ]; then
-    priv mkdir -p "$INSTALL_ROOT/lib" "$BIN_DIR"
-    priv install -m 0755 "$TMP_DIR/ulpm" "$INSTALL_ROOT/ulpm"
-    for f in "${FILES[@]}"; do
-        [[ "$f" == lib/* ]] && priv install -m 0644 "$TMP_DIR/$f" "$INSTALL_ROOT/$f"
+    priv mkdir -p "$LIB_DIR" "$BIN_DIR"
+    priv install -m 0755 "$TMP_DIR/ulpm" "$BIN_DIR/ulpm"
+    for m in "${MODULES[@]}"; do
+        priv install -m 0644 "$TMP_DIR/lib/$m" "$LIB_DIR/$m"
     done
-    priv ln -sf "$INSTALL_ROOT/ulpm" "$BIN_DIR/ulpm"
 else
-    mkdir -p "$INSTALL_ROOT/lib" "$BIN_DIR"
-    install -m 0755 "$TMP_DIR/ulpm" "$INSTALL_ROOT/ulpm"
-    for f in "${FILES[@]}"; do
-        [[ "$f" == lib/* ]] && install -m 0644 "$TMP_DIR/$f" "$INSTALL_ROOT/$f"
+    mkdir -p "$LIB_DIR" "$BIN_DIR"
+    install -m 0755 "$TMP_DIR/ulpm" "$BIN_DIR/ulpm"
+    for m in "${MODULES[@]}"; do
+        install -m 0644 "$TMP_DIR/lib/$m" "$LIB_DIR/$m"
     done
-    ln -sf "$INSTALL_ROOT/ulpm" "$BIN_DIR/ulpm"
 fi
 
 # ------------------------------------------------------------
@@ -390,8 +460,10 @@ add_path_line() {
 }
 
 RELOAD_HINT=""
+USER_SHELL_NAME="${SHELL##*/}"
+
 if [ "$MODE" = "user" ]; then
-    case "${SHELL##*/}" in
+    case "$USER_SHELL_NAME" in
         fish)
             cfg="$HOME/.config/fish/conf.d/ulpm.fish"
             mkdir -p "$(dirname "$cfg")"
@@ -409,7 +481,9 @@ if [ "$MODE" = "user" ]; then
 
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;
-        *) RELOAD_HINT="Notice: Add $BIN_DIR to your PATH or restart your session." ;;
+        *)
+            RELOAD_HINT="$BIN_DIR is not yet in your PATH for this terminal session."
+            ;;
     esac
 fi
 
@@ -421,12 +495,23 @@ if [ "$INTEGRATE" = true ]; then
     if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
         warn "Running under sudo: skipping integration (run 'ulpm integrate' under your user)."
     else
-        PATH="$BIN_DIR:$PATH" "$INSTALL_ROOT/ulpm" integrate quiet || true
+        PATH="$BIN_DIR:$PATH" "$BIN_DIR/ulpm" integrate quiet 2>/dev/null || true
     fi
 fi
 
 echo
-echo -e "${GREEN}✔ ULPM v3.3 installed successfully!${NC}"
-echo -e "  Binary: ${BOLD}$BIN_DIR/ulpm${NC} -> ${GRAY}$INSTALL_ROOT/ulpm${NC}"
-[ -n "$RELOAD_HINT" ] && warn "$RELOAD_HINT"
-echo -e "Try: ${BOLD}ulpm help${NC}"
+echo -e "${GREEN}✔ ULPM v4.0.0 installed successfully!${NC}"
+echo -e "  Binary:    ${BOLD}$BIN_DIR/ulpm${NC}"
+echo -e "  Libraries: ${GRAY}$LIB_DIR${NC}"
+
+if [ -n "$RELOAD_HINT" ]; then
+    echo
+    warn "$RELOAD_HINT"
+    case "$USER_SHELL_NAME" in
+        fish) echo -e "  >> To use it immediately, run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
+        zsh)  echo -e "  >> To use it immediately, run: ${BOLD}source ~/.zshrc${NC} (or open a new terminal)" ;;
+        *)    echo -e "  >> To use it immediately, run: ${BOLD}source ~/.bashrc${NC} (or open a new terminal)" ;;
+    esac
+fi
+
+echo -e "\nTry: ${BOLD}ulpm help${NC}"
