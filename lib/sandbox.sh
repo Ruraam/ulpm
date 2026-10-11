@@ -13,7 +13,7 @@ ENV_WHITELIST=(
     QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR
     XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
     __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD __VK_LAYER_NV_optimus
-    VK_ICD_FILENAMES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
+    VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
     # Recalbox / Gaming specific variables
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
 )
@@ -287,13 +287,13 @@ lpk_run_isolated() {
     fi
 
     local app_id="app_$(basename "$target" .lpk)"
-    local exec_bin="/bin/main"
+    local exec_bin="bin/main"
     local is_chromium=false
     local allow_net=true
 
     if [[ -f "$manifest" ]]; then
         app_id=$(jq -r '.id // .name // "'"$app_id"'"' "$manifest" 2>/dev/null || echo "$app_id")
-        exec_bin=$(jq -r '.exec // "/bin/main"' "$manifest" 2>/dev/null || echo "/bin/main")
+        exec_bin=$(jq -r '.exec // "bin/main"' "$manifest" 2>/dev/null || echo "bin/main")
         is_chromium=$(jq -r '.chromium // false' "$manifest" 2>/dev/null || echo "false")
         allow_net=$(jq -r '.network // true' "$manifest" 2>/dev/null || echo "true")
     fi
@@ -315,8 +315,17 @@ lpk_run_isolated() {
     dl_dir="${HOME}/Downloads"
     mkdir -p "$dl_dir"
 
+    # Prevent leading slash in execution path
+    local clean_exec="${exec_bin#/}"
+
+    # Detect app payload root (supports root/ or direct root)
+    local app_payload_dir="$RUN_MNT_DIR"
+    if [[ -d "$RUN_MNT_DIR/root" ]]; then
+        app_payload_dir="$RUN_MNT_DIR/root"
+    fi
+
     local chromium_flags=()
-    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$RUN_MNT_DIR/$exec_bin" 2>/dev/null; then
+    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$app_payload_dir/$clean_exec" 2>/dev/null; then
         chromium_flags=(
             --no-sandbox
             --test-type
@@ -370,7 +379,7 @@ lpk_run_isolated() {
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
 
-    # Hardware and User directories
+    # Hardware, Gaming & User directories
     bwrap_args+=(
         --dev-bind-try /dev/dri /dev/dri
         --dev-bind-try /dev/snd /dev/snd
@@ -379,7 +388,10 @@ lpk_run_isolated() {
         --dev-bind-try /dev/js1 /dev/js1
         --dev-bind-try /dev/js2 /dev/js2
         --dev-bind-try /dev/js3 /dev/js3
+        --dev-bind-try /dev/uinput /dev/uinput
         --ro-bind-try /run/udev /run/udev
+        --ro-bind-try /usr/share/vulkan /usr/share/vulkan
+        --ro-bind-try /usr/share/glvnd /usr/share/glvnd
         --ro-bind-try /usr/share/fonts /usr/share/fonts
         --ro-bind-try /usr/share/themes /usr/share/themes
         --ro-bind-try /usr/share/icons /usr/share/icons
@@ -388,7 +400,7 @@ lpk_run_isolated() {
         --bind "$app_data_dir/config" "$HOME/.config"
         --bind "$app_data_dir/data" "$HOME/.local/share"
         --bind "$app_data_dir/cache" "$HOME/.cache"
-        --ro-bind "$RUN_MNT_DIR" /app
+        --ro-bind "$app_payload_dir" /app
     )
 
     if [[ -d "/recalbox/share" ]]; then
@@ -453,22 +465,24 @@ lpk_run_isolated() {
         fi
     done
 
-    bwrap_args+=(
-        --setenv PATH "/app/bin:/app/usr/bin:/usr/bin:/bin"
-        --setenv LD_LIBRARY_PATH "/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64"
-        --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
-    )
-
-    # Target executable resolution
-    local real_exec="/app$exec_bin"
-    if [[ ! -x "$RUN_MNT_DIR$exec_bin" ]]; then
-        if [[ -f "$RUN_MNT_DIR/AppRun" ]]; then
+    # Resolve entrypoint
+    local real_exec="/app/$clean_exec"
+    if [[ ! -x "$app_payload_dir/$clean_exec" ]]; then
+        if [[ -x "$app_payload_dir/AppRun" ]]; then
             real_exec="/app/AppRun"
-        elif [[ -f "$RUN_MNT_DIR/bin/main" ]]; then
+        elif [[ -x "$app_payload_dir/bin/main" ]]; then
             real_exec="/app/bin/main"
+        elif [[ -x "$app_payload_dir/main" ]]; then
+            real_exec="/app/main"
         fi
     fi
 
+    bwrap_args+=(
+        --setenv PATH "/app/bin:/app/usr/bin:/app:$PATH"
+        --setenv LD_LIBRARY_PATH "/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib"
+        --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
+    )
+
     log "Launching application [$app_id] via Bubblewrap sandbox..."
-    "${bwrap_args[@]}" "$real_exec" "${chromium_flags[@]}" "$@"
+    "${bwrap_args[@]}" "$real_exec" "${chromium_flags[@]:-}" "$@"
 }

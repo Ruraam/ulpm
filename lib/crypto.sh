@@ -30,16 +30,22 @@ cmd_keygen() {
 # Alias to match the dispatcher in bin/ulpm
 generate_keypair() { cmd_keygen "$@"; }
 
+# Helper: Check if a file ends with the ULPM_SIG magic string (zero Bash subshell warning)
+has_sig_magic() {
+    local file="$1"
+    local magic_check
+    magic_check="$(tail -c "$SIG_FOOTER_SIZE" "$file" 2>/dev/null | head -c 8 | tr -d '\0')"
+    [ "$magic_check" = "$SIG_MAGIC" ]
+}
+
 strip_signature() {
     local file="$1"
     local size
-    size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")
+    size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 0)
 
     if [ "$size" -gt "$SIG_FOOTER_SIZE" ]; then
-        local offset=$((size - SIG_FOOTER_SIZE))
-        local magic
-        magic=$(tail -c "$SIG_FOOTER_SIZE" "$file" | head -c 8)
-        if [ "$magic" = "$SIG_MAGIC" ]; then
+        if has_sig_magic "$file"; then
+            local offset=$((size - SIG_FOOTER_SIZE))
             truncate -s "$offset" "$file"
         fi
     fi
@@ -63,8 +69,8 @@ cmd_sign() {
     strip_signature "$lpk_file"
 
     local sig_tmp pub_raw_tmp
-    sig_tmp="$(mktemp)"
-    pub_raw_tmp="$(mktemp)"
+    sig_tmp="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/sig_XXXXXX.tmp")"
+    pub_raw_tmp="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/pub_XXXXXX.tmp")"
 
     # Extract the 32 raw bytes of the Ed25519 public key
     openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c 32 > "$pub_raw_tmp"
@@ -89,36 +95,35 @@ verify_package() {
     check_dependencies openssl cmp dd tail head
 
     local size
-    size=$(stat -c%s "$lpk_file" 2>/dev/null || stat -f%z "$lpk_file")
+    size=$(stat -c%s "$lpk_file" 2>/dev/null || stat -f%z "$lpk_file" 2>/dev/null || echo 0)
 
     if [ "$size" -le "$SIG_FOOTER_SIZE" ]; then
         warn "Package $lpk_file is too small to contain a signature."
         return 1
     fi
 
-    local footer_offset=$((size - SIG_FOOTER_SIZE))
-    local magic
-    magic=$(tail -c "$SIG_FOOTER_SIZE" "$lpk_file" | head -c 8)
-    if [ "$magic" != "$SIG_MAGIC" ]; then
+    if ! has_sig_magic "$lpk_file"; then
         warn "No ULPM cryptographic signature detected in $lpk_file."
         return 2
     fi
 
+    local footer_offset=$((size - SIG_FOOTER_SIZE))
     local pub_raw_tmp sig_tmp pub_pem_tmp
-    pub_raw_tmp="$(mktemp)"
-    sig_tmp="$(mktemp)"
-    pub_pem_tmp="$(mktemp)"
+    pub_raw_tmp="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/pub_raw_XXXXXX.tmp")"
+    sig_tmp="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/sig_XXXXXX.tmp")"
+    pub_pem_tmp="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/pub_pem_XXXXXX.tmp")"
 
-    # Surgical extraction of bytes
+    # Surgical extraction of bytes directly to temp files (no subshell byte-stripping)
     tail -c "$SIG_FOOTER_SIZE" "$lpk_file" | head -c 40 | tail -c 32 > "$pub_raw_tmp"
     tail -c 64 "$lpk_file" > "$sig_tmp"
 
     # Reconstruct public key from raw bytes into PEM format:
     # DER Ed25519 header (12 bytes) + 32 raw bytes, then convert to PEM
-    {
-        printf "\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00"
-        cat "$pub_raw_tmp"
-    } | openssl pkey -pubin -inform DER -pubout -out "$pub_pem_tmp" 2>/dev/null
+    # Written directly to file to prevent Bash from warning on \x00
+    printf '%b' '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$pub_pem_tmp.der"
+    cat "$pub_raw_tmp" >> "$pub_pem_tmp.der"
+    openssl pkey -pubin -inform DER -in "$pub_pem_tmp.der" -pubout -out "$pub_pem_tmp" 2>/dev/null
+    rm -f "$pub_pem_tmp.der"
 
     # Cryptographic verification of payload (entire file minus last 104 bytes)
     local verified=0
