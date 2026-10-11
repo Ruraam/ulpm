@@ -53,40 +53,40 @@ show_help() {
 ulpm - Universal Linux Package Manager (v${ULPM_VERSION})
 
 USAGE:
-ulpm <COMMAND> [OPTIONS] [ARGUMENTS]
+    ulpm <COMMAND> [OPTIONS] [ARGUMENTS]
 
 EXECUTION COMMANDS:
-run <package.lpk|app_name> [flags] [-- args...]   Run an isolated application
-stream <url|repo|package.lpk> [flags]             Run ephemerally in RAM/tmpfs without installing
+    run <package.lpk|app_name> [flags] [-- args...]   Run an isolated application
+    stream <url|repo|package.lpk> [flags]             Run ephemerally in RAM/tmpfs without installing
 
 PACKAGING COMMANDS:
-pack <folder|archive|appimage> [name] [out.lpk]  Create a standalone .lpk bundle
-deb-pack <package_name|file.deb> [name]           Fetch and package via APT dependencies
+    pack <folder|archive|appimage> [name] [out.lpk]  Create a standalone .lpk bundle
+    deb-pack <package_name|file.deb> [name]           Fetch and package via APT dependencies
 
 MANAGEMENT COMMANDS:
-install <package.lpk|url>                         Install an application locally
-remove [--purge] <app_name>                       Uninstall an application
-list                                              List installed applications
-upgrade [app_name]                                Upgrade installed packages
-clean                                             Clean up cache and dangling mounts
+    install <package.lpk|url>                         Install an application locally
+    remove [--purge] <app_name>                       Uninstall an application
+    list                                               List installed applications
+    upgrade [app_name]                                Upgrade installed packages
+    clean                                              Clean up cache and dangling mounts
 
 CRYPTOGRAPHIC COMMANDS:
-keygen <key_name>                                 Generate an Ed25519 keypair
-sign <package.lpk> [private_key]                  Sign an .lpk package
-trust <public_key.pub>                            Trust a public key
+    keygen <key_name>                                 Generate an Ed25519 keypair
+    sign <package.lpk> [private_key]                  Sign an .lpk package
+    trust <public_key.pub>                            Trust a public key
 
 SANDBOX RUNTIME FLAGS:
---offline              Disable network access
---no-gpu              Disable hardware acceleration (Mesa/Vulkan)
---no-audio            Disable sound server access (PipeWire/PulseAudio)
---no-gui              Disable Wayland and X11 display access
---bind <host>:<dest>  Bind mount a host folder into the sandbox
+    --offline              Disable network access
+    --no-gpu              Disable hardware acceleration (Mesa/Vulkan)
+    --no-audio            Disable sound server access (PipeWire/PulseAudio)
+    --no-gui              Disable Wayland and X11 display access
+    --bind <host>:<dest>  Bind mount a host folder into the sandbox
 
 ENVIRONMENT VARIABLES:
-ULPM_ZSTD_LEVEL=1..22   Compression level for 'pack' (default: 19)
-Level 15 is recommended for 5x faster packing
-with ~98% of the compression ratio.
-Example: ULPM_ZSTD_LEVEL=15 ulpm pack my_app/
+    ULPM_ZSTD_LEVEL=1..22   Compression level for 'pack' (default: 19)
+    Level 15 is recommended for 5x faster packing
+    with ~98% of the compression ratio.
+    Example: ULPM_ZSTD_LEVEL=15 ulpm pack my_app/
 
 For detailed help on a specific command: ulpm <COMMAND> --help
 EOF
