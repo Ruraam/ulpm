@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/sandbox.sh - Bubblewrap isolation, D-Bus proxy, RootFS & Recalbox support
+# lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
 # ==============================================================================
 
 # Whitelist of environment variables forwarded into the sandbox
@@ -19,7 +19,7 @@ ENV_WHITELIST=(
 )
 
 # ------------------------------------------------------------------------------
-# D-Bus Session Socket & Proxy Handling
+# D-Bus Session Socket Helper
 # ------------------------------------------------------------------------------
 
 session_bus_socket() {
@@ -30,57 +30,6 @@ session_bus_socket() {
         return 0
     fi
     return 1
-}
-
-start_dbus_proxy() {
-    local run_user_dir="$1" app_id="$2"
-    local real_sock
-
-    command -v xdg-dbus-proxy &>/dev/null || return 1
-    real_sock=$(session_bus_socket "$run_user_dir") || return 1
-
-    RUN_DBUS_DIR=$(mktemp -d "$run_user_dir/ulpm-dbus.XXXXXX" 2>/dev/null) || { RUN_DBUS_DIR=""; return 1; }
-
-    local extra=()
-    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-        # shellcheck disable=SC2206
-        extra=($ULPM_DBUS_EXTRA)
-    fi
-
-    xdg-dbus-proxy "unix:path=$real_sock" "$RUN_DBUS_DIR/bus" --filter \
-        --own="${app_id}.*" \
-        --own='org.mpris.MediaPlayer2.*' \
-        --talk=org.freedesktop.Notifications \
-        --talk=org.freedesktop.ScreenSaver \
-        --talk=org.freedesktop.PowerManagement.Inhibit \
-        --talk=org.freedesktop.portal.Desktop \
-        --talk=org.freedesktop.portal.Documents \
-        --talk=org.kde.StatusNotifierWatcher \
-        ${extra[@]+"${extra[@]}"} &
-    RUN_DBUS_PID=$!
-
-    local i
-    for i in {1..30}; do
-        [[ -S "$RUN_DBUS_DIR/bus" ]] && break
-        kill -0 "$RUN_DBUS_PID" 2>/dev/null || break
-        sleep 0.1
-    done
-
-    if [[ ! -S "$RUN_DBUS_DIR/bus" ]]; then
-        cleanup_instance_dbus_only
-        return 1
-    fi
-    return 0
-}
-
-cleanup_instance_dbus_only() {
-    if [[ -n "${RUN_DBUS_PID:-}" ]] && kill -0 "$RUN_DBUS_PID" 2>/dev/null; then
-        kill "$RUN_DBUS_PID" 2>/dev/null || true
-        wait "$RUN_DBUS_PID" 2>/dev/null || true
-    fi
-    if [[ -n "${RUN_DBUS_DIR:-}" && -d "$RUN_DBUS_DIR" ]]; then
-        rm -rf "$RUN_DBUS_DIR"
-    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -108,15 +57,16 @@ lpk_is_rootfs() {
 }
 
 lpk_run_rootfs() {
-    local app_id="$1"
-    local exec_bin="$2"
-    local force_offline="$3"
-    local allow_net="$4"
-    shift 4
+    local mnt_dir="$1"
+    local app_id="$2"
+    local exec_bin="$3"
+    local force_offline="$4"
+    local allow_net="$5"
+    shift 5
 
-    local rootfs_dir="$RUN_MNT_DIR"
-    if [[ -d "$RUN_MNT_DIR/root" && -d "$RUN_MNT_DIR/root/etc" ]]; then
-        rootfs_dir="$RUN_MNT_DIR/root"
+    local rootfs_dir="$mnt_dir"
+    if [[ -d "$mnt_dir/root" && -d "$mnt_dir/root/etc" ]]; then
+        rootfs_dir="$mnt_dir/root"
     fi
 
     local app_data_dir="$HOME/.var/app/$app_id"
@@ -237,7 +187,7 @@ lpk_run_rootfs() {
 }
 
 # ------------------------------------------------------------------------------
-# App Mode Execution (Shared Host Base + Sandbox)
+# App Mode Execution (Shared Host Base + Sandbox + Full Concurrency)
 # ------------------------------------------------------------------------------
 
 lpk_run_isolated() {
@@ -273,17 +223,40 @@ lpk_run_isolated() {
         warn "Signature check failed or missing. Continuing in sandbox..."
     fi
 
-    RUN_MNT_DIR=$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_run_XXXXXX")
-    trap 'safe_unmount "$RUN_MNT_DIR"; cleanup_instance_dbus_only; rm -rf "$RUN_MNT_DIR"' EXIT INT TERM HUP
+    # Instance-isolated scope execution (immune to race conditions)
+    local instance_id
+    instance_id="$$-${RANDOM}"
+    local mnt_dir dbus_proxy_dir dbus_pid=""
 
-    if ! squashfuse "$pkg_path" "$RUN_MNT_DIR" 2>/dev/null; then
+    mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_mnt_${instance_id}.XXXXXX")"
+
+    # Contextual cleanup attached only to this instance
+    cleanup_instance() {
+        if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
+            kill "$dbus_pid" 2>/dev/null || true
+            wait "$dbus_pid" 2>/dev/null || true
+        fi
+        [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
+
+        if command -v fusermount3 &>/dev/null; then
+            fusermount3 -u -z "$mnt_dir" 2>/dev/null || true
+        elif command -v fusermount &>/dev/null; then
+            fusermount -u -z "$mnt_dir" 2>/dev/null || true
+        elif command -v safe_unmount &>/dev/null; then
+            safe_unmount "$mnt_dir" 2>/dev/null || true
+        fi
+        rm -rf "$mnt_dir"
+    }
+    trap cleanup_instance EXIT INT TERM HUP
+
+    if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
         error "Failed to mount SquashFS image ($pkg_path)"
         return 1
     fi
 
-    local manifest="$RUN_MNT_DIR/meta/manifest.json"
+    local manifest="$mnt_dir/meta/manifest.json"
     if [[ ! -f "$manifest" ]]; then
-        manifest="$RUN_MNT_DIR/lpk.json"
+        manifest="$mnt_dir/lpk.json"
     fi
 
     local app_id="app_$(basename "$target" .lpk)"
@@ -298,14 +271,18 @@ lpk_run_isolated() {
         allow_net=$(jq -r '.network // true' "$manifest" 2>/dev/null || echo "true")
     fi
 
+    # --------------------------------------------------------------------------
     # ROOTFS ROUTING
-    if lpk_is_rootfs "$RUN_MNT_DIR" "$manifest"; then
+    # --------------------------------------------------------------------------
+    if lpk_is_rootfs "$mnt_dir" "$manifest"; then
         local rootfs_rc=0
-        lpk_run_rootfs "$app_id" "$exec_bin" "$force_offline" "$allow_net" "$@" || rootfs_rc=$?
+        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" "$@" || rootfs_rc=$?
         return "$rootfs_rc"
     fi
 
+    # --------------------------------------------------------------------------
     # STANDARD APP SANDBOX SETUP
+    # --------------------------------------------------------------------------
     local app_data_dir="$HOME/.var/app/$app_id"
     mkdir -p "$app_data_dir/home" "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
 
@@ -315,15 +292,16 @@ lpk_run_isolated() {
     dl_dir="${HOME}/Downloads"
     mkdir -p "$dl_dir"
 
-    # Prevent leading slash in execution path
+    # Clean leading slash in execution target
     local clean_exec="${exec_bin#/}"
 
-    # Detect app payload root (supports root/ or direct root)
-    local app_payload_dir="$RUN_MNT_DIR"
-    if [[ -d "$RUN_MNT_DIR/root" ]]; then
-        app_payload_dir="$RUN_MNT_DIR/root"
+    # Determine payload directory (/root/ structure or direct root)
+    local app_payload_dir="$mnt_dir"
+    if [[ -d "$mnt_dir/root" ]]; then
+        app_payload_dir="$mnt_dir/root"
     fi
 
+    # Electron / Chromium sandbox management
     local chromium_flags=()
     if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$app_payload_dir/$clean_exec" 2>/dev/null; then
         chromium_flags=(
@@ -357,14 +335,14 @@ lpk_run_isolated() {
         --bind "$app_data_dir/home" "$HOME"
     )
 
-    # Lib symlinks support for multiarch distributions (Debian, Arch, Fedora)
+    # Multiarch library symlinks support
     for dir in /lib /lib64 /lib32 /bin /sbin; do
         if [[ -d "$dir" ]]; then
             bwrap_args+=(--ro-bind "$dir" "$dir")
         fi
     done
 
-    # Network
+    # Network configuration
     if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
         bwrap_args+=(--unshare-net)
     else
@@ -407,7 +385,7 @@ lpk_run_isolated() {
         bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
     fi
 
-    # Display (Wayland & X11)
+    # Display Protocols (Wayland & X11)
     if [[ -n "${DISPLAY:-}" ]]; then
         local x_sock
         if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
@@ -432,7 +410,7 @@ lpk_run_isolated() {
         bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
     fi
 
-    # Audio (PulseAudio / PipeWire)
+    # Audio Routing (PulseAudio / PipeWire)
     local pulse_sock="$run_user_dir/pulse/native"
     if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
         pulse_sock="${BASH_REMATCH[1]}"
@@ -442,7 +420,9 @@ lpk_run_isolated() {
         --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
     )
 
-    # D-Bus proxy or direct fallback
+    # --------------------------------------------------------------------------
+    # D-Bus Isolation Proxy (Per-Instance Safe)
+    # --------------------------------------------------------------------------
     case "${ULPM_DBUS_MODE:-proxy}" in
         none) ;;
         full)
@@ -452,20 +432,52 @@ lpk_run_isolated() {
             fi
             ;;
         *)
-            if start_dbus_proxy "$run_user_dir" "$app_id"; then
-                bwrap_args+=(--bind "$RUN_DBUS_DIR/bus" "$run_user_dir/bus")
+            if command -v xdg-dbus-proxy &>/dev/null; then
+                local real_sock
+                if real_sock=$(session_bus_socket "$run_user_dir"); then
+                    dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
+                    if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
+                        local dbus_extra=()
+                        if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                            # shellcheck disable=SC2206
+                            dbus_extra=($ULPM_DBUS_EXTRA)
+                        fi
+
+                        xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
+                            --own="${app_id}.*" \
+                            --own='org.mpris.MediaPlayer2.*' \
+                            --talk=org.freedesktop.Notifications \
+                            --talk=org.freedesktop.ScreenSaver \
+                            --talk=org.freedesktop.PowerManagement.Inhibit \
+                            --talk=org.freedesktop.portal.Desktop \
+                            --talk=org.freedesktop.portal.Documents \
+                            --talk=org.kde.StatusNotifierWatcher \
+                            ${dbus_extra[@]+"${dbus_extra[@]}"} &
+                        dbus_pid=$!
+
+                        for _ in {1..30}; do
+                            [[ -S "$dbus_proxy_dir/bus" ]] && break
+                            kill -0 "$dbus_pid" 2>/dev/null || break
+                            sleep 0.05
+                        done
+
+                        if [[ -S "$dbus_proxy_dir/bus" ]]; then
+                            bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
+                        fi
+                    fi
+                fi
             fi
             ;;
     esac
 
-    # Environment variables
+    # Forward environment variables
     for env_var in "${ENV_WHITELIST[@]}"; do
         if [[ -n "${!env_var:-}" ]]; then
             bwrap_args+=(--setenv "$env_var" "${!env_var}")
         fi
     done
 
-    # Resolve entrypoint
+    # Deterministic entrypoint resolution
     local real_exec="/app/$clean_exec"
     if [[ ! -x "$app_payload_dir/$clean_exec" ]]; then
         if [[ -x "$app_payload_dir/AppRun" ]]; then
@@ -483,6 +495,6 @@ lpk_run_isolated() {
         --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
     )
 
-    log "Launching application [$app_id] via Bubblewrap sandbox..."
+    log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
     "${bwrap_args[@]}" "$real_exec" "${chromium_flags[@]:-}" "$@"
 }

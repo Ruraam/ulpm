@@ -1,33 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/pack.sh - Standalone .lpk package creation with metadata & fat-bundling
+# lib/pack.sh - Hardened .lpk Production Engine (Recursive DT_NEEDED Parsing)
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Helper functions for logging and dependency checking
-# ------------------------------------------------------------------------------
-log()    { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
-info()   { printf '\033[1;32m[OK]\033[0m   %s\n' "$*"; }
-warn()   { printf '\033[1;33m[WARN]\033[0m %s\n' "$*" >&2; }
-error()  { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2; }
-
-check_dependencies() {
-    local missing=() cmd
-    for cmd in "$@"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
-        fi
-    done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        error "Missing dependencies: ${missing[*]}"
-        return 1
-    fi
-    return 0
-}
-
-# ------------------------------------------------------------------------------
-# validate_manifest - Checks manifest JSON structure and safety
-# ------------------------------------------------------------------------------
 validate_manifest() {
     local manifest="$1"
     if ! jq -e --argjson max_version "${ULPM_FORMAT_VERSION:-4}" '
@@ -45,15 +20,12 @@ validate_manifest() {
         ((.chromium // false) | type == "boolean") and
         ((.network // true) | type == "boolean")
     ' "$manifest" >/dev/null 2>&1; then
-        error "Invalid or unsafe manifest format."
+        error "Manifest validation failed (malformed or prohibited path sequences)."
         return 1
     fi
     return 0
 }
 
-# ------------------------------------------------------------------------------
-# appimage_squashfs_offset - Finds SquashFS offset inside an ELF AppImage
-# ------------------------------------------------------------------------------
 appimage_squashfs_offset() {
     local f="$1" class shoff shentsize shnum
     [[ "$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')" == "7f454c46" ]] || return 1
@@ -78,9 +50,6 @@ appimage_squashfs_offset() {
     echo $((shoff + shentsize * shnum))
 }
 
-# ------------------------------------------------------------------------------
-# extract_any_payload - Extracts payload from folder, AppImage, deb, rpm, zip, tar
-# ------------------------------------------------------------------------------
 extract_any_payload() {
     local src="$1" dest="$2"
 
@@ -126,47 +95,73 @@ extract_any_payload() {
     fi
 }
 
-# ------------------------------------------------------------------------------
-# is_system_lib - Checks if a library is a system library (skip bundling)
-# ------------------------------------------------------------------------------
 is_system_lib() {
     local bname="$1"
-    [[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so)$ ]] && return 0
-    [[ "$bname" =~ ^(libGL|libGLX|libGLdispatch|libEGL|libGLESv|libdrm|libvulkan|libgbm|libX11|libXext|libXrender|libXrandr)$ ]] && return 0
-    [[ "$bname" =~ ^(libasound|libpulse|libwayland-client|libffi|libz\.so|libbz2|liblzma)$ ]] && return 0
+    # Kernel & Low-level C runtime ABI
+    [[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libresolv\.so|libutil\.so) ]] && return 0
+    # Host Graphics & Hardware Acceleration (Bound to Host Driver Stack)
+    [[ "$bname" =~ ^(libGL|libGLX|libGLdispatch|libEGL|libGLESv|libdrm|libvulkan|libgbm|libX11|libXext|libXrender|libXrandr|libxcb) ]] && return 0
+    # Sound & Display protocols
+    [[ "$bname" =~ ^(libasound|libpulse|libwayland-client|libffi) ]] && return 0
     return 1
 }
 
-# ------------------------------------------------------------------------------
-# bundle_elf_libraries - Bundles non-system shared libraries with the binary
-# ------------------------------------------------------------------------------
+# Resolve real path of library without executing target ELF
+find_library_path() {
+    local lib_name="$1"
+    local search_paths=(
+        "/lib" "/lib64" "/usr/lib" "/usr/lib64"
+        "/usr/lib/x86_64-linux-gnu" "/usr/lib/aarch64-linux-gnu"
+        "/usr/lib/arm-linux-gnueabihf" "/lib/x86_64-linux-gnu"
+    )
+    for p in "${search_paths[@]}"; do
+        if [[ -f "$p/$lib_name" ]]; then
+            echo "$p/$lib_name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Static recursive ELF analysis (fixed-point without ldd)
 bundle_elf_libraries() {
     local root_dir="$1"
-    local bin_rel="$2"
     local lib_dest="$root_dir/lib"
     mkdir -p "$lib_dest"
 
-    log "Fat-bundling ELF shared libraries..."
+    check_dependencies readelf
 
-    while IFS= read -r binary; do
-        [[ -f "$binary" ]] || continue
-        while IFS= read -r lib; do
-            [[ -f "$lib" ]] || continue
-            local lib_name
-            lib_name="$(basename "$lib")"
+    log "Starting passive recursive dependency tracing..."
+    local -A inspected_libs=()
+    local added_new=true
 
-            if ! is_system_lib "$lib_name"; then
-                if [[ ! -f "$lib_dest/$lib_name" ]]; then
-                    cp -L "$lib" "$lib_dest/" 2>/dev/null || true
+    while [ "$added_new" = true ]; do
+        added_new=false
+        while IFS= read -r elf_file; do
+            [[ -f "$elf_file" ]] || continue
+
+            # Extract DT_NEEDED passively via readelf (zero code execution)
+            while IFS= read -r needed_lib; do
+                [[ -z "$needed_lib" ]] && continue
+                [[ -n "${inspected_libs[$needed_lib]:-}" ]] && continue
+
+                inspected_libs["$needed_lib"]=1
+
+                if ! is_system_lib "$needed_lib"; then
+                    local host_lib_path
+                    if host_lib_path="$(find_library_path "$needed_lib")"; then
+                        if [[ ! -f "$lib_dest/$needed_lib" ]]; then
+                            cp -L "$host_lib_path" "$lib_dest/$needed_lib" 2>/dev/null || true
+                            added_new=true
+                        fi
+                    fi
                 fi
-            fi
-        done < <(ldd "$binary" 2>/dev/null | awk '{if ($3 ~ /^\//) print $3; else if ($1 ~ /^\//) print $1}' || true)
-    done < <(find "$root_dir" -type f -exec file {} + 2>/dev/null | grep -E 'ELF (32|64)-bit' | cut -d: -f1 || true)
+            done < <(readelf -d "$elf_file" 2>/dev/null | awk '/\(NEEDED\)/ { gsub(/[\[\]]/, "", $NF); print $NF }' || true)
+
+        done < <(find "$root_dir" -type f -exec file {} + 2>/dev/null | grep -E 'ELF (32|64)-bit' | cut -d: -f1 || true)
+    done
 }
 
-# ------------------------------------------------------------------------------
-# auto_sign_package - Automatically signs the package if a key is available
-# ------------------------------------------------------------------------------
 auto_sign_package() {
     local pkg="$1"
     if command -v sign_package &>/dev/null; then
@@ -174,17 +169,14 @@ auto_sign_package() {
         local keys=("${ULPM_KEYS_DIR:-}"/*.priv)
         shopt -u nullglob
         if [[ ${#keys[@]} -gt 0 && -n "${ULPM_KEYS_DIR:-}" ]]; then
-            info "Signing with default key (${keys[0]})..."
-            sign_package "$pkg" "${keys[0]}" || warn "Failed to sign package."
+            info "Signing package with authority key (${keys[0]})..."
+            sign_package "$pkg" "${keys[0]}" || warn "Signature failed. Package remained unsigned."
         else
-            warn "Package built unsigned (no private key found in ${ULPM_KEYS_DIR:-<not set>})."
+            warn "No Ed25519 private keys found in ${ULPM_KEYS_DIR:-<none>}. Skipping signature."
         fi
     fi
 }
 
-# ------------------------------------------------------------------------------
-# cmd_pack - Main command: builds a .lpk package from a source directory/archive
-# ------------------------------------------------------------------------------
 cmd_pack() {
     local source_input="${1:-}"
     local raw_name="${2:-}"
@@ -193,10 +185,10 @@ cmd_pack() {
 
     if [[ -z "$source_input" ]]; then
         error "Usage: ulpm pack <folder|archive|AppImage|deb> [app_name] [output.lpk] [version]"
-        exit 1
+        return 1
     fi
 
-    check_dependencies mksquashfs jq file
+    check_dependencies mksquashfs jq file readelf
 
     local base_clean app_name app_id target_arch
     base_clean="$(basename "$source_input")"
@@ -204,22 +196,16 @@ cmd_pack() {
     app_name="${raw_name:-$base_clean}"
     app_name="$(echo "$app_name" | tr -cd 'a-zA-Z0-9._-')"
 
-    if [[ -z "$app_name" ]]; then
-        error "Invalid package name: '$raw_name'"
-        exit 1
-    fi
+    [[ -z "$app_name" ]] && { error "Malformed package name: '$raw_name'"; return 1; }
 
     app_id="io.lpk.${app_name,,}"
     target_arch="$(uname -m)"
+    output_lpk="${output_lpk:-${app_name}_${target_arch}.lpk}"
 
-    if [[ -z "$output_lpk" ]]; then
-        output_lpk="${app_name}_${target_arch}.lpk"
-    fi
-
-    # Case 1: Pre-structured LPK folder (meta/manifest.json + root/)
+    # Pre-structured directories (root/ + meta/)
     if [[ -d "$source_input" && -f "$source_input/meta/manifest.json" && -d "$source_input/root" ]]; then
-        log "Pre-structured LPK structure detected..."
-        validate_manifest "$source_input/meta/manifest.json" || exit 1
+        log "Pre-structured tree verified. Packaging directly..."
+        validate_manifest "$source_input/meta/manifest.json" || return 1
         rm -f "$output_lpk"
         local zstd_lvl="${ULPM_ZSTD_LEVEL:-19}"
         mksquashfs "$source_input" "$output_lpk" -comp zstd -Xcompression-level "$zstd_lvl" -noappend -reproducible
@@ -229,17 +215,15 @@ cmd_pack() {
     fi
 
     local build_dir
-    build_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/build_XXXXXX")"
-
-    # Cleanup trap with fallback to avoid "unbound variable" errors
+    build_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_build.XXXXXX")"
     trap 'rm -rf "${build_dir:-}"' EXIT INT TERM
 
     mkdir -p "$build_dir/root" "$build_dir/meta"
 
-    log "Extracting payload into temporary tree..."
+    log "Extracting assets..."
     extract_any_payload "$source_input" "$build_dir/root"
 
-    # Flatten if extraction created a single encompassing subdirectory
+    # Flatten nested root directories
     shopt -s nullglob
     local entries=("$build_dir/root"/*)
     shopt -u nullglob
@@ -250,10 +234,8 @@ cmd_pack() {
         shopt -u dotglob
     fi
 
-    # Smart entrypoint binary detection
+    # Secure binary entrypoint detection
     local detected_exec="" f fname
-
-    # 1. Priority search by exact app name or AppRun
     while IFS= read -r f; do
         fname="$(basename "$f")"
         if [[ "${fname,,}" =~ ^(${app_name,,}|${base_clean,,}|apprun|main)$ ]]; then
@@ -262,7 +244,6 @@ cmd_pack() {
         fi
     done < <(find "$build_dir/root" -maxdepth 4 -type f -executable 2>/dev/null || true)
 
-    # 2. Secondary search: first ELF binary that is NOT a .so file
     if [[ -z "$detected_exec" ]]; then
         while IFS= read -r f; do
             [[ "$f" =~ \.so(\.[0-9]+)*$ ]] && continue
@@ -274,18 +255,13 @@ cmd_pack() {
         done < <(find "$build_dir/root" -maxdepth 4 -type f 2>/dev/null || true)
     fi
 
-    if [[ -z "$detected_exec" ]]; then
-        error "No executable binary found in package payload."
-        rm -rf "$build_dir"
-        trap - EXIT INT TERM
-        exit 1
-    fi
-    log "Detected entrypoint binary: $detected_exec"
+    [[ -z "$detected_exec" ]] && { error "No executable binary identified."; rm -rf "$build_dir"; trap - EXIT; return 1; }
 
-    # Fat-bundling shared libraries
-    bundle_elf_libraries "$build_dir/root" "$detected_exec"
+    log "Target entrypoint verified: $detected_exec"
 
-    # Application icon detection
+    bundle_elf_libraries "$build_dir/root"
+
+    # Icon extraction
     local best_icon icon_manifest=""
     best_icon="$(find "$build_dir/root" -type f \( -iname "*.png" -o -iname "*.svg" \) 2>/dev/null \
         | grep -iE "512|256|128|logo|icon|app" | head -n1 || true)"
@@ -294,14 +270,12 @@ cmd_pack() {
         icon_manifest="meta/icon.png"
     fi
 
-    # Electron / Chromium detection for sandbox flags
     local is_chromium=false
     if grep -qiE "chromium|electron" "$build_dir/root/$detected_exec" 2>/dev/null || \
-        [[ "$detected_exec" =~ (brave|chrome|chromium|electron) ]]; then
+       [[ "$detected_exec" =~ (brave|chrome|chromium|electron) ]]; then
         is_chromium=true
     fi
 
-    # Generate manifest.json
     jq -n \
         --argjson fv "${ULPM_FORMAT_VERSION:-4}" \
         --arg id "$app_id" \
@@ -311,30 +285,20 @@ cmd_pack() {
         --arg exec "$detected_exec" \
         --arg icon "$icon_manifest" \
         --argjson chromium "$is_chromium" \
-        '{format_version:$fv, id:$id, name:$name, version:$version, arch:$arch,
-          exec:$exec, icon:$icon, chromium:$chromium, network:true}' \
+        '{format_version: $fv, id: $id, name: $name, version: $version, arch: $arch,
+        exec: $exec, icon: $icon, chromium: $chromium, network: true}' \
         > "$build_dir/meta/manifest.json"
 
-    if ! validate_manifest "$build_dir/meta/manifest.json"; then
-        rm -rf "$build_dir"
-        trap - EXIT INT TERM
-        exit 1
-    fi
+    validate_manifest "$build_dir/meta/manifest.json" || { rm -rf "$build_dir"; trap - EXIT; return 1; }
 
-    log "Compressing SquashFS image with Zstandard..."
+    log "Assembling SquashFS (Reproducible / Zstandard)..."
     rm -f "$output_lpk"
     local zstd_lvl="${ULPM_ZSTD_LEVEL:-19}"
     mksquashfs "$build_dir" "$output_lpk" -comp zstd -Xcompression-level "$zstd_lvl" -noappend -reproducible
 
-    # Cleanup and disarm trap BEFORE signing
     rm -rf "$build_dir"
     trap - EXIT INT TERM
 
     auto_sign_package "$output_lpk"
-    info "Successfully generated LPK bundle: $output_lpk"
+    info "Pack operation complete: $output_lpk"
 }
-
-# Run pack command if script is executed directly (not sourced)
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    cmd_pack "$@"
-fi
