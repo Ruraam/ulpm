@@ -15,17 +15,21 @@ ULPM_BIN_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 ULPM_ROOT_DIR="$(cd "$ULPM_BIN_DIR/.." && pwd)"
 export ULPM_ROOT_DIR
 
-# Multi-path library discovery
-if [ -d "$ULPM_ROOT_DIR/lib" ]; then
+# Multi-path library discovery (checks for utils.sh presence)
+if [ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]; then
+    # Development / local git repository mode
     export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib"
-elif [ -d "$HOME/.local/lib/ulpm" ]; then
+elif [ -f "$HOME/.local/lib/ulpm/utils.sh" ]; then
+    # User installation mode
     export ULPM_LIB_DIR="$HOME/.local/lib/ulpm"
-elif [ -d "/usr/local/lib/ulpm" ]; then
+elif [ -f "/usr/local/lib/ulpm/utils.sh" ]; then
+    # System installation mode (/usr/local)
     export ULPM_LIB_DIR="/usr/local/lib/ulpm"
-elif [ -d "/usr/lib/ulpm" ]; then
+elif [ -f "/usr/lib/ulpm/utils.sh" ]; then
+    # Distro packaging mode (/usr)
     export ULPM_LIB_DIR="/usr/lib/ulpm"
 else
-    echo "[X] Critical: Unable to locate ULPM library directory." >&2
+    echo "[X] Critical: Unable to locate ULPM library directory (utils.sh not found)." >&2
     exit 1
 fi
 
@@ -53,40 +57,40 @@ show_help() {
 ulpm - Universal Linux Package Manager (v${ULPM_VERSION})
 
 USAGE:
-    ulpm <COMMAND> [OPTIONS] [ARGUMENTS]
+  ulpm <COMMAND> [OPTIONS] [ARGUMENTS]
 
 EXECUTION COMMANDS:
-    run <package.lpk|app_name> [flags] [-- args...]   Run an isolated application
-    stream <url|repo|package.lpk> [flags]             Run ephemerally in RAM/tmpfs without installing
+  run <package.lpk|app_name> [flags] [-- args...]   Run an isolated application
+  stream <url|repo|package.lpk> [flags]             Run ephemerally in RAM/tmpfs without installing
 
 PACKAGING COMMANDS:
-    pack <folder|archive|appimage> [name] [out.lpk]  Create a standalone .lpk bundle
-    deb-pack <package_name|file.deb> [name]           Fetch and package via APT dependencies
+  pack <folder|archive|appimage> [name] [out.lpk]   Create a standalone .lpk bundle
+  deb-pack <package_name|file.deb> [name]           Fetch and package via APT dependencies
 
 MANAGEMENT COMMANDS:
-    install <package.lpk|url>                         Install an application locally
-    remove [--purge] <app_name>                       Uninstall an application
-    list                                               List installed applications
-    upgrade [app_name]                                Upgrade installed packages
-    clean                                              Clean up cache and dangling mounts
+  install <package.lpk|url>                        Install an application locally
+  remove [--purge] <app_name>                      Uninstall an application
+  list                                              List installed applications
+  upgrade [app_name]                               Upgrade installed packages
+  clean                                             Clean up cache and dangling mounts
 
 CRYPTOGRAPHIC COMMANDS:
-    keygen <key_name>                                 Generate an Ed25519 keypair
-    sign <package.lpk> [private_key]                  Sign an .lpk package
-    trust <public_key.pub>                            Trust a public key
+  keygen <key_name>                                 Generate an Ed25519 keypair
+  sign <package.lpk> [private_key]                  Sign an .lpk package
+  trust <public_key.pub>                            Trust a public key
 
 SANDBOX RUNTIME FLAGS:
-    --offline              Disable network access
-    --no-gpu              Disable hardware acceleration (Mesa/Vulkan)
-    --no-audio            Disable sound server access (PipeWire/PulseAudio)
-    --no-gui              Disable Wayland and X11 display access
-    --bind <host>:<dest>  Bind mount a host folder into the sandbox
+  --offline              Disable network access
+  --no-gpu               Disable hardware acceleration (Mesa/Vulkan)
+  --no-audio             Disable sound server access (PipeWire/PulseAudio)
+  --no-gui               Disable Wayland and X11 display access
+  --bind <host>:<dest>   Bind mount a host folder into the sandbox
 
 ENVIRONMENT VARIABLES:
-    ULPM_ZSTD_LEVEL=1..22   Compression level for 'pack' (default: 19)
-    Level 15 is recommended for 5x faster packing
-    with ~98% of the compression ratio.
-    Example: ULPM_ZSTD_LEVEL=15 ulpm pack my_app/
+  ULPM_ZSTD_LEVEL=1..22   Compression level for 'pack' (default: 19)
+                          Level 15 is recommended for 5x faster packing
+                          with ~98% of the compression ratio.
+  Example: ULPM_ZSTD_LEVEL=15 ulpm pack my_app/
 
 For detailed help on a specific command: ulpm <COMMAND> --help
 EOF
@@ -103,13 +107,13 @@ main() {
     shift
 
     case "$cmd" in
-        run)        cmd_run "$@" ;;
-        stream)     cmd_stream "$@" ;;
-        pack)       cmd_pack "$@" ;;
-        deb-pack)   cmd_deb_pack "$@" ;;
-        install)    cmd_install "$@" ;;
-        remove|rm)  cmd_remove "$@" ;;
-        list|ls)    cmd_list "$@" ;;
+        run)         cmd_run "$@" ;;
+        stream)      cmd_stream "$@" ;;
+        pack)        cmd_pack "$@" ;;
+        deb-pack)    cmd_deb_pack "$@" ;;
+        install)     cmd_install "$@" ;;
+        remove|rm)   cmd_remove "$@" ;;
+        list|ls)     cmd_list "$@" ;;
         upgrade)
             if command -v cmd_upgrade &>/dev/null; then
                 cmd_upgrade "$@"
@@ -118,10 +122,10 @@ main() {
                 warn "To update an application, re-install the latest .lpk package."
             fi
             ;;
-        clean)      cmd_clean "$@" ;;
-        keygen)     generate_keypair "$@" ;;
-        sign)       sign_package "$@" ;;
-        trust)      trust_key "$@" ;;
+        clean)       cmd_clean "$@" ;;
+        keygen)      generate_keypair "$@" ;;
+        sign)        sign_package "$@" ;;
+        trust)       trust_key "$@" ;;
         -h|--help|help) show_help ;;
         -v|--version|version) echo "ulpm v${ULPM_VERSION}" ;;
         *)
