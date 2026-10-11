@@ -207,7 +207,7 @@ uninstall_ulpm() {
     fi
 
     local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm")
-    local lib_dirs=("$HOME/.local/lib/ulpm" "/usr/local/lib/ulpm" "$data_home/ulpm/engine")
+    local lib_dirs=("$HOME/.local/lib/ulpm" "/usr/local/lib/ulpm" "$data_home/ulpm")
 
     for path in "${targets[@]}"; do
         if [ -e "$path" ] || [ -L "$path" ]; then
@@ -488,15 +488,102 @@ if [ "$MODE" = "user" ]; then
 fi
 
 # ------------------------------------------------------------
-# Desktop integration & checks
+# Desktop integration (MIME, File Associations & Desktop Icon)
 # ------------------------------------------------------------
 
-if [ "$INTEGRATE" = true ]; then
-    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-        warn "Running under sudo: skipping integration (run 'ulpm integrate' under your user)."
+setup_desktop_integration() {
+    local target_data target_config
+    if [ "$MODE" = "system" ]; then
+        target_data="/usr/local/share"
+        target_config="/etc/xdg"
     else
-        PATH="$BIN_DIR:$PATH" "$BIN_DIR/ulpm" integrate quiet 2>/dev/null || true
+        target_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+        target_config="${XDG_CONFIG_HOME:-$HOME/.config}"
     fi
+
+    info "Setting up desktop integration (MIME & .lpk launcher)..."
+
+    local mime_dir="$target_data/mime/packages"
+    local apps_dir="$target_data/applications"
+
+    if [ "$NEED_PRIV" = true ]; then
+        priv mkdir -p "$mime_dir" "$apps_dir"
+    else
+        mkdir -p "$mime_dir" "$apps_dir"
+    fi
+
+    # 1. XML MIME-type definition for .lpk files
+    local mime_file="$TMP_DIR/application-x-lpk.xml"
+    cat <<'EOF' > "$mime_file"
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+    <mime-type type="application/x-lpk">
+        <comment>ULPM Package Bundle</comment>
+        <comment xml:lang="fr">Paquet applicatif ULPM</comment>
+        <icon name="package-x-generic"/>
+        <glob pattern="*.lpk"/>
+    </mime-type>
+</mime-info>
+EOF
+
+    # 2. Desktop entry to run .lpk bundles on double-click
+    local desktop_file="$TMP_DIR/ulpm-open.desktop"
+    cat <<EOF > "$desktop_file"
+[Desktop Entry]
+Type=Application
+Name=ULPM Package Runner
+Comment=Executes sandboxed .lpk applications
+Exec=$BIN_DIR/ulpm run %f
+Icon=package-x-generic
+Terminal=false
+NoDisplay=true
+MimeType=application/x-lpk;
+Categories=System;Utility;
+EOF
+
+    # Install files
+    if [ "$NEED_PRIV" = true ]; then
+        priv install -m 0644 "$mime_file" "$mime_dir/application-x-lpk.xml"
+        priv install -m 0644 "$desktop_file" "$apps_dir/ulpm-open.desktop"
+    else
+        install -m 0644 "$mime_file" "$mime_dir/application-x-lpk.xml"
+        install -m 0644 "$desktop_file" "$apps_dir/ulpm-open.desktop"
+    fi
+
+    # 3. Associate MIME type with ulpm-open.desktop in mimeapps.list
+    local mimeapps_list="$target_config/mimeapps.list"
+    if [ "$NEED_PRIV" = false ]; then
+        mkdir -p "$target_config"
+        touch "$mimeapps_list"
+        if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
+            if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
+                sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-open.desktop;' "$mimeapps_list"
+            else
+                printf "\n[Default Applications]\napplication/x-lpk=ulpm-open.desktop;\n" >> "$mimeapps_list"
+            fi
+        fi
+    fi
+
+    # 4. Refresh desktop and MIME databases
+    if command -v update-mime-database >/dev/null 2>&1; then
+        if [ "$NEED_PRIV" = true ]; then
+            priv update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
+        else
+            update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        if [ "$NEED_PRIV" = true ]; then
+            priv update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
+        else
+            update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+if [ "$INTEGRATE" = true ]; then
+    setup_desktop_integration
 fi
 
 echo
@@ -508,9 +595,9 @@ if [ -n "$RELOAD_HINT" ]; then
     echo
     warn "$RELOAD_HINT"
     case "$USER_SHELL_NAME" in
-        fish) echo -e "  >> To use it immediately, run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
-        zsh)  echo -e "  >> To use it immediately, run: ${BOLD}source ~/.zshrc${NC} (or open a new terminal)" ;;
-        *)    echo -e "  >> To use it immediately, run: ${BOLD}source ~/.bashrc${NC} (or open a new terminal)" ;;
+        fish)    echo -e "  >> To use it immediately, run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
+        zsh)     echo -e "  >> To use it immediately, run: ${BOLD}source ~/.zshrc${NC} (or open a new terminal)" ;;
+        *)       echo -e "  >> To use it immediately, run: ${BOLD}source ~/.bashrc${NC} (or open a new terminal)" ;;
     esac
 fi
 
