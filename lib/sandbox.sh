@@ -33,7 +33,7 @@ session_bus_socket() {
 }
 
 # ------------------------------------------------------------------------------
-# RootFS Detection & Execution Mode (Debian XFCE, Recalbox Container, etc.)
+# RootFS Detection & Execution Mode (Debian XFCE, RecalboxContainer, etc.)
 # ------------------------------------------------------------------------------
 
 lpk_is_rootfs() {
@@ -230,7 +230,8 @@ lpk_run_isolated() {
 
     mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_mnt_${instance_id}.XXXXXX")"
 
-    # Contextual cleanup attached only to this instance
+    # Contextual cleanup attached only to this instance (invoked by trap)
+    # shellcheck disable=SC2329
     cleanup_instance() {
         if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
             kill "$dbus_pid" 2>/dev/null || true
@@ -265,8 +266,14 @@ lpk_run_isolated() {
     local allow_net=true
 
     if [[ -f "$manifest" ]]; then
-        app_id=$(jq -r '.id // .name // "'"$app_id"'"' "$manifest" 2>/dev/null || echo "$app_id")
-        exec_bin=$(jq -r '.exec // "bin/main"' "$manifest" 2>/dev/null || echo "bin/main")
+        local raw_id
+        raw_id=$(jq -r '.id // .name // empty' "$manifest" 2>/dev/null || true)
+        [[ -n "$raw_id" ]] && app_id="$raw_id"
+
+        local raw_exec
+        raw_exec=$(jq -r '.exec // empty' "$manifest" 2>/dev/null || true)
+        [[ -n "$raw_exec" ]] && exec_bin="$raw_exec"
+
         is_chromium=$(jq -r '.chromium // false' "$manifest" 2>/dev/null || echo "false")
         allow_net=$(jq -r '.network // true' "$manifest" 2>/dev/null || echo "true")
     fi

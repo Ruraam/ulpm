@@ -105,16 +105,15 @@ cmd_list() {
         shopt -s nullglob
         for app in "$ULPM_APPS_DIR"/*; do
             if [ -d "$app" ]; then
-                local name size pkg lpk_file
+                local name size
                 name="$(basename "$app")"
                 size="$(du -sh "$app" 2>/dev/null | cut -f1)"
-                lpk_file="$app/$name.lpk"
 
                 local id="-" ver="-"
-                local desktop_file="${XDG_DATA_HOME:-$HOME/.local/share}/applications"/*"${name}.desktop"
-                if [ -f "$desktop_file" ]; then
-                    id="$(basename "$desktop_file" .desktop)"
-                    ver="$(grep -E '^X-ULPM-Version=' "$desktop_file" 2>/dev/null | cut -d= -f2 || echo "-")"
+                local desktop_matches=("${XDG_DATA_HOME:-$HOME/.local/share}/applications"/*"${name}.desktop")
+                if [ ${#desktop_matches[@]} -gt 0 ] && [ -f "${desktop_matches[0]}" ]; then
+                    id="$(basename "${desktop_matches[0]}" .desktop)"
+                    ver="$(grep -E '^X-ULPM-Version=' "${desktop_matches[0]}" 2>/dev/null | cut -d= -f2 || echo "-")"
                 fi
 
                 printf "%-25s %-12s %-12s %-20s\n" "$name" "${ver:-1.0.0}" "$size" "$id"
@@ -184,7 +183,8 @@ cmd_clean() {
     fi
 
     # Clean temporary directories
-    rm -rf "${ULPM_CACHE_HOME:?}"/mnt_* \
+    rm -rf \
+        "${ULPM_CACHE_HOME:?}"/mnt_* \
         "${ULPM_CACHE_HOME:?}"/ulpm_run_* \
         "${ULPM_CACHE_HOME:?}"/build_* \
         "${ULPM_CACHE_HOME:?}"/tmp/* 2>/dev/null || true

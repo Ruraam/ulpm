@@ -104,9 +104,11 @@ cmd_sign() {
     openssl dgst -sha512 -sign "$priv_key" -out "$sig_tmp" "$lpk_file" 2>/dev/null
 
     # Append cryptographic footer: MAGIC (8) + PUB_RAW (32) + SIG (64) = 104 bytes
-    printf "%s" "$SIG_MAGIC" >> "$lpk_file"
-    cat "$pub_raw_tmp" >> "$lpk_file"
-    cat "$sig_tmp" >> "$lpk_file"
+    {
+        printf "%s" "$SIG_MAGIC"
+        cat "$pub_raw_tmp"
+        cat "$sig_tmp"
+    } >> "$lpk_file"
 
     rm -f "$sig_tmp" "$pub_raw_tmp"
     info "Package signed and sealed successfully: $lpk_file"
@@ -197,7 +199,8 @@ cmd_trust() {
     fi
 
     mkdir -p "$ULPM_KEYS_DIR"
-    local dest="$ULPM_KEYS_DIR/$(basename "$pub_key")"
+    local dest
+    dest="$ULPM_KEYS_DIR/$(basename "$pub_key")"
     cp "$pub_key" "$dest"
     info "Public key successfully added to trusted authority store: $dest"
 }

@@ -60,10 +60,10 @@ extract_any_payload() {
         local offset
         if offset="$(appimage_squashfs_offset "$src")" && [[ -n "$offset" ]]; then
             unsquashfs -no-progress -f -d "$dest" -o "$offset" "$src" >/dev/null 2>&1 || {
-                (cd "$dest" && "$src" --appimage-extract >/dev/null 2>&1 || unsquashfs -d . "$src" >/dev/null 2>&1)
+                (cd "$dest" && if ! "$src" --appimage-extract >/dev/null 2>&1; then unsquashfs -d . "$src" >/dev/null 2>&1; fi)
             }
         else
-            (cd "$dest" && "$src" --appimage-extract >/dev/null 2>&1 || unsquashfs -d . "$src" >/dev/null 2>&1)
+            (cd "$dest" && if ! "$src" --appimage-extract >/dev/null 2>&1; then unsquashfs -d . "$src" >/dev/null 2>&1; fi)
         fi
 
         if [[ -d "$dest/squashfs-root" ]]; then
