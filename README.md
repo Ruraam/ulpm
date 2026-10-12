@@ -106,7 +106,7 @@ If you prefer installing dependencies manually before running the script:
 
 **Debian / Ubuntu / Linux Mint:**
 ```bash
-sudo apt update && sudo apt install -y bubblewrap xdg-dbus-proxy squashfuse fuse3squashfs-tools openssl jq file curl diffutils coreutils
+sudo apt update && sudo apt install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
 ```
 **Arch Linux / Manjaro:**
 ```bash
@@ -118,7 +118,7 @@ sudo dnf install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools op
 ```
 **Alpine Linux:**
 ```bash
-sudo apk add bubblewrap xdg-dbus-proxy squashfusefuse3 squashfs-tools openssl jq file curl diffutils coreutils
+sudo apk add bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
 ```
 
 ---
@@ -169,7 +169,7 @@ ulpm run --no-gui io.lpk.distro-rootfs
 Mount a custom host directory into the sandbox
 ```bash
 ulpm run --bind
-/data/projects:/workspaceio.lpk.ide
+/data/projects:/workspace io.lpk.ide
 ```
 ### 3. Installing Packages
 Install directly from local files, archives, or remote GitHub releases:
