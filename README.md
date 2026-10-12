@@ -41,7 +41,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 - 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), MIT-SHM support for X11, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates (`--cap-drop ALL`).
 
--🎛️ **Granular Kill-Switches:** Dynamically sever network, GPU access, audio servers, or graphical display at launch via runtime CLI flags.
+- 🎛️ **Granular Kill-Switches:** Dynamically sever network, GPU access, audio servers, or graphical display at launch via runtime CLI flags.
 
 - 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
 
