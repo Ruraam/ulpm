@@ -36,20 +36,22 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 ### Why ULPM ?
 
 - 🚫 **Zero Daemon:** No background services consuming memory or disk I/O.
+
 - 👤 **100% Rootless:**Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`).No `sudo` required.
 
 - 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), MIT-SHM support for X11, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates (`--cap-drop ALL`).
+
 -🎛️ **Granular Kill-Switches:** Dynamically sever network, GPU access, audio servers, or graphical display at launch via runtime CLI flags.
 
 - 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
-- 
--🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), joysticks/gamepads (`/dev/input`, `/dev/js*`), Wayland, X11, PipeWire, and PulseAudio.
+
+- 🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), joysticks/gamepads (`/dev/input`, `/dev/js*`), Wayland, X11, PipeWire, and PulseAudio.
 
 - ⚡ **Instant Streaming & Demo:** Stream apps directly into volatile RAM/tmpfs to test software on the fly with zero footprint upon exit.
 
 - 🧠 **Smart Cache:** Intelligent HTTP header(`ETag` / `If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
 
--🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe ELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundleson the fly.
+- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe ELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundleson the fly.
 
 ---
 
