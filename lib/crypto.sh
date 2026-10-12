@@ -103,7 +103,7 @@ cmd_sign() {
 
     local tmp_dir
     tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/sign_XXXXXX")"
-    trap 'rm -rf "$tmp_dir"' RETURN
+    trap 'rm -rf "${tmp_dir:-}"' RETURN
 
     local sig_tmp="$tmp_dir/sig.bin"
     local pub_raw_tmp="$tmp_dir/pub_raw.bin"
@@ -135,7 +135,7 @@ verify_package() {
 
     local tmp_dir
     tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/verify_XXXXXX")"
-    trap 'rm -rf "$tmp_dir"' RETURN
+    trap 'rm -rf "${tmp_dir:-}"' RETURN
 
     local pub_raw_tmp="$tmp_dir/raw.bin"
     local sig_tmp="$tmp_dir/sig.bin"
