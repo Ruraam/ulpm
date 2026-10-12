@@ -19,6 +19,60 @@ ENV_WHITELIST=(
 )
 
 # ------------------------------------------------------------------------------
+# Universal Host Downloads Directory Discovery (Multi-Language Aware)
+# ------------------------------------------------------------------------------
+
+resolve_host_downloads_dir() {
+    local candidate=""
+
+    # 1. Use xdg-user-dir if available
+    if command -v xdg-user-dir &>/dev/null; then
+        candidate="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+    fi
+
+    # 2. Read standard XDG config file if not resolved
+    if [[ -z "$candidate" || "$candidate" == "$HOME" ]] && [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
+        local raw
+        raw="$(grep -E '^XDG_DOWNLOAD_DIR=' "$HOME/.config/user-dirs.dirs" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+        raw="${raw/#\$HOME/$HOME}"
+        [[ -n "$raw" ]] && candidate="$raw"
+    fi
+
+    # 3. Fallback detection of common multilingual directory names
+    if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
+        for name in "Téléchargements" "Downloads" "Descargas" "Download" "Scaricati"; do
+            if [[ -d "$HOME/$name" ]]; then
+                candidate="$HOME/$name"
+                break
+            fi
+        done
+    fi
+
+    candidate="${candidate:-$HOME/Downloads}"
+    mkdir -p "$candidate"
+    echo "$candidate"
+}
+
+# Prepares sandbox HOME tree with cross-language download directory links
+setup_sandbox_downloads_links() {
+    local target_home="$1"
+    local host_dl="$2"
+    local dl_basename
+    dl_basename="$(basename "$host_dl")"
+
+    # Create target directory inside the virtual HOME
+    mkdir -p "$target_home/$dl_basename"
+
+    # Create cross-compatibility symlinks (Downloads <-> Téléchargements)
+    if [[ "$dl_basename" != "Downloads" ]]; then
+        ln -snf "$dl_basename" "$target_home/Downloads" 2>/dev/null || true
+    fi
+    if [[ "$dl_basename" != "Téléchargements" ]]; then
+        ln -snf "$dl_basename" "$target_home/Téléchargements" 2>/dev/null || true
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # D-Bus Session Socket Helper
 # ------------------------------------------------------------------------------
 
@@ -33,7 +87,7 @@ session_bus_socket() {
 }
 
 # ------------------------------------------------------------------------------
-# RootFS Detection & Execution Mode (Debian XFCE, RecalboxContainer, etc.)
+# RootFS Detection & Execution Mode (Debian XFCE, Recalbox Container, Distros)
 # ------------------------------------------------------------------------------
 
 lpk_is_rootfs() {
@@ -76,6 +130,11 @@ lpk_run_rootfs() {
     run_uid="$(id -u)"
     run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
 
+    # Multilingual host downloads directory resolution
+    local dl_host_dir
+    dl_host_dir="$(resolve_host_downloads_dir)"
+    setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
+
     local bwrap_args=(
         bwrap
         --die-with-parent
@@ -83,6 +142,7 @@ lpk_run_rootfs() {
         --clearenv
         --unshare-uts
         --unshare-cgroup-try
+        --chdir "$HOME"
         --proc /proc
         --dev /dev
         --dev-bind /dev/shm /dev/shm
@@ -93,15 +153,40 @@ lpk_run_rootfs() {
         --ro-bind "$rootfs_dir" /
         --bind "$app_data_dir/home" "$HOME"
         --bind "$app_data_dir/tmp" /tmp
+        --bind "$dl_host_dir" "$dl_host_dir"
     )
+
+    [[ -z "${DISPLAY:-}" ]] && bwrap_args+=(--unshare-ipc)
+
+    if [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
+        bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    fi
 
     if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
         bwrap_args+=(--unshare-net)
     else
         bwrap_args+=(--share-net)
+
+        local real_resolv
+        real_resolv="$(realpath /etc/resolv.conf 2>/dev/null || echo "/etc/resolv.conf")"
+        if [[ -f "$real_resolv" ]]; then
+            bwrap_args+=(--ro-bind-try "$real_resolv" "$real_resolv")
+        fi
+
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /etc/hosts /etc/hosts
+            --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+            --ro-bind-try /etc/gai.conf /etc/gai.conf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+            --ro-bind-try /etc/ssl /etc/ssl
+            --ro-bind-try /etc/pki /etc/pki
+            --ro-bind-try /etc/ca-certificates /etc/ca-certificates
+            --ro-bind-try /usr/share/ca-certificates /usr/share/ca-certificates
+        )
     fi
 
-    # Recalbox & Host Hardware Binding
+    # Hardware, Controller & Audio bindings
     bwrap_args+=(
         --dev-bind-try /dev/input /dev/input
         --dev-bind-try /dev/js0 /dev/js0
@@ -115,6 +200,10 @@ lpk_run_rootfs() {
         --ro-bind-try /run/udev /run/udev
     )
 
+    for dev in /dev/nvidia*; do
+        [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+    done
+
     if [[ -d "/recalbox/share" ]]; then
         bwrap_args+=(
             --bind-try /recalbox/share /recalbox/share
@@ -125,7 +214,7 @@ lpk_run_rootfs() {
         )
     fi
 
-    # Display Server
+    # Display Protocols
     if [[ -n "${DISPLAY:-}" ]]; then
         local x_sock
         if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
@@ -160,19 +249,15 @@ lpk_run_rootfs() {
         --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
     )
 
-    bwrap_args+=(
-        --ro-bind-try /etc/resolv.conf /etc/resolv.conf
-        --ro-bind-try /etc/hosts /etc/hosts
-    )
-
     for env_var in "${ENV_WHITELIST[@]}"; do
         if [[ -n "${!env_var:-}" ]]; then
             bwrap_args+=(--setenv "$env_var" "${!env_var}")
         fi
     done
 
+    # Deterministic entrypoint resolution
     local entrypoint="${exec_bin:-/bin/sh}"
-    if [[ -z "$exec_bin" || "$exec_bin" == "/bin/main" ]]; then
+    if [[ -z "$exec_bin" || "$exec_bin" == "/bin/main" || "$exec_bin" == "bin/main" ]]; then
         if [[ -x "$rootfs_dir/usr/bin/startxfce4" ]]; then
             entrypoint="/usr/bin/startxfce4"
         elif [[ -x "$rootfs_dir/usr/bin/x-session-manager" ]]; then
@@ -182,12 +267,20 @@ lpk_run_rootfs() {
         fi
     fi
 
+    local sanitized_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            ""|"%u"|"%U"|"%f"|"%F") ;;
+            *) sanitized_args+=("$arg") ;;
+        esac
+    done
+
     log "Starting RootFS session [$app_id] with entrypoint: $entrypoint"
-    "${bwrap_args[@]}" "$entrypoint" "$@"
+    "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
 # ------------------------------------------------------------------------------
-# App Mode Execution (Shared Host Base + Sandbox + Full Concurrency)
+# App Mode Execution (Shared Host Base + Isolated Sandbox)
 # ------------------------------------------------------------------------------
 
 lpk_run_isolated() {
@@ -206,6 +299,8 @@ lpk_run_isolated() {
     fi
     shift || true
 
+    target="$(normalize_target "$target")"
+
     local pkg_path=""
     if [[ -f "$target" ]]; then
         pkg_path="$(realpath -- "$target")"
@@ -213,6 +308,8 @@ lpk_run_isolated() {
         pkg_path="$ULPM_APPS_DIR/$target.lpk"
     elif [[ -f "$ULPM_APPS_DIR/$target/$target.lpk" ]]; then
         pkg_path="$ULPM_APPS_DIR/$target/$target.lpk"
+    elif [[ -f "$ULPM_APPS_DIR/io.lpk.${target,,}.lpk" ]]; then
+        pkg_path="$ULPM_APPS_DIR/io.lpk.${target,,}.lpk"
     else
         error "Target package '$target' could not be resolved"
         return 1
@@ -223,14 +320,11 @@ lpk_run_isolated() {
         warn "Signature check failed or missing. Continuing in sandbox..."
     fi
 
-    # Instance-isolated scope execution (immune to race conditions)
-    local instance_id
-    instance_id="$$-${RANDOM}"
+    local instance_id="$$_${RANDOM}"
     local mnt_dir dbus_proxy_dir dbus_pid=""
+    mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME}/mnt_${instance_id}.XXXXXX")"
 
-    mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_mnt_${instance_id}.XXXXXX")"
-
-    # Contextual cleanup attached only to this instance (invoked by trap)
+    # Contextual cleanup attached only to this instance
     # shellcheck disable=SC2329
     cleanup_instance() {
         if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
@@ -238,14 +332,7 @@ lpk_run_isolated() {
             wait "$dbus_pid" 2>/dev/null || true
         fi
         [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
-
-        if command -v fusermount3 &>/dev/null; then
-            fusermount3 -u -z "$mnt_dir" 2>/dev/null || true
-        elif command -v fusermount &>/dev/null; then
-            fusermount -u -z "$mnt_dir" 2>/dev/null || true
-        elif command -v safe_unmount &>/dev/null; then
-            safe_unmount "$mnt_dir" 2>/dev/null || true
-        fi
+        safe_unmount "$mnt_dir"
         rm -rf "$mnt_dir"
     }
     trap cleanup_instance EXIT INT TERM HUP
@@ -278,40 +365,37 @@ lpk_run_isolated() {
         allow_net=$(jq -r '.network // true' "$manifest" 2>/dev/null || echo "true")
     fi
 
-    # --------------------------------------------------------------------------
     # ROOTFS ROUTING
-    # --------------------------------------------------------------------------
     if lpk_is_rootfs "$mnt_dir" "$manifest"; then
         local rootfs_rc=0
         lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" "$@" || rootfs_rc=$?
         return "$rootfs_rc"
     fi
 
-    # --------------------------------------------------------------------------
     # STANDARD APP SANDBOX SETUP
-    # --------------------------------------------------------------------------
     local app_data_dir="$HOME/.var/app/$app_id"
     mkdir -p "$app_data_dir/home" "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
 
-    local run_uid run_user_dir dl_dir
+    local run_uid run_user_dir
     run_uid="$(id -u)"
     run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
-    dl_dir="${HOME}/Downloads"
-    mkdir -p "$dl_dir"
 
-    # Clean leading slash in execution target
+    # Multilingual host downloads directory resolution
+    local dl_host_dir
+    dl_host_dir="$(resolve_host_downloads_dir)"
+    setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
+
     local clean_exec="${exec_bin#/}"
 
-    # Determine payload directory (/root/ structure or direct root)
     local app_payload_dir="$mnt_dir"
     if [[ -d "$mnt_dir/root" ]]; then
         app_payload_dir="$mnt_dir/root"
     fi
 
-    # Electron / Chromium sandbox management
-    local chromium_flags=()
+    # Chromium / Electron specific flags
+    local extra_app_flags=()
     if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$app_payload_dir/$clean_exec" 2>/dev/null; then
-        chromium_flags=(
+        extra_app_flags=(
             --no-sandbox
             --test-type
             --disable-gpu-sandbox
@@ -319,7 +403,35 @@ lpk_run_isolated() {
             --log-level=3
         )
         if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            chromium_flags+=(--ozone-platform-hint=auto)
+            extra_app_flags+=(--ozone-platform-hint=auto)
+        fi
+    fi
+
+    # Specific profile provisioning for Firefox / Gecko engines
+    if [[ "$app_id" =~ (firefox|Firefox) ]] || [[ "$clean_exec" =~ firefox ]]; then
+        find "$app_data_dir/home/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
+        local ff_profile_dir="$app_data_dir/home/.mozilla/firefox/ulpm.default-release"
+        mkdir -p "$ff_profile_dir"
+        if [[ ! -f "$ff_profile_dir/user.js" ]]; then
+            cat << 'EOF' > "$ff_profile_dir/user.js"
+user_pref("browser.startup.page", 1);
+user_pref("browser.startup.homepage", "https://start.duckduckgo.com");
+user_pref("browser.newtabpage.enabled", true);
+user_pref("datareporting.policy.firstRunURL", "");
+EOF
+        fi
+        if [[ ! -f "$app_data_dir/home/.mozilla/firefox/profiles.ini" ]]; then
+            cat << EOF > "$app_data_dir/home/.mozilla/firefox/profiles.ini"
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=ulpm.default-release
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOF
         fi
     fi
 
@@ -331,6 +443,7 @@ lpk_run_isolated() {
         --cap-drop ALL
         --unshare-uts
         --unshare-cgroup-try
+        --chdir "$HOME"
         --ro-bind /usr /usr
         --proc /proc
         --dev /dev
@@ -340,7 +453,10 @@ lpk_run_isolated() {
         --tmpfs /run
         --tmpfs /var/tmp
         --bind "$app_data_dir/home" "$HOME"
+        --bind "$dl_host_dir" "$dl_host_dir"
     )
+
+    [[ -z "${DISPLAY:-}" ]] && bwrap_args+=(--unshare-ipc)
 
     # Multiarch library symlinks support
     for dir in /lib /lib64 /lib32 /bin /sbin; do
@@ -349,22 +465,40 @@ lpk_run_isolated() {
         fi
     done
 
-    # Network configuration
+    # Network & Certificates
     if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
         bwrap_args+=(--unshare-net)
     else
         bwrap_args+=(--share-net)
+
+        local real_resolv
+        real_resolv="$(realpath /etc/resolv.conf 2>/dev/null || echo "/etc/resolv.conf")"
+        if [[ -f "$real_resolv" ]]; then
+            bwrap_args+=(--ro-bind-try "$real_resolv" "$real_resolv")
+        fi
+
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /etc/hosts /etc/hosts
+            --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+            --ro-bind-try /etc/gai.conf /etc/gai.conf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+            --ro-bind-try /etc/ssl /etc/ssl
+            --ro-bind-try /etc/pki /etc/pki
+            --ro-bind-try /etc/ca-certificates /etc/ca-certificates
+            --ro-bind-try /usr/share/ca-certificates /usr/share/ca-certificates
+        )
     fi
 
-    # System configurations & certificates
+    # System configurations & themes
     local etc_item
     for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
-        ssl ca-certificates pki crypto-policies fonts X11 xdg gtk-2.0 gtk-3.0 pulse vulkan glvnd \
-        localtime timezone os-release machine-id passwd group nsswitch.conf hosts resolv.conf; do
+        fonts X11 xdg gtk-2.0 gtk-3.0 pulse vulkan glvnd \
+        localtime timezone os-release machine-id passwd group; do
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
 
-    # Hardware, Gaming & User directories
+    # Hardware, Gaming & Virtual user subdirs
     bwrap_args+=(
         --dev-bind-try /dev/dri /dev/dri
         --dev-bind-try /dev/snd /dev/snd
@@ -381,12 +515,19 @@ lpk_run_isolated() {
         --ro-bind-try /usr/share/themes /usr/share/themes
         --ro-bind-try /usr/share/icons /usr/share/icons
         --perms 0700 --dir "$run_user_dir"
-        --bind "$dl_dir" "$dl_dir"
         --bind "$app_data_dir/config" "$HOME/.config"
         --bind "$app_data_dir/data" "$HOME/.local/share"
         --bind "$app_data_dir/cache" "$HOME/.cache"
         --ro-bind "$app_payload_dir" /app
     )
+
+    for dev in /dev/nvidia*; do
+        [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+    done
+
+    if [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
+        bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    fi
 
     if [[ -d "/recalbox/share" ]]; then
         bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
@@ -417,7 +558,7 @@ lpk_run_isolated() {
         bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
     fi
 
-    # Audio Routing (PulseAudio / PipeWire)
+    # Audio Routing
     local pulse_sock="$run_user_dir/pulse/native"
     if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
         pulse_sock="${BASH_REMATCH[1]}"
@@ -427,9 +568,7 @@ lpk_run_isolated() {
         --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
     )
 
-    # --------------------------------------------------------------------------
-    # D-Bus Isolation Proxy (Per-Instance Safe)
-    # --------------------------------------------------------------------------
+    # D-Bus Isolation Proxy
     case "${ULPM_DBUS_MODE:-proxy}" in
         none) ;;
         full)
@@ -477,7 +616,6 @@ lpk_run_isolated() {
             ;;
     esac
 
-    # Forward environment variables
     for env_var in "${ENV_WHITELIST[@]}"; do
         if [[ -n "${!env_var:-}" ]]; then
             bwrap_args+=(--setenv "$env_var" "${!env_var}")
@@ -499,9 +637,28 @@ lpk_run_isolated() {
     bwrap_args+=(
         --setenv PATH "/app/bin:/app/usr/bin:/app:$PATH"
         --setenv LD_LIBRARY_PATH "/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib"
+        --setenv XDG_CONFIG_HOME "$HOME/.config"
+        --setenv XDG_DATA_HOME "$HOME/.local/share"
+        --setenv XDG_CACHE_HOME "$HOME/.cache"
         --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
     )
 
+    # Sanitize CLI arguments
+    local sanitized_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            ""|"%u"|"%U"|"%f"|"%F") ;;
+            *) sanitized_args+=("$arg") ;;
+        esac
+    done
+
+    # Guarantee Firefox gets a safe initial URL instead of opening empty sandbox path
+    if [[ "$app_id" =~ (firefox|Firefox) ]] || [[ "$clean_exec" =~ firefox ]]; then
+        if [ ${#sanitized_args[@]} -eq 0 ]; then
+            sanitized_args=("about:home")
+        fi
+    fi
+
     log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
-    "${bwrap_args[@]}" "$real_exec" "${chromium_flags[@]:-}" "$@"
+    "${bwrap_args[@]}" "$real_exec" "${extra_app_flags[@]:-}" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }

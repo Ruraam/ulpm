@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/run.sh - Mounting and executing applications via sandbox engine
+# lib/run.sh - Direct Sandbox Execution Dispatcher
 # ==============================================================================
 
 cmd_run() {
@@ -8,22 +8,11 @@ cmd_run() {
     local sandbox_opts=()
     local app_args=()
 
-    # Parse arguments & options
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --offline|--no-net)
-                sandbox_opts+=("--offline")
-                shift
-                ;;
-            --)
-                shift
-                app_args+=("$@")
-                break
-                ;;
-            -*)
-                sandbox_opts+=("$1")
-                shift
-                ;;
+            --offline|--no-net) sandbox_opts+=("--offline"); shift ;;
+            --) shift; app_args+=("$@"); break ;;
+            -*) sandbox_opts+=("$1"); shift ;;
             *)
                 if [[ -z "$target" ]]; then
                     target="$1"
@@ -35,11 +24,6 @@ cmd_run() {
         esac
     done
 
-    if [[ -z "$target" ]]; then
-        error "Usage: ulpm run <app_name|package.lpk> [options] [-- arguments...]"
-        exit 1
-    fi
-
-    # Delegate to the sandbox execution engine
+    [[ -z "$target" ]] && { error "Usage: ulpm run <target> [flags] [-- args...]"; return 1; }
     lpk_run_isolated "${sandbox_opts[@]}" "$target" "${app_args[@]}"
 }
