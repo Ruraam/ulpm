@@ -86,6 +86,7 @@ ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of
 | **Binary Inspection** | `od`, `cmp`, `file` | Secure non-executing ELF header parsing and binary key matching |
 | **Metadata Parsing** | `jq` | Fast JSON manifest validation |
 | **Transport** | `curl` | Smart conditional caching and remote repository sync|
+| **Process Locking** | `util-linux` (`flock`) | Safe multi-process concurrency and database locking |
 
 ---
 
@@ -114,19 +115,19 @@ If you prefer installing dependencies manually before running the script:
 
 **Debian / Ubuntu / Linux Mint:**
 ```bash
-sudo apt update && sudo apt install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
+sudo apt update && sudo apt install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils util-linux
 ```
 **Arch Linux / Manjaro:**
 ```bash
-sudo pacman -Syu --needed bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
+sudo pacman -Syu --needed bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils util-linux
 ```
 **Fedora / RHEL / CentOS Stream:**
 ```bash
-sudo dnf install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
+sudo dnf install -y bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils util-linux
 ```
 **Alpine Linux:**
 ```bash
-sudo apk add bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils
+sudo apk add bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl jq file curl diffutils coreutils util-linux
 ```
 
 ---
@@ -176,8 +177,7 @@ ulpm run --no-gui io.lpk.distro-rootfs
 ```
 Mount a custom host directory into the sandbox
 ```bash
-ulpm run --bind
-/data/projects:/workspace io.lpk.ide
+ulpm run --bind /data/projects:/workspace io.lpk.ide
 ```
 ### 3. Installing Packages
 Install directly from local files, archives, or remote GitHub releases:
@@ -230,7 +230,7 @@ ulpm clean
 
 Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or running any package without relying on detached `.sig` files:
 
-- **Self-Contained Footer:** Every signed `.lpk` embeds a fixed 104-byte cryptographic trailer (`[64B signature | 32B public key | 8B magic LPKSIG01]`) at the end of the file.
+- **Self-Contained Footer:** Every signed `.lpk` embeds a fixed 104-byte cryptographic trailer (`[8B magic ULPM_SIG | 32B public key | 64B signature]`) at the end of the file.
 
 - **Key Pinning (TOFU):** On first installation, the SHA-256 fingerprint of the developer's public key is stored. Upgrades require matching keys, preventing supply-chain takeover.
 
@@ -281,7 +281,7 @@ Every application or RootFS runs within an ephemeral Bubblewrap namespace config
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ### Core Engine Status
-- [x] Autonomous `.lpk` packaging format (v4 with embedded 104-byte footer).
+- [x] Autonomous `.lpk` packaging format (v4 with embedded 104-byte `ULPM_SIG` footer).
 - [x] Autonomous Ed25519 cryptographic signing & keyring.
 - [x] Cryptographic key pinning on upgrades (TOFU).
 - [x] Bubblewrap isolation with dynamic XDG remapping & runtime flags (`--offline`, `--no-gpu`, `--no-audio`, `--no-gui`).
