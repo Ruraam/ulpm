@@ -24,7 +24,13 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     GRAY='\033[0;90m'
     NC='\033[0m'
 else
-    BOLD='' RED='' GREEN='' CYAN='' YELLOW='' GRAY='' NC=''
+    BOLD=''
+    RED=''
+    GREEN=''
+    CYAN=''
+    YELLOW=''
+    GRAY=''
+    NC=''
 fi
 
 info() { echo -e "${CYAN}::${NC} $*"; }
@@ -83,7 +89,7 @@ priv() {
 
 confirm() {
     local prompt="$1" reply=""
-    [ "$ASSUME_YES" = true ] && return 0
+    [ "${ASSUME_YES:-false}" = true ] && return 0
     if [ -t 0 ]; then
         printf '%b' "$prompt"
         read -r reply || reply=""
@@ -157,6 +163,9 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Recompute BASE_URL after argument parsing so that --ref is honored
+BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
+
 if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
     TTY_IN=""
     if [ -t 0 ]; then
@@ -174,6 +183,7 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
         echo "  4) Exit"
         echo
         printf "Choice [1-4] : "
+        choice=""
         if [ "$TTY_IN" = "-" ]; then
             read -r choice || choice=""
         else
@@ -213,8 +223,12 @@ uninstall_ulpm() {
     fi
 
     local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm")
+    if [ -n "$BIN_DIR" ]; then
+        targets+=("$BIN_DIR/ulpm")
+    fi
     local lib_dirs=("$HOME/.local/lib/ulpm" "/usr/local/lib/ulpm" "$data_home/ulpm/engine" "$data_home/ulpm/lib")
 
+    local path
     for path in "${targets[@]}"; do
         if [ -e "$path" ] || [ -L "$path" ]; then
             if [ -w "$(dirname "$path")" ]; then
@@ -227,6 +241,7 @@ uninstall_ulpm() {
         fi
     done
 
+    local dir
     for dir in "${lib_dirs[@]}"; do
         if [ -d "$dir" ]; then
             if [ -w "$(dirname "$dir")" ]; then
@@ -248,9 +263,47 @@ uninstall_ulpm() {
     find "$data_home/icons/hicolor/256x256/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
     find "$data_home/icons/hicolor/512x512/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
 
+    local sys_path
+    for sys_path in /usr/local/share/applications/ulpm-open.desktop /usr/local/share/mime/packages/application-x-lpk.xml; do
+        if [ -e "$sys_path" ]; then
+            if [ -w "$(dirname "$sys_path")" ]; then
+                rm -f -- "$sys_path"
+            else
+                resolve_elevate
+                priv rm -f -- "$sys_path"
+            fi
+            info "Removed: $sys_path"
+        fi
+    done
+
+    local sys_cfg
+    for sys_cfg in /etc/xdg/mimeapps.list /usr/local/share/applications/mimeapps.list; do
+        if [ -f "$sys_cfg" ] && grep -q '^application/x-lpk=' "$sys_cfg" 2>/dev/null; then
+            if [ -w "$sys_cfg" ]; then
+                sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
+            else
+                resolve_elevate
+                priv sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
+            fi
+            info "Cleaned default-app mapping in: $sys_cfg"
+        fi
+    done
+
     for path in "$config_home/mimeapps.list" "$data_home/applications/mimeapps.list"; do
         [ -f "$path" ] && sed -i '/^application\/x-lpk=/d' "$path" 2>/dev/null || true
     done
+
+    if [ -d "$config_home/ulpm" ]; then
+        if confirm "Back up your ULPM config and signing keys to \$HOME before removal? [y/N]: "; then
+            local key_backup
+            key_backup="$HOME/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$key_backup" \
+                && chmod 700 "$key_backup" \
+                && cp -a "$config_home/ulpm/." "$key_backup/" \
+                && info "Config and keys backed up to: $key_backup" \
+                || warn "Backup failed."
+        fi
+    fi
 
     rm -rf -- "$data_home/ulpm" "$cache_home/ulpm" "$config_home/ulpm"
 
@@ -336,6 +389,8 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
                 case " ${PKGS[*]-} " in *" $p "*) ;; *) PKGS+=("$p") ;; esac
             done
             resolve_elevate
+            set +e
+            pkg_rc=0
             case "$PM" in
                 apt-get)      priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
                 pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
@@ -344,10 +399,25 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
                 apk)          priv apk add "${PKGS[@]}" ;;
                 xbps-install) priv xbps-install -Sy "${PKGS[@]}" ;;
             esac
+            pkg_rc=$?
+            set -e
+            [ "$pkg_rc" -eq 0 ] || warn "Automatic package installation failed (exit $pkg_rc). Install manually: ${PKGS[*]}"
         fi
     elif [ -z "$PM" ]; then
         warn "No supported package manager detected."
         info "Please install missing packages manually: ${MISSING[*]}"
+    fi
+fi
+
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    STILL_MISSING=()
+    for cmd in "${REQUIRED_CMDS[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || STILL_MISSING+=("$cmd")
+    done
+    command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || STILL_MISSING+=("fuse3")
+    if [ "${#STILL_MISSING[@]}" -gt 0 ]; then
+        warn "Still missing: ${STILL_MISSING[*]}"
+        warn "ULPM may not work until these are installed (xdg-dbus-proxy is optional according to the README)."
     fi
 fi
 
@@ -385,6 +455,8 @@ MODULES=(
 
 mkdir -p "$TMP_DIR/lib"
 
+FETCHED=()
+
 # 1. Download or fetch local source tree
 if [ -f "./bin/ulpm" ]; then
     cp "./bin/ulpm" "$TMP_DIR/ulpm"
@@ -392,7 +464,8 @@ elif [ -f "./ulpm" ]; then
     cp "./ulpm" "$TMP_DIR/ulpm"
 else
     info "Fetching bin/ulpm..."
-    curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" || die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
+    curl -fL --proto '=https' --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" || die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
+    FETCHED+=("bin/ulpm")
 fi
 
 for m in "${MODULES[@]}"; do
@@ -400,9 +473,46 @@ for m in "${MODULES[@]}"; do
         cp "./lib/$m" "$TMP_DIR/lib/$m"
     else
         info "Fetching lib/$m..."
-        curl -fL --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" || die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
+        curl -fL --proto '=https' --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" || die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
+        FETCHED+=("lib/$m")
     fi
 done
+
+# Integrity check: verify fetched files against SHA256SUMS
+if [ "${#FETCHED[@]}" -gt 0 ]; then
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        warn "sha256sum not found: integrity of downloaded files not verified."
+    elif curl -fsSL --proto '=https' --retry 2 "$BASE_URL/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
+        info "Verifying checksums (SHA256SUMS)..."
+        for f in "${FETCHED[@]}"; do
+            expected="$(awk -v f="$f" '{ n = $2; sub(/^\*/, "", n); if (n == f || n == "./" f) { print $1; exit } }' "$TMP_DIR/SHA256SUMS")"
+
+            # Robust local target path resolution
+            target_local=""
+            if [ -f "$TMP_DIR/$f" ]; then
+                target_local="$TMP_DIR/$f"
+            elif [ -f "$TMP_DIR/${f#bin/}" ]; then
+                target_local="$TMP_DIR/${f#bin/}"
+            elif [ -f "$TMP_DIR/${f##*/}" ]; then
+                target_local="$TMP_DIR/${f##*/}"
+            fi
+
+            if [ -z "$target_local" ] || [ ! -f "$target_local" ]; then
+                die "Internal installer error: could not locate downloaded file for validation: $f"
+            fi
+
+            actual="$(sha256sum "$target_local" | awk '{ print $1 }')"
+
+            if [ -z "$expected" ]; then
+                warn "No checksum entry for $f in SHA256SUMS."
+            elif [ "$expected" != "$actual" ]; then
+                die "Checksum mismatch for $f (expected $expected, got $actual)."
+            fi
+        done
+    else
+        warn "No SHA256SUMS published for ref '$REF': integrity of downloaded files not verified."
+    fi
+fi
 
 # 2. Syntax validation
 info "Performing syntax checks..."
@@ -444,7 +554,8 @@ add_path_line() {
 }
 
 RELOAD_HINT=""
-USER_SHELL_NAME="${SHELL##*/}"
+USER_SHELL_NAME="${SHELL:-}"
+USER_SHELL_NAME="${USER_SHELL_NAME##*/}"
 
 if [ "$MODE" = "user" ]; then
     case "$USER_SHELL_NAME" in
@@ -533,7 +644,7 @@ EOF
         install -m 0644 "$desktop_file" "$apps_dir/ulpm-open.desktop"
     fi
 
-    # 3. Default applications mapping (User & System-wide)
+    # 3. Default applications mapping
     local mimeapps_list="$target_config/mimeapps.list"
     if [ "$NEED_PRIV" = true ]; then
         priv mkdir -p "$target_config"
@@ -580,7 +691,7 @@ if [ "$INTEGRATE" = true ]; then
 fi
 
 # ------------------------------------------------------------
-# Auto-Key Provisioning (Zero-Friction Crypto Setup)
+# Auto-Key Provisioning
 # ------------------------------------------------------------
 provision_default_keys() {
     local keys_dir="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm/keys"
@@ -592,9 +703,15 @@ provision_default_keys() {
         mkdir -p "$keys_dir"
         chmod 700 "$keys_dir" 2>/dev/null || true
         if command -v openssl >/dev/null 2>&1; then
-            openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null || true
+            if [ ! -f "$priv_key" ]; then
+                ( umask 077; openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
+                    || warn "Failed to generate Ed25519 private key ($priv_key)."
+            fi
             chmod 600 "$priv_key" 2>/dev/null || true
-            openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null || true
+            if [ -f "$priv_key" ]; then
+                openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
+                    || warn "Failed to derive public key ($pub_key)."
+            fi
         fi
     fi
 }
