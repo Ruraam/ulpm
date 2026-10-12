@@ -50,7 +50,7 @@ resolve_host_downloads_dir() {
 
     candidate="${candidate:-$HOME/Downloads}"
     mkdir -p "$candidate"
-    echo "$candidate"
+    printf '%s\n' "$candidate"
 }
 
 # Prepares sandbox HOME tree with cross-language download directory links
@@ -80,7 +80,7 @@ session_bus_socket() {
     local run_user_dir="$1"
     local addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}"
     if [[ "$addr" =~ ^unix:path=([^,]+) ]] && [[ -S "${BASH_REMATCH[1]}" ]]; then
-        echo "${BASH_REMATCH[1]}"
+        printf '%s\n' "${BASH_REMATCH[1]}"
         return 0
     fi
     return 1
@@ -214,9 +214,11 @@ lpk_run_rootfs() {
     # GPU
     if [[ "$disable_gpu" != "true" ]]; then
         bwrap_args+=(--dev-bind-try /dev/dri /dev/dri)
+        shopt -s nullglob
         for dev in /dev/nvidia*; do
             [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
         done
+        shopt -u nullglob
     fi
 
     # Audio
@@ -399,9 +401,9 @@ lpk_run_isolated() {
     local mnt_dir dbus_proxy_dir dbus_pid=""
     mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME}/mnt_${instance_id}.XXXXXX")"
 
-    # Contextual cleanup attached only to this instance
-    # shellcheck disable=SC2329
-    cleanup_instance() {
+    # Encapsulated instance cleanup
+    # shellcheck disable=SC2317
+    _cleanup_sandbox_instance() {
         if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
             kill "$dbus_pid" 2>/dev/null || true
             wait "$dbus_pid" 2>/dev/null || true
@@ -410,10 +412,14 @@ lpk_run_isolated() {
         safe_unmount "$mnt_dir"
         rm -rf "$mnt_dir"
     }
-    trap cleanup_instance EXIT INT TERM HUP
+
+    # Intercept kill signals safely without breaking parent EXIT trap
+    trap '_cleanup_sandbox_instance; exit 130' INT
+    trap '_cleanup_sandbox_instance; exit 143' TERM HUP
 
     if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
         error "Failed to mount SquashFS image ($pkg_path)"
+        _cleanup_sandbox_instance
         return 1
     fi
 
@@ -444,6 +450,7 @@ lpk_run_isolated() {
         local rootfs_rc=0
         lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" \
             "$disable_gpu" "$disable_audio" "$disable_gui" custom_binds "$@" || rootfs_rc=$?
+        _cleanup_sandbox_instance
         return "$rootfs_rc"
     fi
 
@@ -569,7 +576,7 @@ EOF
     # System configurations & themes
     local etc_item
     for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
-        fonts X11 xdg gtk-2.0 gtk-3.0 pulse vulkan glvnd \
+        fonts X11 xdg gtk-2.0 gtk-3.0 gtk-4.0 pulse vulkan glvnd \
         localtime timezone os-release machine-id passwd group; do
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
@@ -579,7 +586,6 @@ EOF
         --dev-bind-try /dev/input /dev/input
         --dev-bind-try /dev/js0 /dev/js0
         --dev-bind-try /dev/js1 /dev/js1
-        --dev-bind-try /dev/js2 /dev/js2
         --dev-bind-try /dev/uinput /dev/uinput
         --ro-bind-try /run/udev /run/udev
         --ro-bind-try /usr/share/fonts /usr/share/fonts
@@ -599,9 +605,11 @@ EOF
             --ro-bind-try /usr/share/vulkan /usr/share/vulkan
             --ro-bind-try /usr/share/glvnd /usr/share/glvnd
         )
+        shopt -s nullglob
         for dev in /dev/nvidia*; do
             [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
         done
+        shopt -u nullglob
     fi
 
     # Audio
@@ -648,39 +656,43 @@ EOF
     fi
 
     # D-Bus Isolation Proxy
-    if [[ "$disable_gui" != "true" ]] && command -v xdg-dbus-proxy &>/dev/null; then
-        local real_sock
-        if real_sock=$(session_bus_socket "$run_user_dir"); then
-            dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
-            if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
-                local dbus_extra=()
-                if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-                    # shellcheck disable=SC2206
-                    dbus_extra=($ULPM_DBUS_EXTRA)
-                fi
+    if [[ "$disable_gui" != "true" ]]; then
+        if command -v xdg-dbus-proxy &>/dev/null; then
+            local real_sock
+            if real_sock=$(session_bus_socket "$run_user_dir"); then
+                dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
+                if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
+                    local dbus_extra=()
+                    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                        # shellcheck disable=SC2206
+                        dbus_extra=($ULPM_DBUS_EXTRA)
+                    fi
 
-                xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
-                    --own="${app_id}.*" \
-                    --own='org.mpris.MediaPlayer2.*' \
-                    --talk=org.freedesktop.Notifications \
-                    --talk=org.freedesktop.ScreenSaver \
-                    --talk=org.freedesktop.PowerManagement.Inhibit \
-                    --talk=org.freedesktop.portal.Desktop \
-                    --talk=org.freedesktop.portal.Documents \
-                    --talk=org.kde.StatusNotifierWatcher \
-                    ${dbus_extra[@]+"${dbus_extra[@]}"} &
-                dbus_pid=$!
+                    xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
+                        --own="${app_id}.*" \
+                        --own='org.mpris.MediaPlayer2.*' \
+                        --talk=org.freedesktop.Notifications \
+                        --talk=org.freedesktop.ScreenSaver \
+                        --talk=org.freedesktop.PowerManagement.Inhibit \
+                        --talk=org.freedesktop.portal.Desktop \
+                        --talk=org.freedesktop.portal.Documents \
+                        --talk=org.kde.StatusNotifierWatcher \
+                        ${dbus_extra[@]+"${dbus_extra[@]}"} &
+                    dbus_pid=$!
 
-                for _ in {1..30}; do
-                    [[ -S "$dbus_proxy_dir/bus" ]] && break
-                    kill -0 "$dbus_pid" 2>/dev/null || break
-                    sleep 0.05
-                done
+                    for _ in {1..30}; do
+                        [[ -S "$dbus_proxy_dir/bus" ]] && break
+                        kill -0 "$dbus_pid" 2>/dev/null || break
+                        sleep 0.05
+                    done
 
-                if [[ -S "$dbus_proxy_dir/bus" ]]; then
-                    bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
+                    if [[ -S "$dbus_proxy_dir/bus" ]]; then
+                        bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
+                    fi
                 fi
             fi
+        else
+            warn "xdg-dbus-proxy not installed. Sandboxed app won't have session D-Bus access."
         fi
     fi
 
@@ -715,9 +727,22 @@ EOF
         done
     fi
 
+    # Universal Multiarch Library Paths
+    local host_multiarch
+    case "$(detect_arch)" in
+        amd64)   host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
+        arm64)   host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
+        armhf)   host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
+        i386)    host_multiarch="/usr/lib/i386-linux-gnu" ;;
+        riscv64) host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
+        *)       host_multiarch="" ;;
+    esac
+
+    local ld_paths="/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64:${host_multiarch}:/usr/lib64:/usr/lib"
+
     bwrap_args+=(
         --setenv PATH "/app/bin:/app/usr/bin:/app:$PATH"
-        --setenv LD_LIBRARY_PATH "/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib"
+        --setenv LD_LIBRARY_PATH "$ld_paths"
         --setenv XDG_CONFIG_HOME "$HOME/.config"
         --setenv XDG_DATA_HOME "$HOME/.local/share"
         --setenv XDG_CACHE_HOME "$HOME/.cache"
@@ -741,5 +766,9 @@ EOF
     fi
 
     log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
-    "${bwrap_args[@]}" "$real_exec" "${extra_app_flags[@]:-}" ${sanitized_args[@]+"${sanitized_args[@]}"}
+    local app_exit_code=0
+    "${bwrap_args[@]}" "$real_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
+
+    _cleanup_sandbox_instance
+    return "$app_exit_code"
 }
