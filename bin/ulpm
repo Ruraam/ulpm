@@ -1,139 +1,127 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ulpm - Universal Linux Package Manager
-# Rootless, Zero-Daemon, Sandboxed Application Engine
+# ULPM - UniversalLinux Package Manager (v4.0.0 Architecture Engine)
+# Rootless, Zero-Daemon, Sandboxed ApplicationEngine
 # ==============================================================================
 
 set -euo pipefail
 
-# Format & Engine Version
 export ULPM_VERSION="4.0.0"
 export ULPM_FORMAT_VERSION=4
 
-# Resolve runtime paths
-ULPM_BIN_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-ULPM_ROOT_DIR="$(cd "$ULPM_BIN_DIR/.." && pwd)"
-export ULPM_ROOT_DIR
+# Resolve runtime base directory safely
+ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
+ULPM_BIN="$(command-v ulpm 2>/dev/null || true)"
+fi
+ULPM_BIN_DIR="$(dirname"$ULPM_BIN")"
+ULPM_ROOT_DIR="$(cd "$ULPM_BIN_DIR/.."&& pwd)"
+export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR
 
-# Multi-path library discovery (checks for utils.sh presence)
-if [ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]; then
-    # Development / local git repository mode
-    export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib"
-elif [ -f "$HOME/.local/lib/ulpm/utils.sh" ]; then
-    # User installation mode
-    export ULPM_LIB_DIR="$HOME/.local/lib/ulpm"
-elif [ -f "/usr/local/lib/ulpm/utils.sh" ]; then
-    # System installation mode (/usr/local)
-    export ULPM_LIB_DIR="/usr/local/lib/ulpm"
-elif [ -f "/usr/lib/ulpm/utils.sh" ]; then
-    # Distro packaging mode (/usr)
-    export ULPM_LIB_DIR="/usr/lib/ulpm"
+# PATHSelf-Healing (Ensures GUI-launched apps find internal and user binaries)
+_path_add() {
+[[ -n "$1" && -d "$1" ]] || return 0
+case ":${PATH:-}:"in
+*":$1:"*) return 0 ;;
+esac
+PATH="$1${PATH:+:$PATH}"
+}
+_path_add "$ULPM_BIN_DIR"
+_path_add "$HOME/.local/bin"
+export PATH
+
+# Multi-path library discovery
+if [[ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]]; then
+export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib"
+elif[[ -f "$HOME/.local/lib/ulpm/utils.sh" ]]; then
+export ULPM_LIB_DIR="$HOME/.local/lib/ulpm"
+elif [[ -f "/usr/local/lib/ulpm/utils.sh" ]]; then
+export ULPM_LIB_DIR="/usr/local/lib/ulpm"
+elif [[ -f "/usr/lib/ulpm/utils.sh" ]];then
+export ULPM_LIB_DIR="/usr/lib/ulpm"
 else
-    echo "[X] Critical: Unable to locate ULPM library directory (utils.sh not found)." >&2
-    exit 1
+echo -e "\033[0;31m[-] Critical: ULPM library directory not found (utils.sh missing).\033[0m" >&2
+exit 1
 fi
 
-# XDG Standard Directories
+# Standard paths
 export ULPM_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
 export ULPM_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
 export ULPM_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
 export ULPM_APPS_DIR="$ULPM_DATA_HOME/apps"
 export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
+export ULPM_DB="$ULPM_DATA_HOME/installed.db"
+export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 
-# Verify that all required modules are present before sourcing
-for mod in utils crypto sandbox pack deb run stream manage; do
-    if [ ! -f "$ULPM_LIB_DIR/$mod.sh" ]; then
-        echo "[X] Critical: Module '$mod.sh' not found in $ULPM_LIB_DIR" >&2
-        exit 1
-    fi
-    # shellcheck disable=SC1090
-    source "$ULPM_LIB_DIR/$mod.sh"
+# Module loading
+for mod in utils crypto sandbox pack deb run streammanage; do
+if [[ ! -f "$ULPM_LIB_DIR/$mod.sh" ]]; then
+echo -e "\033[0;31m[-] Critical: Module '$mod.sh'not found in $ULPM_LIB_DIR\033[0m" >&2
+exit1
+fi
+# shellcheck disable=SC1090
+source "$ULPM_LIB_DIR/$mod.sh"
 done
 
 init_environment
 
 show_help() {
-    cat <<EOF
-ulpm - Universal Linux Package Manager (v${ULPM_VERSION})
+cat <<EOF
+ULPM - Universal Linux Package Manager (v${ULPM_VERSION})
 
-USAGE:
-  ulpm <COMMAND> [OPTIONS] [ARGUMENTS]
+Usage: ulpm <command> [options] [arguments]
 
-EXECUTION COMMANDS:
-  run <package.lpk|app_name> [flags] [-- args...]   Run an isolated application
-  stream <url|repo|package.lpk> [flags]             Run ephemerally in RAM/tmpfs without installing
+Execution:
+run [--offline] <target> [-- args...]   Run isolated application (path, id, URI)
+stream <url|repo> [args...]            Ephemeral execution in RAM/tmpfs
 
-PACKAGING COMMANDS:
-  pack <folder|archive|appimage> [name] [out.lpk]   Create a standalone .lpk bundle
-  deb-pack <package_name|file.deb> [name]           Fetch and package via APT dependencies
+Packaging:
+pack <src> [name] [out.lpk] [version]  Package directory, AppImage or archive
+deb-pack <pkg|file.deb> [name]         Build LPK from Debian repositories/packages
 
-MANAGEMENT COMMANDS:
-  install <package.lpk|url>                        Install an application locally
-  remove [--purge] <app_name>                      Uninstall an application
-  list                                              List installed applications
-  upgrade [app_name]                               Upgrade installed packages
-  clean                                             Clean up cache and dangling mounts
+Management:
+install, -i <source> [name]            Install package (.lpk, url, github)
+upgrade, -u                            UpgradeGitHub-tracked packages
+remove, -r [--purge] <app_name>        Uninstall application
+list, -lList installed applications
+clean                                  Unmount dangling sessions & wipe cache
+integrate                              Register MIME associations & desktop icons
 
-CRYPTOGRAPHIC COMMANDS:
-  keygen <key_name>                                 Generate an Ed25519 keypair
-  sign <package.lpk> [private_key]                  Sign an .lpk package
-  trust <public_key.pub>                            Trust a public key
-
-SANDBOX RUNTIME FLAGS:
-  --offline              Disable network access
-  --no-gpu               Disable hardware acceleration (Mesa/Vulkan)
-  --no-audio             Disable sound server access (PipeWire/PulseAudio)
-  --no-gui               Disable Wayland and X11 display access
-  --bind <host>:<dest>   Bind mount a host folder into the sandbox
-
-ENVIRONMENT VARIABLES:
-  ULPM_ZSTD_LEVEL=1..22   Compression level for 'pack' (default: 19)
-                          Level 15 is recommended for 5x faster packing
-                          with ~98% of the compression ratio.
-  Example: ULPM_ZSTD_LEVEL=15 ulpm pack my_app/
-
-For detailed help on a specific command: ulpm <COMMAND> --help
+Cryptography:
+keygen [name]                          Generate hardened Ed25519 keypair
+sign <file.lpk> [priv_key]             Sign an LPK package
+trust <public_key.pub>Add public key to trusted keyring
 EOF
 }
 
-# Command dispatcher
 main() {
-    if [ $# -eq 0 ]; then
-        show_help
-        exit 0
-    fi
+[[ $# -eq 0 ]] && {show_help; exit 0; }
 
-    local cmd="$1"
-    shift
+local cmd="$1"
+shift
 
-    case "$cmd" in
-        run)         cmd_run "$@" ;;
-        stream)      cmd_stream "$@" ;;
-        pack)        cmd_pack "$@" ;;
-        deb-pack)    cmd_deb_pack "$@" ;;
-        install)     cmd_install "$@" ;;
-        remove|rm)   cmd_remove "$@" ;;
-        list|ls)     cmd_list "$@" ;;
-        upgrade)
-            if command -v cmd_upgrade &>/dev/null; then
-                cmd_upgrade "$@"
-            else
-                info "Upgrade feature is checking local applications..."
-                warn "To update an application, re-install the latest .lpk package."
-            fi
-            ;;
-        clean)       cmd_clean "$@" ;;
-        keygen)      generate_keypair "$@" ;;
-        sign)        sign_package "$@" ;;
-        trust)       trust_key "$@" ;;
-        -h|--help|help) show_help ;;
-        -v|--version|version) echo "ulpm v${ULPM_VERSION}" ;;
-        *)
-            error "Unknown command: $cmd"
-            show_help
-            exit 1
-            ;;
-    esac
+case "$cmd" in
+run)                  cmd_run "$@" ;;
+stream)               cmd_stream "$@" ;;
+pack)                 cmd_pack "$@" ;;
+deb-pack)             cmd_deb_pack "$@" ;;
+install|-i|add|-a)cmd_install "$@" ;;
+upgrade|-u)           cmd_upgrade "$@" ;;
+remove|-r|rm)         cmd_remove "$@" ;;
+list|-l|ls)           cmd_list "$@" ;;
+clean)                cmd_clean "$@" ;;
+integrate)            cmd_integrate "$@" ;;
+keygen)cmd_keygen "$@" ;;
+sign)                 cmd_sign "$@" ;;
+trust)                cmd_trust "$@" ;;
+-h|--help|help)       show_help ;;
+-v|--version|version) echo"ulpm v${ULPM_VERSION}" ;;
+*)
+error "Unknown command: $cmd"
+show_help
+exit 1
+;;
+esac
 }
 
 main "$@"
