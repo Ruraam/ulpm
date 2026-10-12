@@ -116,7 +116,17 @@ lpk_run_rootfs() {
     local exec_bin="$3"
     local force_offline="$4"
     local allow_net="$5"
-    shift 5
+    local disable_gpu="$6"
+    local disable_audio="$7"
+    local disable_gui="$8"
+    local custom_binds_ref="$9"
+    shift 9
+
+    # Reconstruct custom binds array
+    local -a custom_binds=()
+    if [[ -n "$custom_binds_ref" ]]; then
+        eval "custom_binds=(\"\${${custom_binds_ref}[@]}\")"
+    fi
 
     local rootfs_dir="$mnt_dir"
     if [[ -d "$mnt_dir/root" && -d "$mnt_dir/root/etc" ]]; then
@@ -156,12 +166,15 @@ lpk_run_rootfs() {
         --bind "$dl_host_dir" "$dl_host_dir"
     )
 
-    [[ -z "${DISPLAY:-}" ]] && bwrap_args+=(--unshare-ipc)
+    if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
+        bwrap_args+=(--unshare-ipc)
+    fi
 
     if [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
         bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
     fi
 
+    # Network routing
     if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
         bwrap_args+=(--unshare-net)
     else
@@ -186,24 +199,40 @@ lpk_run_rootfs() {
         )
     fi
 
-    # Hardware, Controller & Audio bindings
+    # Hardware & Gamepad bindings
     bwrap_args+=(
         --dev-bind-try /dev/input /dev/input
         --dev-bind-try /dev/js0 /dev/js0
         --dev-bind-try /dev/js1 /dev/js1
         --dev-bind-try /dev/js2 /dev/js2
         --dev-bind-try /dev/js3 /dev/js3
-        --dev-bind-try /dev/snd /dev/snd
-        --dev-bind-try /dev/dri /dev/dri
         --dev-bind-try /dev/fb0 /dev/fb0
         --dev-bind-try /dev/uinput /dev/uinput
         --ro-bind-try /run/udev /run/udev
     )
 
-    for dev in /dev/nvidia*; do
-        [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
-    done
+    # GPU
+    if [[ "$disable_gpu" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/dri /dev/dri)
+        for dev in /dev/nvidia*; do
+            [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+        done
+    fi
 
+    # Audio
+    if [[ "$disable_audio" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
+        local pulse_sock="$run_user_dir/pulse/native"
+        if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
+            pulse_sock="${BASH_REMATCH[1]}"
+        fi
+        bwrap_args+=(
+            --bind-try "$pulse_sock" "$pulse_sock"
+            --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
+        )
+    fi
+
+    # Recalbox persistence
     if [[ -d "/recalbox/share" ]]; then
         bwrap_args+=(
             --bind-try /recalbox/share /recalbox/share
@@ -214,42 +243,48 @@ lpk_run_rootfs() {
         )
     fi
 
-    # Display Protocols
-    if [[ -n "${DISPLAY:-}" ]]; then
-        local x_sock
-        if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
-            x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
-            bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
-        else
-            bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+    # GUI (X11 & Wayland)
+    if [[ "$disable_gui" != "true" ]]; then
+        if [[ -n "${DISPLAY:-}" ]]; then
+            local x_sock
+            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
+                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
+                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
+            else
+                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+            fi
+            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+            if [[ -f "$xauth_file" ]]; then
+                bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+            fi
         fi
-        local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
-        if [[ -f "$xauth_file" ]]; then
-            bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+
+        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+            local wayland_sock
+            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+                wayland_sock="$WAYLAND_DISPLAY"
+            else
+                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+            fi
+            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
         fi
     fi
 
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-        local wayland_sock
-        if [[ "$WAYLAND_DISPLAY" == /* ]]; then
-            wayland_sock="$WAYLAND_DISPLAY"
+    # Custom Host-Directory Bindings (--bind host:dest)
+    for b in "${custom_binds[@]}"; do
+        local h_dir="${b%%:*}"
+        local d_dir="${b#*:}"
+        if [[ -e "$h_dir" ]]; then
+            bwrap_args+=(--bind "$h_dir" "$d_dir")
         else
-            wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+            warn "Host bind source does not exist: $h_dir"
         fi
-        bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
-    fi
-
-    # Audio Sockets
-    local pulse_sock="$run_user_dir/pulse/native"
-    if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
-        pulse_sock="${BASH_REMATCH[1]}"
-    fi
-    bwrap_args+=(
-        --bind-try "$pulse_sock" "$pulse_sock"
-        --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
-    )
+    done
 
     for env_var in "${ENV_WHITELIST[@]}"; do
+        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+            continue
+        fi
         if [[ -n "${!env_var:-}" ]]; then
             bwrap_args+=(--setenv "$env_var" "${!env_var}")
         fi
@@ -275,7 +310,7 @@ lpk_run_rootfs() {
         esac
     done
 
-    log "Starting RootFS session [$app_id] with entrypoint: $entrypoint"
+    log "Starting RootFS session [$app_id] (Entrypoint: $entrypoint)..."
     "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
@@ -285,10 +320,50 @@ lpk_run_rootfs() {
 
 lpk_run_isolated() {
     local force_offline=false
-    while [[ "${1:-}" =~ ^-- ]]; do
+    local disable_gpu=false
+    local disable_audio=false
+    local disable_gui=false
+    local custom_binds=()
+
+    # Parse Sandbox Runtime Flags
+    while [[ $# -gt 0 ]]; do
         case "$1" in
-            --offline|--no-net) force_offline=true; shift ;;
-            *) break ;;
+            --offline|--no-net)
+                force_offline=true
+                shift
+                ;;
+            --no-gpu)
+                disable_gpu=true
+                shift
+                ;;
+            --no-audio)
+                disable_audio=true
+                shift
+                ;;
+            --no-gui)
+                disable_gui=true
+                shift
+                ;;
+            --bind)
+                if [[ -n "${2:-}" && "$2" == *:* ]]; then
+                    custom_binds+=("$2")
+                    shift 2
+                else
+                    error "--bind requires argument formatted as <host_path>:<dest_path>"
+                    return 1
+                fi
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                error "Unknown sandbox flag: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
         esac
     done
 
@@ -353,11 +428,10 @@ lpk_run_isolated() {
     local allow_net=true
 
     if [[ -f "$manifest" ]]; then
-        local raw_id
+        local raw_id raw_exec
         raw_id=$(jq -r '.id // .name // empty' "$manifest" 2>/dev/null || true)
         [[ -n "$raw_id" ]] && app_id="$raw_id"
 
-        local raw_exec
         raw_exec=$(jq -r '.exec // empty' "$manifest" 2>/dev/null || true)
         [[ -n "$raw_exec" ]] && exec_bin="$raw_exec"
 
@@ -368,7 +442,8 @@ lpk_run_isolated() {
     # ROOTFS ROUTING
     if lpk_is_rootfs "$mnt_dir" "$manifest"; then
         local rootfs_rc=0
-        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" "$@" || rootfs_rc=$?
+        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" \
+            "$disable_gpu" "$disable_audio" "$disable_gui" custom_binds "$@" || rootfs_rc=$?
         return "$rootfs_rc"
     fi
 
@@ -376,12 +451,11 @@ lpk_run_isolated() {
     local app_data_dir="$HOME/.var/app/$app_id"
     mkdir -p "$app_data_dir/home" "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
 
-    local run_uid run_user_dir
+    local run_uid run_user_dir dl_host_dir
     run_uid="$(id -u)"
     run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
 
     # Multilingual host downloads directory resolution
-    local dl_host_dir
     dl_host_dir="$(resolve_host_downloads_dir)"
     setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
 
@@ -402,7 +476,7 @@ lpk_run_isolated() {
             --disable-setuid-sandbox
             --log-level=3
         )
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+        if [[ -n "${WAYLAND_DISPLAY:-}" && "$disable_gui" != "true" ]]; then
             extra_app_flags+=(--ozone-platform-hint=auto)
         fi
     fi
@@ -456,7 +530,9 @@ EOF
         --bind "$dl_host_dir" "$dl_host_dir"
     )
 
-    [[ -z "${DISPLAY:-}" ]] && bwrap_args+=(--unshare-ipc)
+    if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
+        bwrap_args+=(--unshare-ipc)
+    fi
 
     # Multiarch library symlinks support
     for dir in /lib /lib64 /lib32 /bin /sbin; do
@@ -500,17 +576,12 @@ EOF
 
     # Hardware, Gaming & Virtual user subdirs
     bwrap_args+=(
-        --dev-bind-try /dev/dri /dev/dri
-        --dev-bind-try /dev/snd /dev/snd
         --dev-bind-try /dev/input /dev/input
         --dev-bind-try /dev/js0 /dev/js0
         --dev-bind-try /dev/js1 /dev/js1
         --dev-bind-try /dev/js2 /dev/js2
-        --dev-bind-try /dev/js3 /dev/js3
         --dev-bind-try /dev/uinput /dev/uinput
         --ro-bind-try /run/udev /run/udev
-        --ro-bind-try /usr/share/vulkan /usr/share/vulkan
-        --ro-bind-try /usr/share/glvnd /usr/share/glvnd
         --ro-bind-try /usr/share/fonts /usr/share/fonts
         --ro-bind-try /usr/share/themes /usr/share/themes
         --ro-bind-try /usr/share/icons /usr/share/icons
@@ -521,102 +592,113 @@ EOF
         --ro-bind "$app_payload_dir" /app
     )
 
-    for dev in /dev/nvidia*; do
-        [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
-    done
-
-    if [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
-        bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    # GPU
+    if [[ "$disable_gpu" != "true" ]]; then
+        bwrap_args+=(
+            --dev-bind-try /dev/dri /dev/dri
+            --ro-bind-try /usr/share/vulkan /usr/share/vulkan
+            --ro-bind-try /usr/share/glvnd /usr/share/glvnd
+        )
+        for dev in /dev/nvidia*; do
+            [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+        done
     fi
 
-    if [[ -d "/recalbox/share" ]]; then
-        bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
+    # Audio
+    if [[ "$disable_audio" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
+        local pulse_sock="$run_user_dir/pulse/native"
+        if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
+            pulse_sock="${BASH_REMATCH[1]}"
+        fi
+        bwrap_args+=(
+            --bind-try "$pulse_sock" "$pulse_sock"
+            --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
+        )
     fi
+
+    [[ -f "$HOME/.config/user-dirs.dirs" ]] && bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    [[ -d "/recalbox/share" ]] && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
 
     # Display Protocols (Wayland & X11)
-    if [[ -n "${DISPLAY:-}" ]]; then
-        local x_sock
-        if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
-            x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
-            bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
-        else
-            bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+    if [[ "$disable_gui" != "true" ]]; then
+        if [[ -n "${DISPLAY:-}" ]]; then
+            local x_sock
+            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
+                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
+                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
+            else
+                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+            fi
+            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+            if [[ -f "$xauth_file" ]]; then
+                bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+            fi
         fi
-        local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
-        if [[ -f "$xauth_file" ]]; then
-            bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
-        fi
-    fi
 
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-        local wayland_sock
-        if [[ "$WAYLAND_DISPLAY" == /* ]]; then
-            wayland_sock="$WAYLAND_DISPLAY"
-        else
-            wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+            local wayland_sock
+            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+                wayland_sock="$WAYLAND_DISPLAY"
+            else
+                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+            fi
+            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
         fi
-        bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
     fi
-
-    # Audio Routing
-    local pulse_sock="$run_user_dir/pulse/native"
-    if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
-        pulse_sock="${BASH_REMATCH[1]}"
-    fi
-    bwrap_args+=(
-        --bind-try "$pulse_sock" "$pulse_sock"
-        --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
-    )
 
     # D-Bus Isolation Proxy
-    case "${ULPM_DBUS_MODE:-proxy}" in
-        none) ;;
-        full)
-            local full_sock
-            if full_sock=$(session_bus_socket "$run_user_dir"); then
-                bwrap_args+=(--bind "$full_sock" "$run_user_dir/bus")
-            fi
-            ;;
-        *)
-            if command -v xdg-dbus-proxy &>/dev/null; then
-                local real_sock
-                if real_sock=$(session_bus_socket "$run_user_dir"); then
-                    dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
-                    if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
-                        local dbus_extra=()
-                        if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-                            # shellcheck disable=SC2206
-                            dbus_extra=($ULPM_DBUS_EXTRA)
-                        fi
+    if [[ "$disable_gui" != "true" ]] && command -v xdg-dbus-proxy &>/dev/null; then
+        local real_sock
+        if real_sock=$(session_bus_socket "$run_user_dir"); then
+            dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
+            if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
+                local dbus_extra=()
+                if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                    # shellcheck disable=SC2206
+                    dbus_extra=($ULPM_DBUS_EXTRA)
+                fi
 
-                        xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
-                            --own="${app_id}.*" \
-                            --own='org.mpris.MediaPlayer2.*' \
-                            --talk=org.freedesktop.Notifications \
-                            --talk=org.freedesktop.ScreenSaver \
-                            --talk=org.freedesktop.PowerManagement.Inhibit \
-                            --talk=org.freedesktop.portal.Desktop \
-                            --talk=org.freedesktop.portal.Documents \
-                            --talk=org.kde.StatusNotifierWatcher \
-                            ${dbus_extra[@]+"${dbus_extra[@]}"} &
-                        dbus_pid=$!
+                xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
+                    --own="${app_id}.*" \
+                    --own='org.mpris.MediaPlayer2.*' \
+                    --talk=org.freedesktop.Notifications \
+                    --talk=org.freedesktop.ScreenSaver \
+                    --talk=org.freedesktop.PowerManagement.Inhibit \
+                    --talk=org.freedesktop.portal.Desktop \
+                    --talk=org.freedesktop.portal.Documents \
+                    --talk=org.kde.StatusNotifierWatcher \
+                    ${dbus_extra[@]+"${dbus_extra[@]}"} &
+                dbus_pid=$!
 
-                        for _ in {1..30}; do
-                            [[ -S "$dbus_proxy_dir/bus" ]] && break
-                            kill -0 "$dbus_pid" 2>/dev/null || break
-                            sleep 0.05
-                        done
+                for _ in {1..30}; do
+                    [[ -S "$dbus_proxy_dir/bus" ]] && break
+                    kill -0 "$dbus_pid" 2>/dev/null || break
+                    sleep 0.05
+                done
 
-                        if [[ -S "$dbus_proxy_dir/bus" ]]; then
-                            bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
-                        fi
-                    fi
+                if [[ -S "$dbus_proxy_dir/bus" ]]; then
+                    bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
                 fi
             fi
-            ;;
-    esac
+        fi
+    fi
+
+    # Custom Host-Directory Bindings (--bind host:dest)
+    for b in "${custom_binds[@]}"; do
+        local h_dir="${b%%:*}"
+        local d_dir="${b#*:}"
+        if [[ -e "$h_dir" ]]; then
+            bwrap_args+=(--bind "$h_dir" "$d_dir")
+        else
+            warn "Host bind source does not exist: $h_dir"
+        fi
+    done
 
     for env_var in "${ENV_WHITELIST[@]}"; do
+        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+            continue
+        fi
         if [[ -n "${!env_var:-}" ]]; then
             bwrap_args+=(--setenv "$env_var" "${!env_var}")
         fi
@@ -625,13 +707,12 @@ EOF
     # Deterministic entrypoint resolution
     local real_exec="/app/$clean_exec"
     if [[ ! -x "$app_payload_dir/$clean_exec" ]]; then
-        if [[ -x "$app_payload_dir/AppRun" ]]; then
-            real_exec="/app/AppRun"
-        elif [[ -x "$app_payload_dir/bin/main" ]]; then
-            real_exec="/app/bin/main"
-        elif [[ -x "$app_payload_dir/main" ]]; then
-            real_exec="/app/main"
-        fi
+        for cand in /app/AppRun /app/bin/main /app/main; do
+            if [[ -x "$app_payload_dir/${cand#/app/}" ]]; then
+                real_exec="$cand"
+                break
+            fi
+        done
     fi
 
     bwrap_args+=(
