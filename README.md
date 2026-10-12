@@ -288,15 +288,15 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - [x] Session D-Bus proxy filtering via `xdg-dbus-proxy`.
 - [x] Safe non-executing AppImage ELF/SquashFS parser.
 - [x] Ephemeral RAM streaming execution (`ulpm stream`).
-- [x] Smart Cache with conditionalHTTP verification (`ETag` / `If-Modified-Since`).
+- [x] Smart Cache with conditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
-- [x] Containerized unprivileged RootFS execution (Debian XFCE, Arch, Recalbox withoutKVM or Docker).
+- [x] Containerized unprivileged RootFS execution (Debian XFCE, Arch, Recalbox without KVM or Docker).
 
 ### Upcoming & Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
 - [ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
 - [ ] Nested namespace permission helper (for Steam / Proton `pressure-vessel`).
-- [ ] Fix[open issue]
+- [ ] Fix [open issue]
 
 ---
 
