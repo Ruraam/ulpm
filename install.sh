@@ -330,6 +330,7 @@ done
 pkg_for() {
     local cmd="$1"
     case "$cmd" in
+        flock)          echo "util-linux" ;;
         mksquashfs)
             case "$PM" in
                 zypper) echo "squashfs" ;;
@@ -351,6 +352,7 @@ pkg_for() {
 }
 
 REQUIRED_CMDS=(
+    flock
     squashfuse
     mksquashfs
     bwrap
