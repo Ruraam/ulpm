@@ -9,10 +9,29 @@ set -euo pipefail
 export ULPM_VERSION="4.0.0"
 export ULPM_FORMAT_VERSION=4
 
+# ANSI color helpers
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED='\033[0;31m'
+    NC='\033[0m'
+else
+    RED=''
+    NC=''
+fi
+
+# [PATCH] Fail with a clear message if $HOME is unset/invalid (otherwise: "unbound variable" under set -u)
+if [[ -z "${HOME:-}" || ! -d "$HOME" ]]; then
+    echo -e "${RED}[-] Critical: \$HOME is not set or is not a directory.${NC}" >&2
+    exit 1
+fi
+
 # Resolve runtime base directory safely
 ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
     ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
+fi
+if [[ -z "$ULPM_BIN" ]]; then
+    echo -e "${RED}[-] Critical: Cannot resolve ULPM binary location.${NC}" >&2
+    exit 1
 fi
 ULPM_BIN_DIR="$(dirname "$ULPM_BIN")"
 ULPM_ROOT_DIR="$(cd "$ULPM_BIN_DIR/.." && pwd)"
@@ -30,8 +49,10 @@ _path_add "$ULPM_BIN_DIR"
 _path_add "$HOME/.local/bin"
 export PATH
 
-# Multi-path library discovery
-if [[ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]]; then
+# Multi-path library discovery (paired with binary location first)
+if [[ -f "$ULPM_ROOT_DIR/lib/ulpm/utils.sh" ]]; then
+    export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib/ulpm"
+elif [[ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]]; then
     export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib"
 elif [[ -f "$HOME/.local/lib/ulpm/utils.sh" ]]; then
     export ULPM_LIB_DIR="$HOME/.local/lib/ulpm"
@@ -40,7 +61,7 @@ elif [[ -f "/usr/local/lib/ulpm/utils.sh" ]]; then
 elif [[ -f "/usr/lib/ulpm/utils.sh" ]]; then
     export ULPM_LIB_DIR="/usr/lib/ulpm"
 else
-    echo -e "\033[0;31m[-] Critical: ULPM library directory not found (utils.sh missing).\033[0m" >&2
+    echo -e "${RED}[-] Critical: ULPM library directory not found (utils.sh missing).${NC}" >&2
     exit 1
 fi
 
@@ -53,17 +74,26 @@ export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
 export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 
+# Ensure required directories exist
+mkdir -p "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" "$ULPM_KEYS_DIR"
+
+# [PATCH] Keep the keyring (private keys) private to the user, same as the installer does
+chmod 700 "$ULPM_KEYS_DIR" 2>/dev/null || true
+
 # Module loading
 for mod in utils crypto sandbox pack deb run stream manage; do
     if [[ ! -f "$ULPM_LIB_DIR/$mod.sh" ]]; then
-        echo -e "\033[0;31m[-] Critical: Module '$mod.sh' not found in $ULPM_LIB_DIR\033[0m" >&2
+        echo -e "${RED}[-] Critical: Module '$mod.sh' not found in $ULPM_LIB_DIR${NC}" >&2
         exit 1
     fi
     # shellcheck disable=SC1090
     source "$ULPM_LIB_DIR/$mod.sh"
 done
 
-init_environment
+# Initialize environment
+if declare -F init_environment >/dev/null 2>&1; then
+    init_environment
+fi
 
 show_help() {
     cat <<EOF
@@ -71,26 +101,33 @@ ULPM - Universal Linux Package Manager (v${ULPM_VERSION})
 
 Usage: ulpm <command> [options] [arguments]
 
-Execution:
-  run [--offline] <target> [-- args...]   Run isolated application (path, id, URI)
-  stream <url|repo> [args...]             Ephemeral execution in RAM/tmpfs
+Execution Commands:
+run [flags] <target> [-- args...]       Run application in Bubblewrap sandbox
+stream <url|repo> [flags] [-- args...]  Run ephemerally directly in RAM/tmpfs
 
-Packaging:
-  pack <src> [name] [out.lpk] [version]   Package directory, AppImage or archive
-  deb-pack <pkg|file.deb> [name]          Build LPK from Debian repositories/packages
+Packaging Commands:
+pack <src> [name] [out.lpk] [version]   Create a standalone .lpk bundle
+deb-pack <pkg|file.deb> [name]          Build LPK from Debian repositories
 
-Management:
-  install, -i <source> [name]             Install package (.lpk, url, github)
-  upgrade, -u                             Upgrade GitHub-tracked packages
-  remove, -r [--purge] <app_name>         Uninstall application
-  list, -l                                List installed applications
-  clean                                   Unmount dangling sessions & wipe cache
-  integrate                               Register MIME associations & desktop icons
+Management Commands:
+install, -i <source> [name]             Install application locally
+upgrade, -u                             Upgrade GitHub-tracked applications
+remove, -r [--purge] <app_name>         Uninstall an application
+list, -l                                List installed applications
+clean                                   Unmount dangling sessions & wipe cache
+integrate                               (Re)register MIME types and desktop links
 
-Cryptography:
-  keygen [name]                           Generate hardened Ed25519 keypair
-  sign <file.lpk> [priv_key]              Sign an LPK package
-  trust <public_key.pub>                  Add public key to trusted keyring
+Cryptographic Commands:
+keygen [name]                           Generate hardened Ed25519 keypair
+sign <file.lpk> [priv_key]              Sign an LPK package
+trust <public_key.pub>                  Add public key to trusted keyring
+
+Sandbox Runtime Flags (used with 'run' or 'stream'):
+--offline, --no-net                     Disable network connectivity
+--no-gpu                                Disable GPU acceleration (/dev/dri, Vulkan, NVIDIA)
+--no-audio                              Disable sound server access (PulseAudio/PipeWire)
+--no-gui                                Disable graphical display (X11 and Wayland)
+--bind <host>:<dest>                    Bind-mount an arbitrary host path into the sandbox
 EOF
 }
 
@@ -117,7 +154,11 @@ main() {
         -h|--help|help)       show_help ;;
         -v|--version|version) echo "ulpm v${ULPM_VERSION}" ;;
         *)
-            error "Unknown command: $cmd"
+            if declare -F error >/dev/null 2>&1; then
+                error "Unknown command: $cmd"
+            else
+                echo -e "${RED}[-] Unknown command: $cmd${NC}" >&2
+            fi
             show_help
             exit 1
             ;;
