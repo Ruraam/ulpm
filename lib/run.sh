@@ -10,9 +10,32 @@ cmd_run() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --offline|--no-net) sandbox_opts+=("--offline"); shift ;;
-            --) shift; app_args+=("$@"); break ;;
-            -*) sandbox_opts+=("$1"); shift ;;
+            --offline|--no-net)
+                sandbox_opts+=("--offline")
+                shift
+                ;;
+            --no-gpu|--no-audio|--no-gui)
+                sandbox_opts+=("$1")
+                shift
+                ;;
+            --bind)
+                if [[ -n "${2:-}" ]]; then
+                    sandbox_opts+=("--bind" "$2")
+                    shift 2
+                else
+                    error "--bind requires a mapping argument formatted as <host_dir>:<sandbox_dir>"
+                    return 1
+                fi
+                ;;
+            --)
+                shift
+                app_args+=("$@")
+                break
+                ;;
+            -*)
+                sandbox_opts+=("$1")
+                shift
+                ;;
             *)
                 if [[ -z "$target" ]]; then
                     target="$1"
@@ -24,6 +47,13 @@ cmd_run() {
         esac
     done
 
-    [[ -z "$target" ]] && { error "Usage: ulpm run <target> [flags] [-- args...]"; return 1; }
-    lpk_run_isolated "${sandbox_opts[@]}" "$target" "${app_args[@]}"
+    if [[ -z "$target" ]]; then
+        error "Usage: ulpm run <package.lpk|app_id> [sandbox_flags] [-- app_args...]"
+        return 1
+    fi
+
+    lpk_run_isolated \
+        ${sandbox_opts[@]+"${sandbox_opts[@]}"} \
+        "$target" \
+        ${app_args[@]+"${app_args[@]}"}
 }
