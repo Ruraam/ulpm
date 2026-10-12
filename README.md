@@ -54,7 +54,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 | **Daemonless** | ❌ (snapd required) | ✔️ | ✔️| ✔️ **Yes** |
 | **Rootless Install** | ❌ (requires root) | ⚠️(partial) | ✔️ | ✔️ **Full user-space** |
 | **Runtime Overhead** |⚠️ Heavy startup | ⚠️ Runtimes required | ✔️ Low | 🚀 **Near-zero** |
-| **Sandbox Built-in**| AppArmor (Host root) | Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap +D-Bus proxy** |
+| **Sandbox Built-in**| AppArmor (Host root) | Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
 | **Dynamic Kill-Switches** | ❌ None | ⚠️ Manual overrides | ❌ None |🎛️ **`--no-gpu`, `--offline`, etc.** |
 | **Distro/RootFS Execution** |❌ No | ❌ No | ❌ No | 🐧 **Full RootFS support** |
 | **Mandatory Signatures** |Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning**|
