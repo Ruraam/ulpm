@@ -231,7 +231,9 @@ ulpm clean
 Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or running any package without relying on detached `.sig` files:
 
 - **Self-Contained Footer:** Every signed `.lpk` embeds a fixed 104-byte cryptographic trailer (`[64B signature | 32B public key | 8B magic LPKSIG01]`) at the end of the file.
+
 - **Key Pinning (TOFU):** On first installation, the SHA-256 fingerprint of the developer's public key is stored. Upgrades require matching keys, preventing supply-chain takeover.
+
 - **Payload Integrity:** The SquashFS payload size is computed dynamically without tampering with the compressed data stream.
 
 1. **Automatic Keypair Generation:** On first pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
@@ -256,18 +258,22 @@ Packages lacking a valid cryptographic signature or signed by an untrusted key a
 Every application or RootFS runs within an ephemeral Bubblewrap namespace configured for maximum performance and user privacy:
 
 - **Isolated User Storage:** Instead of cluttering `$HOME`, application data is sandboxed into:
-- `~/.var/app/<app_id>/config` ➔ Mounted as `$HOME/.config`
-- `~/.var/app/<app_id>/data` ➔ Mounted as `$HOME/.local/share`
-- `~/.var/app/<app_id>/cache` ➔ Mounted as `$HOME/.cache`
+  - `~/.var/app/<app_id>/config` ➔ Mounted as `$HOME/.config`
+  - `~/.var/app/<app_id>/data` ➔ Mounted as `$HOME/.local/share`
+  - `~/.var/app/<app_id>/cache` ➔ Mounted as `$HOME/.cache`
+
 - **D-Bus Hardening:** Session D-Bus access is guarded via `xdg-dbus-proxy`, exposing only strictly necessary interfaces (Portals, Notifications, Media Player, ScreenSaver) and isolating the rest of the host.
+
 - **Strict Host Views:** Only vital configuration directories under `/etc` are shared. Host `$HOME` is shielded except for a controlled multilingual download gate (`$HOME/Downloads` / `$HOME/Téléchargements`).
+
 - **Dynamic Security Gates:** Unshare network (`--offline`), disable IPC (`--no-gui`), strip graphic devices (`--no-gpu`), or mute sound servers (`--no-audio`) via CLI overrides or manifest declarations.
+
 - **Host Integration:**
-- Native display pass-through: Wayland socket & X11 (with MIT-SHM IPC compatibility).
-- Native audio: Direct individual sockets for PipeWire and PulseAudio.
-- Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and `~/.icons` are mounted read-only.
-- Hardware acceleration: Direct pass-through of`/dev/dri` and proprietary `/dev/nvidia*` devices.
-- Gamepad & Gaming Controllers: Automaticmapping of `/dev/input`, `/dev/js*`, and `/dev/uinput`.
+  - Native display pass-through: Wayland socket & X11 (with MIT-SHM IPC compatibility).
+  - Native audio: Direct individual sockets for PipeWire and PulseAudio.
+  - Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and `~/.icons` are mounted read-only.
+  - Hardware acceleration: Direct pass-through of`/dev/dri` and proprietary `/dev/nvidia*` devices.
+  - Gamepad & Gaming Controllers: Automatic mapping of `/dev/input`, `/dev/js*`, and `/dev/uinput`.
 
 ---
 
