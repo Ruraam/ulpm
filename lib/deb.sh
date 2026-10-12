@@ -32,16 +32,16 @@ cmd_deb_pack() {
 
         cp -f "$pkg_input" "$deb_dir/"
 
-        # Optionally resolve dependencies if apt is available
+        # Fetch only DIRECT (level-1) library dependencies if apt tools are available
         if command -v apt-cache >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
             if [[ -n "$extracted_name" ]]; then
-                log "Resolving additional dependencies via APT for '$extracted_name'..."
+                log "Resolving direct library dependencies for '$extracted_name'..."
                 (
                     cd "$deb_dir" || exit 1
-                    apt-cache depends --recurse --no-recommends --no-suggests "$extracted_name" 2>/dev/null \
-                        | awk '/Depends:/{print $2}' \
+                    apt-cache depends --no-recommends --no-suggests "$extracted_name" 2>/dev/null \
+                        | awk '/Depends: lib/{print $2}' \
                         | grep -vE '^<.*>$' \
-                        | grep -vE "^(libc6|base-files|dpkg|debconf|perl-base|coreutils|libsystemd0)$" \
+                        | grep -vE "^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$" \
                         | sort -u \
                         | xargs -r apt-get download 2>/dev/null || true
                 )
@@ -53,7 +53,7 @@ cmd_deb_pack() {
         check_dependencies apt-get apt-cache
         [[ -z "$app_name" ]] && app_name="$pkg_input"
 
-        log "Collecting APT dependencies for '$pkg_input'..."
+        log "Downloading '$pkg_input' and direct library dependencies..."
         (
             cd "$deb_dir" || exit 1
             if ! apt-get download "$pkg_input" 2>/dev/null; then
@@ -61,10 +61,11 @@ cmd_deb_pack() {
                 exit 1
             fi
 
-            apt-cache depends --recurse --no-recommends --no-suggests "$pkg_input" 2>/dev/null \
-                | awk '/Depends:/{print $2}' \
+            # Strict 1st level resolution only (no --recurse)
+            apt-cache depends --no-recommends --no-suggests "$pkg_input" 2>/dev/null \
+                | awk '/Depends: lib/{print $2}' \
                 | grep -vE '^<.*>$' \
-                | grep -vE "^(libc6|base-files|dpkg|debconf|perl-base|coreutils|libsystemd0)$" \
+                | grep -vE "^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$" \
                 | sort -u \
                 | xargs -r apt-get download 2>/dev/null || true
         ) || return 1
