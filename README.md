@@ -121,6 +121,18 @@ curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
 > * **3) Debian/Ubuntu-based:**
 > Installs via ulpm official APT repo signed with gpg key
 
+### Installation and upgrade via [Debup](https://github.com/Ruraam/debup)
+
+**Search &Install:**
+```bash
+dbp -s ulpm
+```
+*Select option `1` and press Enter to install the latest `.deb` packagedirectly from GitHub Releases.*
+
+**Upgrade:**
+```bash
+dbp -u
+```
 
 ---
 
