@@ -297,7 +297,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - [x] Smart Cache with conditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
 - [x] Containerized unprivileged RootFS execution (Debian XFCE, Arch, Recalbox without KVM or Docker).
-- [x] Host graphic stackzero-mismatch bridge for proprietary NVIDIA drivers.
+- [x] Host graphic stack zero-mismatch bridge for proprietary NVIDIA drivers.
 - [x] Dedicated persistent bindings for guest retrogaming systems (`/recalbox/share`).
 - [x] Gamescope and unprivileged nested Wayland/Xwayland compositor execution support.
 
