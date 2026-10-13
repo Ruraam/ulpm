@@ -3,19 +3,76 @@
 # lib/deb.sh - Debian Package Downloader & Converter Engine
 # ==============================================================================
 
+resolve_github_deb_asset() {
+    local target="$1"
+    local repo_path tag=""
+
+    if [[ "$target" == *"@"* ]]; then
+        tag="${target##*@}"
+        target="${target%@*}"
+    fi
+
+    repo_path="$(printf '%s' "$target" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##')"
+
+    local endpoint
+    if [[ -n "$tag" ]]; then
+        endpoint="repos/${repo_path}/releases/tags/${tag}"
+    else
+        endpoint="repos/${repo_path}/releases/latest"
+    fi
+
+    log "Querying GitHub release for '$repo_path'..."
+    local release_json
+    release_json="$(fetch_github_api "$endpoint" 15)" || {
+        error "Failed to retrieve GitHub release metadata for '$repo_path'."
+        return 1
+    }
+
+    local arch arch_regex
+    arch="$(detect_arch)"
+    if [[ "$arch" == "arm64" ]]; then
+        arch_regex="arm64|aarch64|arm-64|armv8|arm64v8|all"
+    elif [[ "$arch" == "x86_64" ]]; then
+        arch_regex="amd64|x86_64|x86-64|x64|all"
+    else
+        arch_regex="$arch|all"
+    fi
+
+    local candidate_urls
+    candidate_urls="$(jq -r --arg regex "$arch_regex" '
+        .assets[]? | select((.name | endswith(".deb")) and (.name | test($regex; "i"))) | .browser_download_url
+    ' <<< "$release_json")"
+
+    # Strict negative filtering against architecture conflicts
+    if [[ "$arch" == "arm64" ]]; then
+        candidate_urls="$(grep -ivE "x86|amd64|i386|i686" <<< "$candidate_urls" || true)"
+    elif [[ "$arch" == "x86_64" ]]; then
+        candidate_urls="$(grep -ivE "(^|[^a-z0-9])(arm|aarch64?|armv[0-9]+)([^a-z0-9]|$)" <<< "$candidate_urls" || true)"
+    fi
+
+    local selected_url
+    selected_url="$(head -n1 <<< "$candidate_urls")"
+
+    if [[ -z "$selected_url" ]]; then
+        error "No compatible Debian package (.deb) found for architecture '$arch'."
+        return 1
+    fi
+
+    printf '%s\n' "$selected_url"
+}
+
 cmd_deb_pack() {
     local pkg_input="${1:-}"
     local app_name_hint="${2:-}"
     local out_pkg="${3:-}"
 
-    [[ -z "$pkg_input" ]] && { error "Usage: ulpm deb-pack <pkg|file.deb> [name] [out.lpk]"; return 1; }
+    [[ -z "$pkg_input" ]] && { error "Usage: ulpm deb-pack <pkg|file.deb|github_repo> [name] [out.lpk]"; return 1; }
 
-    # Dpkg-deb is mandatory; apt tools are needed only if resolving from repos
     check_dependencies dpkg-deb
 
     local build_dir
     build_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/deb_build_XXXXXX")"
-    trap 'rm -rf "$build_dir"' RETURN
+    trap 'rm -rf "${build_dir:-}"' RETURN
 
     local deb_dir="$build_dir/debs"
     local root_dir="$build_dir/root"
@@ -23,14 +80,35 @@ cmd_deb_pack() {
 
     local app_name="$app_name_hint"
 
-    # CASE 1: Local .deb file provided
+    # CASE 0: Remote GitHub repository (e.g., owner/repo, https://github.com/..., or owner/repo@tag)
+    if [[ "$pkg_input" =~ ^https?://github\.com/ || "$pkg_input" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+(@.+)?$ ]]; then
+        check_dependencies curl jq
+        local deb_url
+        deb_url="$(resolve_github_deb_asset "$pkg_input")" || return 1
+        local deb_filename
+        deb_filename="$(basename "$deb_url")"
+
+        log "Downloading remote Debian asset: $deb_filename"
+        local curl_opts=(-fL --retry 2)
+        [[ -t 1 ]] && curl_opts+=(--progress-bar) || curl_opts+=(-sS)
+        curl "${curl_opts[@]}" "$deb_url" -o "$deb_dir/$deb_filename" || {
+            error "Download failed: $deb_url"
+            return 1
+        }
+        pkg_input="$deb_dir/$deb_filename"
+    fi
+
+    # CASE 1: Local .deb file provided (or downloaded from GitHub above)
     if [[ -f "$pkg_input" && "$pkg_input" =~ \.deb$ ]]; then
-        log "Processing local Debian package: $pkg_input"
+        log "Processing local Debian package: $(basename "$pkg_input")"
         local extracted_name
         extracted_name="$(dpkg-deb -f "$pkg_input" Package 2>/dev/null || true)"
         [[ -z "$app_name" ]] && app_name="${extracted_name:-$(basename "$pkg_input" .deb)}"
 
-        cp -f "$pkg_input" "$deb_dir/"
+        # If it was a purely local file (not already in deb_dir), copy it
+        if [[ ! -f "$deb_dir/$(basename "$pkg_input")" ]]; then
+            cp -f "$pkg_input" "$deb_dir/"
+        fi
 
         # Fetch only DIRECT (level-1) library dependencies if apt tools are available
         if command -v apt-cache >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
