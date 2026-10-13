@@ -1,0 +1,24 @@
+Package: ulpm
+Version: 4.0.0-1
+Architecture: all
+Maintainer: Ruraam <ruraam@github>
+Depends: bubblewrap, squashfuse, fuse3, squashfs-tools, openssl, jq, curl, file, coreutils, util-linux, tar, zstd, xdg-dbus-proxy
+Filename: pool/main/u/ulpm/ulpm_4.0.0-1_all.deb
+Size: 26864
+MD5sum: 9316f34bfa32667345a5370e6765372c
+SHA1: 7c1e743bfd7021d1b4d4f829eb2320e21635f82f
+SHA256: c1ce90605bed7aa4eb78ff190f9db6b480243499a98df2bb738fb996c73e15ca
+Section: utils
+Priority: optional
+Homepage: https://github.com/Ruraam/ulpm
+Description: Universal Linux Package Manager - rootless sandboxed runtime
+ ULPM is a lightweight, rootless, zero-daemon, sandboxed application runtime
+ for any Linux system. It packages applications into .lpk files - autonomous,
+ read-only SquashFS images compressed with Zstandard and runs them via
+ Bubblewrap with zero system overhead.
+ .
+ Features: 100% rootless install, hardened Bubblewrap sandbox with D-Bus
+ filtering, Ed25519 cryptographic signatures, ephemeral RAM streaming,
+ universal conversion from AppImage/.deb/.tar, GitHub OTA updates, and
+ RootFS/distro execution support.
+
