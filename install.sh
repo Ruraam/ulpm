@@ -40,6 +40,7 @@ die()  { echo -e "${RED}[X] $*${NC}" >&2; exit 1; }
 REPO="Ruraam/ulpm"
 REF="${ULPM_REF:-main}"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
+APT_REPO_URL="https://ruraam.github.io/ulpm"
 
 print_banner() {
     local term_cols
@@ -122,6 +123,48 @@ clean_path_file() {
 }
 
 # ------------------------------------------------------------
+# APT Integration Flow
+# ------------------------------------------------------------
+
+install_via_apt() {
+    resolve_elevate
+    info "Installing ULPM from official signed APT repository..."
+
+    command -v curl >/dev/null 2>&1 || {
+        info "curl is required to fetch GPG key, installing via apt..."
+        priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y curl
+    }
+    command -v gpg >/dev/null 2>&1 || {
+        info "gpg is required to dearmor repository key, installing via apt..."
+        priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y gnupg
+    }
+
+    info "Importing official repository signing key..."
+    priv mkdir -p /usr/share/keyrings
+    curl -fsSL --proto '=https' --retry 2 "$APT_REPO_URL/KEY.gpg" | gpg --dearmor | priv tee /usr/share/keyrings/ulpm.gpg >/dev/null \
+        || die "Failed to download and dearmor the ULPM repository signing key."
+    priv chmod 0644 /usr/share/keyrings/ulpm.gpg
+
+    info "Configuring APT source list..."
+    priv mkdir -p /etc/apt/sources.list.d
+    echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
+
+    info "Updating APT cache..."
+    priv apt-get update || die "Failed to update apt cache from ULPM repository."
+
+    info "Installing ulpm deb package..."
+    priv env DEBIAN_FRONTEND=noninteractive apt-get install -y ulpm || die "Failed to install ulpm via apt."
+
+    provision_default_keys
+
+    echo
+    echo -e "${GREEN}✔ ULPM engine successfully installed via APT!${NC}"
+    echo -e "  Binary:    ${BOLD}/usr/bin/ulpm${NC} (or system configured path)"
+    echo -e "\nGet started with: ${BOLD}ulpm help${NC}"
+    exit 0
+}
+
+# ------------------------------------------------------------
 # Arguments & Interactive Menu
 # ------------------------------------------------------------
 
@@ -131,11 +174,13 @@ ASSUME_YES=false
 INSTALL_DEPS=true
 INTEGRATE=true
 UNINSTALL=false
+USE_APT=false
 
 print_banner
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --apt)          USE_APT=true ;;
         --user)         MODE="user" ;;
         --system)       MODE="system" ;;
         --bin-dir)      shift; BIN_DIR="${1:?--bin-dir needs a directory}" ;;
@@ -148,6 +193,7 @@ while [ $# -gt 0 ]; do
             echo "Usage: ./install.sh [OPTIONS]"
             echo
             echo "Options:"
+            echo "  --apt           Install via official signed APT repository (Debian/Ubuntu)"
             echo "  --user          Install in user home directory (~/.local)"
             echo "  --system        Install system-wide (/usr/local, requires root)"
             echo "  --bin-dir DIR   Custom binary directory"
@@ -166,6 +212,11 @@ done
 # Recompute BASE_URL after argument parsing so that --ref is honored
 BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
 
+if [ "$USE_APT" = true ]; then
+    command -v apt-get >/dev/null 2>&1 || die "Option --apt specified, but 'apt-get' was not found on this system."
+    install_via_apt
+fi
+
 if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
     TTY_IN=""
     if [ -t 0 ]; then
@@ -175,14 +226,26 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
     fi
 
     if [ -n "$TTY_IN" ]; then
+        HAS_APT=false
+        command -v apt-get >/dev/null 2>&1 && HAS_APT=true
+
         echo
         echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine${NC}"
         echo "  1) Rootless installation (User: ~/.local/bin)"
         echo "  2) System-wide installation (Root: /usr/local/bin)"
-        echo "  3) Clean uninstallation"
-        echo "  4) Exit"
-        echo
-        printf "Choice [1-4] : "
+        if [ "$HAS_APT" = true ]; then
+            echo "  3) Official signed APT repository (Debian/Ubuntu system-wide)"
+            echo "  4) Clean uninstallation"
+            echo "  5) Exit"
+            echo
+            printf "Choice [1-5] : "
+        else
+            echo "  3) Clean uninstallation"
+            echo "  4) Exit"
+            echo
+            printf "Choice [1-4] : "
+        fi
+
         choice=""
         if [ "$TTY_IN" = "-" ]; then
             read -r choice || choice=""
@@ -190,13 +253,24 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
             read -r choice < /dev/tty || choice=""
         fi
 
-        case "$choice" in
-            1) MODE="user" ;;
-            2) MODE="system" ;;
-            3) UNINSTALL=true ;;
-            4) info "Aborted by user."; exit 0 ;;
-            *) die "Invalid choice: $choice" ;;
-        esac
+        if [ "$HAS_APT" = true ]; then
+            case "$choice" in
+                1) MODE="user" ;;
+                2) MODE="system" ;;
+                3) install_via_apt ;;
+                4) UNINSTALL=true ;;
+                5) info "Aborted by user."; exit 0 ;;
+                *) die "Invalid choice: $choice" ;;
+            esac
+        else
+            case "$choice" in
+                1) MODE="user" ;;
+                2) MODE="system" ;;
+                3) UNINSTALL=true ;;
+                4) info "Aborted by user."; exit 0 ;;
+                *) die "Invalid choice: $choice" ;;
+            esac
+        fi
     else
         MODE="user"
     fi
@@ -234,7 +308,10 @@ uninstall_ulpm() {
 
     local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm")
     if [ -n "$BIN_DIR" ]; then
-        case "$BIN_DIR" in /*) targets+=("$BIN_DIR/ulpm") ;; *) warn "Ignoring non-absolute custom BIN_DIR during uninstall: $BIN_DIR" ;; esac
+        case "$BIN_DIR" in
+            /*) targets+=("$BIN_DIR/ulpm") ;;
+            *) warn "Ignoring non-absolute custom BIN_DIR during uninstall: $BIN_DIR" ;;
+        esac
     fi
     local lib_dirs=("$HOME/.local/lib/ulpm" "/usr/local/lib/ulpm" "$data_home/ulpm/engine" "$data_home/ulpm/lib")
 
@@ -350,12 +427,7 @@ pkg_for() {
     local cmd="$1"
     case "$cmd" in
         flock)          echo "util-linux" ;;
-        squashfuse)
-            case "$PM" in
-                apt-get) echo "squashfuse" ;;
-                *)      echo "squashfuse" ;;
-            esac
-            ;;
+        squashfuse)     echo "squashfuse" ;;
         mksquashfs)
             case "$PM" in
                 zypper) echo "squashfs" ;;
@@ -473,7 +545,7 @@ case "$BIN_DIR" in
         die "Refusing unsafe binary directory: $BIN_DIR" ;;
 esac
 case "$BIN_DIR" in
-    *$'\n'*|*$'\r'*|*:* ) die "Binary directory contains an unsafe character (newline or colon)." ;;
+    *$'\n'*|*$'\r'*|*:*) die "Binary directory contains an unsafe character (newline or colon)." ;;
 esac
 
 info "Installing ULPM to ${BOLD}$BIN_DIR/ulpm${NC} (Modules: ${BOLD}$LIB_DIR${NC})..."
