@@ -5,11 +5,11 @@ Public Key: `KEY.gpg` (armored) and `ulpm.gpg` (binary)
 ## Secure Installation (Recommended)
 1. Add the official GPG signing key
 ```bash
-curl -fsSL https:///Ruramm/ulpm/KEY.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/ulpm.gpg > /dev/null
+curl -fsSL https://ruraam.github.io/ulpm/KEY.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/ulpm.gpg > /dev/null
 ```
 2. Add the signed APT repository
 ```bash
-curl -fsSLhttps://your-domain/apt-repo/KEY.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/ulpm.gpg > /dev/null
+curl -fsSL https://ruraam.github.io/ulpm/KEY.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/ulpm.gpg > /dev/null
 ```
 3. Update and install
 ```bash
@@ -18,7 +18,7 @@ sudo apt install ulpm
 ```
 ## For GitHub Pages
 ```bash
-echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] https://ruraam.github.io/ulpm/apt-repo stable main" | sudo tee /etc/apt/sources.list.d/ulpm.list
+echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] https://ruraam.github.io/ulpm stable main" | sudo tee /etc/apt/sources.list.d/ulpm.list
 ```
 ## Manual Verification
 ```bash
