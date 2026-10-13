@@ -52,9 +52,9 @@ done
 
 case "$ULPM_LIB_DIR" in
     "$ULPM_BIN_DIR") ULPM_ROOT_DIR="$ULPM_BIN_DIR" ;;
-    */lib/ulpm) ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
-    */lib) ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
-    *) ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
+    */lib/ulpm)      ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
+    */lib)           ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
+    *)               ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
 esac
 export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR ULPM_LIB_DIR
 
@@ -95,6 +95,21 @@ unset mod module _candidate _ulpm_lib_candidates
 if declare -F init_environment >/dev/null 2>&1; then
     init_environment
 fi
+
+# ============================================================================
+# Automatic FreeDesktop / MIME Integration check (double-click & context menu)
+# ============================================================================
+_auto_integrate() {
+    local desktop_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/ulpm-handler.desktop"
+    local mime_entry="${XDG_DATA_HOME:-$HOME/.local/share}/mime/packages/ulpm-lpk.xml"
+    if [[ ! -f "$desktop_entry" || ! -f "$mime_entry" ]]; then
+        if declare -F cmd_integrate >/dev/null 2>&1; then
+            cmd_integrate >/dev/null 2>&1 || true
+        fi
+    fi
+}
+_auto_integrate
+unset -f _auto_integrate
 
 show_help() {
     cat <<EOF_HELP
