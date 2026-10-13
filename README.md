@@ -18,7 +18,7 @@
 >[!NOTE]
 > ### 🚀 Release Status: v4.1.0 Production Engine
 >
->**ULPM Engine v4.1.0** powers the autonomous **`.lpk` Format v4** specification nwith a hardened, modular architecture.
+>**ULPM Engine v4.1.0** powers the autonomous **`.lpk` Format v4** specificationn with a hardened, modular architecture.
 >
 > * **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`), granular runtime kill-switches (`--no-gpu`,`--no-audio`, `--no-gui`), strict permission gating, and Ed25519 TOFU cryptographic key pinning.
 > * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, atomic installations with zero background resource footprint.
