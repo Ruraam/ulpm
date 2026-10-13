@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ULPM Official Universal Installer & Lifecycle Manager (v4.0.0)
+# ULPM Official Universal Installer & Lifecycle Manager (v4.1.0)
 # Supports: Rootless (~/.local/bin) & System-wide (/usr/local/bin)
 #
 # Usage:
@@ -9,7 +9,7 @@
 # ==============================================================================
 
 if [ -z "${BASH_VERSION:-}" ]; then
-    echo "[X] This installer requires bash (try: curl -fsSL <url>| bash)" >&2
+    echo "[X] This installer requires bash (try: curl -fsSL <url> | bash)" >&2
     exit 1
 fi
 
@@ -34,8 +34,8 @@ else
 fi
 
 info() { echo -e "${CYAN}::${NC} $*"; }
-warn() { echo -e "${YELLOW}[!] $*${NC}" >&2; }
-die()  { echo -e "${RED}[X] $*${NC}" >&2; exit 1; }
+warn()  { echo -e "${YELLOW}[!] $*${NC}" >&2; }
+die()   { echo -e "${RED}[X] $*${NC}" >&2; exit 1; }
 
 REPO="Ruraam/ulpm"
 REF="${ULPM_REF:-main}"
@@ -54,7 +54,7 @@ print_banner() {
     clear
     echo -e "              \033[0;97m▐\033[0;96m██\033[0;97m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
     echo -e "              \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
-    echo -e "\033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
+    echo -e "              \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
     echo -e "              \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
     echo -e "              \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
 }
@@ -64,7 +64,7 @@ print_banner() {
 # ------------------------------------------------------------
 
 [ "$(uname -s)" = "Linux" ] || die "ULPM only supports Linux operating systems."
-[ "${BASH_VERSINFO[0]}" -ge 4 ] || die "bash >=4 is required (found ${BASH_VERSION})."
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || die "bash >= 4 is required (found ${BASH_VERSION})."
 [ -n "${HOME:-}" ] && [ -d "$HOME" ] || die "\$HOME is not set or not a directory."
 
 ELEVATE=()
@@ -89,7 +89,7 @@ priv() {
 }
 
 confirm() {
-    local prompt="$1" reply=""
+    local prompt="$1" default="${2:-y}" reply=""
     [ "${ASSUME_YES:-false}" = true ] && return 0
     if [ -t 0 ]; then
         printf '%b' "$prompt"
@@ -98,8 +98,9 @@ confirm() {
         printf '%b' "$prompt"
         read -r reply < /dev/tty || reply=""
     else
-        return 1
+        [ "$default" = "y" ] && return 0 || return 1
     fi
+    [ -z "$reply" ] && reply="$default"
     case "$reply" in
         [yY]|[yY][eE][sS]|[oO]|[oO][uU][iI]) return 0 ;;
         *) return 1 ;;
@@ -172,7 +173,7 @@ MODE="auto"
 BIN_DIR=""
 ASSUME_YES=false
 INSTALL_DEPS=true
-INTEGRATE=true
+INTEGRATE=auto
 UNINSTALL=false
 USE_APT=false
 
@@ -187,6 +188,7 @@ while [ $# -gt 0 ]; do
         --ref)          shift; REF="${1:?--ref needs a value}" ;;
         -y|--yes)       ASSUME_YES=true ;;
         --no-deps)      INSTALL_DEPS=false ;;
+        --integrate)    INTEGRATE=true ;;
         --no-integrate) INTEGRATE=false ;;
         --uninstall)    UNINSTALL=true ;;
         -h|--help)
@@ -200,6 +202,7 @@ while [ $# -gt 0 ]; do
             echo "  --ref REF       GitHub branch/tag to download from (default: main)"
             echo "  -y, --yes       Assume yes to all prompts"
             echo "  --no-deps       Do not attempt to install missing host dependencies"
+            echo "  --integrate     Force desktop MIME and launcher configuration"
             echo "  --no-integrate  Skip desktop MIME and launcher configuration"
             echo "  --uninstall     Completely remove ULPM from system and user profiles"
             exit 0
@@ -300,7 +303,7 @@ uninstall_ulpm() {
     echo -e "${YELLOW}This operation will remove ULPM, its libraries, installed apps and keys.${NC}"
     echo
 
-    if ! confirm "Confirm complete uninstallation of ULPM? [y/N]: "; then
+    if ! confirm "Confirm complete uninstallation of ULPM? [y/N]: " "n"; then
         info "Uninstallation cancelled."
         return 0
     fi
@@ -344,7 +347,8 @@ uninstall_ulpm() {
         clean_path_file "$path"
     done
     rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
-    rm -f "$data_home/applications/ulpm-open.desktop" "$data_home/applications/ulpm-handler.desktop" "$data_home/mime/packages/application-x-lpk.xml"
+    rm -f "$data_home/applications/ulpm-open.desktop" "$data_home/applications/ulpm-handler.desktop" \
+          "$data_home/mime/packages/ulpm-lpk.xml" "$data_home/mime/packages/application-x-lpk.xml"
     rm -f -- "$data_home/bash-completion/completions/ulpm" 2>/dev/null || true
     if [ -e /usr/local/share/bash-completion/completions/ulpm ]; then
         if [ -w /usr/local/share/bash-completion/completions ]; then
@@ -359,7 +363,9 @@ uninstall_ulpm() {
     find "$data_home/icons/hicolor/512x512/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
 
     local sys_path
-    for sys_path in /usr/local/share/applications/ulpm-open.desktop /usr/local/share/applications/ulpm-handler.desktop /usr/local/share/mime/packages/application-x-lpk.xml; do
+    for sys_path in /usr/local/share/applications/ulpm-handler.desktop \
+                    /usr/local/share/mime/packages/ulpm-lpk.xml \
+                    /usr/local/share/mime/packages/application-x-lpk.xml; do
         if [ -e "$sys_path" ]; then
             if [ -w "$(dirname "$sys_path")" ]; then
                 rm -f -- "$sys_path"
@@ -389,7 +395,7 @@ uninstall_ulpm() {
     done
 
     if [ -d "$config_home/ulpm" ]; then
-        if confirm "Back up your ULPM config and signing keys to \$HOME before removal? [y/N]: "; then
+        if confirm "Back up your ULPM config and signing keys to \$HOME before removal? [y/N]: " "n"; then
             local key_backup
             key_backup="$HOME/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
             if mkdir -p "$key_backup" && chmod 700 "$key_backup" && cp -a "$config_home/ulpm/." "$key_backup/"; then
@@ -402,8 +408,10 @@ uninstall_ulpm() {
 
     rm -rf -- "$data_home/ulpm" "$cache_home/ulpm" "$config_home/ulpm"
 
-    command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$data_home/mime" >/dev/null 2>&1 || true
-    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
+    command -v update-mime-database >/dev/null 2>&1 && \
+        update-mime-database "$data_home/mime" >/dev/null 2>&1 || true
+    command -v update-desktop-database >/dev/null 2>&1 && \
+        update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
 
     echo -e "\n${GREEN}✔ ULPM has been completely uninstalled.${NC}"
 }
@@ -443,6 +451,7 @@ pkg_for() {
         find)           echo "findutils" ;;
         awk)            echo "gawk" ;;
         tar)            echo "tar" ;;
+        sha256sum)      echo "coreutils" ;;
         *)              echo "$cmd" ;;
     esac
 }
@@ -468,6 +477,7 @@ REQUIRED_CMDS=(
     awk
     tar
     readelf
+    sha256sum
 )
 
 MISSING=()
@@ -479,11 +489,11 @@ command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 
 if [ "${#MISSING[@]}" -gt 0 ]; then
     warn "Missing tools: ${MISSING[*]}"
     if [ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
-        if confirm "${BOLD}Install missing packages automatically with $PM? [y/N]:${NC}"; then
+        if confirm "${BOLD}Install missing packages automatically with $PM? [Y/n]:${NC}" "y"; then
             PKGS=()
             for c in "${MISSING[@]}"; do
                 p="$(pkg_for "$c")"
-                case " ${PKGS[*]-} " in *" $p "*);; *) PKGS+=("$p") ;; esac
+                case " ${PKGS[*]-} " in *" $p "*) ;; *) PKGS+=("$p") ;; esac
             done
             resolve_elevate
             set +e
@@ -528,7 +538,8 @@ case "$BIN_DIR" in
 esac
 case "$BIN_DIR" in
     "/"|"/usr"|"/usr/local"|"/bin"|"/sbin"|"/etc"|"/home"|"/root"|"/var"|"/tmp")
-        die "Refusing unsafe binary directory: $BIN_DIR" ;;
+        die "Refusing unsafe binary directory: $BIN_DIR"
+        ;;
 esac
 case "$BIN_DIR" in
     *$'\n'*|*$'\r'*|*:*) die "Binary directory contains an unsafe character (newline or colon)." ;;
@@ -839,7 +850,7 @@ setup_desktop_integration() {
         target_config="${XDG_CONFIG_HOME:-$HOME/.config}"
     fi
 
-    info "Configuring OS Desktop / MIME association..."
+    info "Configuring OS Desktop & MIME association (Double-click / Right-click)..."
 
     local mime_dir="$target_data/mime/packages"
     local apps_dir="$target_data/applications"
@@ -850,7 +861,8 @@ setup_desktop_integration() {
         mkdir -p "$mime_dir" "$apps_dir"
     fi
 
-    local mime_file="$TMP_DIR/application-x-lpk.xml"
+    # Standard XML MIME Definition
+    local mime_file="$TMP_DIR/ulpm-lpk.xml"
     cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
@@ -859,29 +871,35 @@ setup_desktop_integration() {
         <comment xml:lang="fr">Paquet d'application ULPM</comment>
         <icon name="package-x-generic"/>
         <glob pattern="*.lpk"/>
+        <glob pattern="*.LPK"/>
     </mime-type>
 </mime-info>
 EOF
 
+    # Launcher Desktop Entry
     local desktop_file="$TMP_DIR/ulpm-handler.desktop"
     cat <<EOF > "$desktop_file"
 [Desktop Entry]
 Type=Application
 Name=ULPM Package Runner
+Name[fr]=Exécuteur de paquets ULPM
+GenericName=Package Runner
 Comment=Run sandboxed .lpk applications directly
-Exec=sh -c 'F=\$(printf "%s" "\$1" | sed "s#^file://##"); exec "$BIN_DIR/ulpm" run "\$F"' dummy %u
+Comment[fr]=Exécuter des paquets autonomes LPK
+Exec=$BIN_DIR/ulpm run %f
 Icon=package-x-generic
 Terminal=false
 NoDisplay=false
 MimeType=application/x-lpk;
 Categories=System;Utility;
+StartupNotify=true
 EOF
 
     if [ "$NEED_PRIV" = true ]; then
-        priv install -m 0644 "$mime_file" "$mime_dir/application-x-lpk.xml"
+        priv install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
         priv install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
     else
-        install -m 0644 "$mime_file" "$mime_dir/application-x-lpk.xml"
+        install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
         install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
     fi
 
@@ -912,6 +930,7 @@ EOF
         fi
     fi
 
+    # Update Databases
     if command -v update-mime-database >/dev/null 2>&1; then
         if [ "$NEED_PRIV" = true ]; then
             priv update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
@@ -927,9 +946,21 @@ EOF
             update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
         fi
     fi
+
+    # Trigger live desktop reload (GNOME / KDE / XFCE)
+    nautilus -q 2>/dev/null || true
+    thunar -q 2>/dev/null || true
+    kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
 }
 
-if [ "$INTEGRATE" = true ]; then
+# Resolve Desktop Integration Choice
+if [ "$INTEGRATE" = "auto" ]; then
+    if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
+        setup_desktop_integration
+    else
+        info "Desktop integration skipped. You can enable it anytime via: ulpm integrate"
+    fi
+elif [ "$INTEGRATE" = true ]; then
     setup_desktop_integration
 fi
 
