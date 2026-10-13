@@ -83,7 +83,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 ## 🚀 Installation & Requirements
 
-###Dependencies
+### Dependencies
 
 ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested, standard Linux utilities:
 
@@ -93,7 +93,7 @@ ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of
 | **D-Bus Filtering** | `xdg-dbus-proxy` | *(Optional but recommended)* Restricts and filters session D-Bus access |
 | **Filesystem**| `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
 | **Bundle Creation** | `squashfs-tools` (`mksquashfs`, `unsquashfs`)| Generates and safely extracts optimized $zstd$-compressed `.lpk` images |
-| **Cryptography** |`openssl` (>= 3.0) & `coreutils` | Autonomous Ed25519trailer signature verification & raw I/O |
+| **Cryptography** |`openssl` (>= 3.0) & `coreutils` | Autonomous Ed25519 trailer signature verification & raw I/O |
 | **Binary Inspection** | `od`, `cmp`, `file` | Secure non-executing ELF header parsing and binary key matching |
 | **Metadata Parsing** | `jq` | Fast JSON manifest validation |
 | **Transport** | `curl` | Smart conditional caching and remote repository sync|
