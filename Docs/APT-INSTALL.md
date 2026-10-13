@@ -9,7 +9,7 @@ curl -fsSL https://ruraam.github.io/ulpm/KEY.gpg | gpg --dearmor | sudo tee /usr
 ```
 2. Add the signed APT repository
 ```bash
-curl -fsSL https://ruraam.github.io/ulpm/KEY.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/ulpm.gpg > /dev/null
+echo "deb[signed-by=/usr/share/keyrings/ulpm.gpg] https://ruraam.github.io/ulpm stable main" | sudo tee /etc/apt/sources.list.d/ulpm.list
 ```
 3. Update and install
 ```bash
