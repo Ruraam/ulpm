@@ -123,7 +123,7 @@ curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
 
 ### Installation and upgrade via [Debup](https://github.com/Ruraam/debup)
 
-**Search &Install:**
+**Search & Install:**
 ```bash
 dbp -s ulpm
 ```
