@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# lib/crypto.sh - High-Integrity Ed25519 Signing & Verification Engine
-# ==============================================================================
+# ============================================================================
+# lib/crypto.sh - ULPM Ed25519 signing, verification and trust management
+# Signature footer (104 bytes): ULPM_SIG (8) + raw public key (32) + signature (64)
+# ULPM v4.1.0
+# ============================================================================
 
 SIG_MAGIC="ULPM_SIG"
 SIG_MAGIC_LEN=8
@@ -9,184 +11,308 @@ SIG_RAW_LEN=64
 SIG_PUB_LEN=32
 SIG_FOOTER_SIZE=104
 
+_crypto_size() {
+    stat -c '%s' -- "$1" 2>/dev/null || stat -f '%z' -- "$1" 2>/dev/null
+}
+
+_crypto_trusted_dir() {
+    printf '%s\n' "${ULPM_CONFIG_HOME:-$HOME/.config/ulpm}/trusted_keys"
+}
+
 ensure_crypto_prerequisites() {
-    check_dependencies openssl cmp dd truncate tail head stat
-    local ossl_ver
-    ossl_ver="$(openssl version 2>/dev/null | awk '{print $2}')"
-    if [[ "$ossl_ver" =~ ^0\. || "$ossl_ver" =~ ^1\.0 ]]; then
-        error "OpenSSL >= 1.1.1 is strictly required for Ed25519 (Detected: ${ossl_ver:-unknown})."
+    check_dependencies openssl cmp dd truncate tail head stat mktemp cp mv chmod mkdir rm cat dirname basename wc grep od tr || return 1
+
+    if ! openssl genpkey -algorithm Ed25519 -help >/dev/null 2>&1 && \
+       ! openssl list -public-key-algorithms 2>/dev/null | grep -qi 'ED25519'; then
+        error "Installed OpenSSL provider does not support Ed25519."
+        return 1
+    fi
+    if ! openssl pkeyutl -help 2>&1 | grep -qw -- '-rawin'; then
+        error "OpenSSL with pkeyutl -rawin support is required."
         return 1
     fi
     return 0
 }
 
-ensure_default_keypair() {
-    local default_priv="$ULPM_KEYS_DIR/default.priv"
-    local default_pub="$ULPM_KEYS_DIR/default.pub"
+_crypto_is_ed25519_key() {
+    local key="${1:-}" kind="${2:-private}" der_tmp prefix size
+    [[ -f "$key" && -r "$key" && ! -L "$key" ]] || return 1
+    der_tmp="$(mktemp "${TMPDIR:-/tmp}/ulpm-keycheck.XXXXXX")" || return 1
+    if [[ "$kind" == "public" ]]; then
+        openssl pkey -pubin -in "$key" -pubout -outform DER -out "$der_tmp" 2>/dev/null || { rm -f -- "$der_tmp"; return 1; }
+    else
+        openssl pkey -in "$key" -pubout -outform DER -out "$der_tmp" 2>/dev/null || { rm -f -- "$der_tmp"; return 1; }
+    fi
+    size="$(_crypto_size "$der_tmp")" || { rm -f -- "$der_tmp"; return 1; }
+    prefix="$(head -c 12 -- "$der_tmp" | od -An -tx1 | tr -d ' \n')"
+    rm -f -- "$der_tmp"
+    [[ "$size" -eq 44 && "$prefix" == "302a300506032b6570032100" ]]
+}
 
-    if [[ -f "$default_priv" && -f "$default_pub" ]]; then
+_crypto_valid_key_name() {
+    [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && "$1" != "." && "$1" != ".." ]]
+}
+
+ensure_default_keypair() {
+    local key_dir="${ULPM_KEYS_DIR:-$HOME/.config/ulpm/keys}"
+    local default_priv="$key_dir/default.priv"
+    local default_pub="$key_dir/default.pub"
+    local tmp_priv="" tmp_pub=""
+
+    if [[ -f "$default_priv" && -f "$default_pub" && ! -L "$default_priv" && ! -L "$default_pub" ]]; then
         printf '%s\n' "$default_priv"
         return 0
     fi
+    if [[ -e "$default_priv" || -e "$default_pub" ]]; then
+        error "Incomplete default keypair exists; refusing to overwrite it."
+        return 1
+    fi
 
-    mkdir -p "$ULPM_KEYS_DIR"
-    chmod 700 "$ULPM_KEYS_DIR" 2>/dev/null || true
-    ensure_crypto_prerequisites >&2 || return 1
+    ( umask 077 && mkdir -p -- "$key_dir" ) || { error "Cannot create key directory: $key_dir"; return 1; }
+    ensure_crypto_prerequisites || return 1
 
-    (
-        umask 077
-        openssl genpkey -algorithm Ed25519 -out "$default_priv" 2>/dev/null
-    )
-    chmod 600 "$default_priv" 2>/dev/null || true
-    openssl pkey -in "$default_priv" -pubout -out "$default_pub" 2>/dev/null
+    tmp_priv="$(mktemp "$key_dir/.default.priv.XXXXXX")" || return 1
+    tmp_pub="$(mktemp "$key_dir/.default.pub.XXXXXX")" || { rm -f -- "$tmp_priv"; return 1; }
+    if ! (umask 077; openssl genpkey -algorithm Ed25519 -out "$tmp_priv") 2>/dev/null || \
+       ! openssl pkey -in "$tmp_priv" -pubout -out "$tmp_pub" 2>/dev/null; then
+        rm -f -- "$tmp_priv" "$tmp_pub"
+        error "Failed to generate the default Ed25519 keypair."
+        return 1
+    fi
+    chmod 600 -- "$tmp_priv" || { rm -f -- "$tmp_priv" "$tmp_pub"; return 1; }
+    chmod 644 -- "$tmp_pub" || { rm -f -- "$tmp_priv" "$tmp_pub"; return 1; }
+
+    if [[ -e "$default_priv" || -e "$default_pub" ]]; then
+        rm -f -- "$tmp_priv" "$tmp_pub"
+        error "Default key appeared during generation; aborting."
+        return 1
+    fi
+
+    mv -f -- "$tmp_priv" "$default_priv" || { rm -f -- "$tmp_priv" "$tmp_pub"; return 1; }
+    mv -f -- "$tmp_pub" "$default_pub" || { rm -f -- "$tmp_pub"; return 1; }
+
+    # Trust the newly created default local key automatically
+    cmd_trust "$default_pub" >/dev/null 2>&1 || true
 
     printf '%s\n' "$default_priv"
 }
 
 cmd_keygen() {
     local key_name="${1:-default}"
+    _crypto_valid_key_name "$key_name" || { error "Invalid key name: use 1-64 letters, digits, dots, underscores or hyphens."; return 1; }
     ensure_crypto_prerequisites || return 1
 
-    local priv_path="$ULPM_KEYS_DIR/${key_name}.priv"
-    local pub_path="$ULPM_KEYS_DIR/${key_name}.pub"
+    local key_dir="${ULPM_KEYS_DIR:-$HOME/.config/ulpm/keys}"
+    local priv_path="$key_dir/${key_name}.priv"
+    local pub_path="$key_dir/${key_name}.pub"
+    local tmp_priv="" tmp_pub=""
 
-    if [[ -f "$priv_path" ]]; then
-        warn "Key file already exists: $priv_path"
-        return 0
+    if [[ -e "$priv_path" || -e "$pub_path" ]]; then
+        error "Key file already exists: $priv_path or $pub_path"
+        return 1
+    fi
+    ( umask 077 && mkdir -p -- "$key_dir" ) || { error "Cannot create key directory: $key_dir"; return 1; }
+    log "Generating Ed25519 keypair ($key_name)..."
+
+    tmp_priv="$(mktemp "$key_dir/.${key_name}.priv.XXXXXX")" || return 1
+    tmp_pub="$(mktemp "$key_dir/.${key_name}.pub.XXXXXX")" || { rm -f -- "$tmp_priv"; return 1; }
+    if ! (umask 077; openssl genpkey -algorithm Ed25519 -out "$tmp_priv") 2>/dev/null || \
+       ! openssl pkey -in "$tmp_priv" -pubout -out "$tmp_pub" 2>/dev/null; then
+        rm -f -- "$tmp_priv" "$tmp_pub"
+        error "Key generation failed."
+        return 1
+    fi
+    if ! chmod 600 -- "$tmp_priv" || ! chmod 644 -- "$tmp_pub"; then
+        rm -f -- "$tmp_priv" "$tmp_pub"
+        return 1
     fi
 
-    mkdir -p "$ULPM_KEYS_DIR"
-    chmod 700 "$ULPM_KEYS_DIR" 2>/dev/null || true
-    log "Generating hardened Ed25519 keypair ($key_name)..."
+    if [[ -e "$priv_path" || -e "$pub_path" ]]; then
+        rm -f -- "$tmp_priv" "$tmp_pub"
+        error "Key destination appeared during generation; refusing to overwrite it."
+        return 1
+    fi
 
-    (
-        umask 077
-        openssl genpkey -algorithm Ed25519 -out "$priv_path" 2>/dev/null
-    )
-    chmod 600 "$priv_path" 2>/dev/null || true
-    openssl pkey -in "$priv_path" -pubout -out "$pub_path" 2>/dev/null
+    mv -f -- "$tmp_priv" "$priv_path" || { rm -f -- "$tmp_priv" "$tmp_pub"; return 1; }
+    mv -f -- "$tmp_pub" "$pub_path" || { rm -f -- "$tmp_pub"; return 1; }
+
+    cmd_trust "$pub_path" >/dev/null 2>&1 || true
 
     info "Private key generated: $priv_path"
-    info "Public key generated:  $pub_path"
+    info "Public key generated: $pub_path (Trusted)"
 }
 
 has_sig_magic() {
-    local file="$1"
-    local magic_check
-    magic_check="$(tail -c "$SIG_FOOTER_SIZE" "$file" 2>/dev/null | head -c "$SIG_MAGIC_LEN" | tr -d '\0')"
-    [[ "$magic_check" == "$SIG_MAGIC" ]]
+    local file="${1:-}" size
+    [[ -f "$file" && -r "$file" ]] || return 1
+    size="$(_crypto_size "$file")" || return 1
+    [[ "$size" =~ ^[0-9]+$ && "$size" -ge "$SIG_FOOTER_SIZE" ]] || return 1
+    [[ "$(tail -c "$SIG_FOOTER_SIZE" -- "$file" 2>/dev/null | head -c "$SIG_MAGIC_LEN")" == "$SIG_MAGIC" ]]
 }
 
 strip_signature() {
-    local file="$1"
-    local size
-    size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 0)
-    if [[ "$size" -gt "$SIG_FOOTER_SIZE" ]] && has_sig_magic "$file"; then
-        truncate -s -"$SIG_FOOTER_SIZE" "$file"
+    local file="${1:-}" size
+    [[ -f "$file" && -w "$file" && ! -L "$file" ]] || return 1
+    size="$(_crypto_size "$file")" || return 1
+    if [[ "$size" -ge "$SIG_FOOTER_SIZE" ]] && has_sig_magic "$file"; then
+        truncate -s "$((size - SIG_FOOTER_SIZE))" -- "$file"
     fi
 }
 
 cmd_sign() {
-    local lpk_file="${1:-}"
-    local priv_key="${2:-}"
-
-    [[ -z "$lpk_file" ]] && { error "Usage: ulpm sign <package.lpk> [priv_key]"; return 1; }
-    [[ ! -f "$lpk_file" ]] && { error "Package not found: $lpk_file"; return 1; }
-
+    local lpk_file="${1:-}" priv_key="${2:-}"
+    [[ -n "$lpk_file" ]] || { error "Usage: ulpm sign <package.lpk> [priv_key]"; return 1; }
+    [[ -f "$lpk_file" && -r "$lpk_file" && -w "$lpk_file" && ! -L "$lpk_file" ]] || {
+        error "Package must be a readable, writable regular file (not a symlink): $lpk_file"; return 1
+    }
     if [[ -z "$priv_key" ]]; then
         priv_key="$(ensure_default_keypair)" || return 1
     fi
-    [[ ! -f "$priv_key" ]] && { error "Private key not found: $priv_key"; return 1; }
-
+    [[ -f "$priv_key" && -r "$priv_key" && ! -L "$priv_key" ]] || { error "Private key not found or unreadable: $priv_key"; return 1; }
     ensure_crypto_prerequisites || return 1
-    strip_signature "$lpk_file"
+    _crypto_is_ed25519_key "$priv_key" private || { error "Invalid or non-Ed25519 private key: $priv_key"; return 1; }
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/sign_XXXXXX")"
-    trap 'rm -rf "${tmp_dir:-}"' RETURN
+    local target_dir base tmp_file tmp_dir sig_tmp pub_raw_tmp payload_tmp size
+    target_dir="$(dirname -- "$lpk_file")"
+    base="$(basename -- "$lpk_file")"
+    tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-${TMPDIR:-/tmp}}/sign_XXXXXX")" || return 1
+    tmp_file="$(mktemp "$target_dir/.${base}.ulpm.XXXXXX")" || { rm -rf -- "$tmp_dir"; return 1; }
+    sig_tmp="$tmp_dir/sig.bin"
+    pub_raw_tmp="$tmp_dir/pub_raw.bin"
+    payload_tmp="$tmp_dir/payload.bin"
 
-    local sig_tmp="$tmp_dir/sig.bin"
-    local pub_raw_tmp="$tmp_dir/pub_raw.bin"
+    if ! cp -- "$lpk_file" "$tmp_file"; then
+        rm -f -- "$tmp_file"
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    size="$(_crypto_size "$tmp_file")" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
+    if [[ "$size" -ge "$SIG_FOOTER_SIZE" ]] && has_sig_magic "$tmp_file"; then
+        truncate -s "$((size - SIG_FOOTER_SIZE))" -- "$tmp_file" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
+    fi
+    cp -- "$tmp_file" "$payload_tmp" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
 
-    openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp"
-    openssl dgst -sha512 -sign "$priv_key" -out "$sig_tmp" "$lpk_file" 2>/dev/null
-
+    if ! openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp" || \
+       [[ "$(_crypto_size "$pub_raw_tmp")" -ne "$SIG_PUB_LEN" ]]; then
+        error "Could not derive a valid Ed25519 public key from $priv_key."
+        rm -f -- "$tmp_file"
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$payload_tmp" -out "$sig_tmp" 2>/dev/null || \
+       [[ "$(_crypto_size "$sig_tmp")" -ne "$SIG_RAW_LEN" ]]; then
+        error "Ed25519 signing failed."
+        rm -f -- "$tmp_file"
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
     {
-        printf "%s" "$SIG_MAGIC"
-        cat "$pub_raw_tmp"
-        cat "$sig_tmp"
-    } >> "$lpk_file"
+        printf '%s' "$SIG_MAGIC"
+        cat -- "$pub_raw_tmp" "$sig_tmp"
+    } >> "$tmp_file" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
 
-    info "Package sealed successfully: $(basename "$lpk_file")"
+    chmod --reference="$lpk_file" "$tmp_file" 2>/dev/null || chmod 644 -- "$tmp_file"
+    if ! mv -f -- "$tmp_file" "$lpk_file"; then
+        error "Could not replace package with signed version; original left untouched."
+        rm -f -- "$tmp_file"
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    rm -rf -- "$tmp_dir"
+    info "Package sealed successfully: $base"
 }
 
 verify_package() {
-    local lpk_file="$1"
+    local lpk_file="${1:-}"
+    [[ -f "$lpk_file" && -r "$lpk_file" && ! -L "$lpk_file" ]] || { error "Package not found, unreadable, or is a symlink: $lpk_file"; return 1; }
     ensure_crypto_prerequisites || return 1
-
     local size
-    size=$(stat -c%s "$lpk_file" 2>/dev/null || stat -f%z "$lpk_file" 2>/dev/null || echo 0)
-
+    size="$(_crypto_size "$lpk_file")" || return 1
     if [[ "$size" -le "$SIG_FOOTER_SIZE" ]] || ! has_sig_magic "$lpk_file"; then
         return 2
     fi
 
-    local footer_offset=$((size - SIG_FOOTER_SIZE))
+    local footer_offset=$((size - SIG_FOOTER_SIZE)) tmp_dir pub_raw_tmp sig_tmp pub_pem_tmp payload_tmp
+    tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-${TMPDIR:-/tmp}}/verify_XXXXXX")" || return 1
+    pub_raw_tmp="$tmp_dir/raw.bin"
+    sig_tmp="$tmp_dir/sig.bin"
+    pub_pem_tmp="$tmp_dir/pub.pem"
+    payload_tmp="$tmp_dir/payload.bin"
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/verify_XXXXXX")"
-    trap 'rm -rf "${tmp_dir:-}"' RETURN
+    if ! tail -c "$SIG_FOOTER_SIZE" -- "$lpk_file" | head -c "$((SIG_MAGIC_LEN + SIG_PUB_LEN))" | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp" || \
+       ! tail -c "$SIG_RAW_LEN" -- "$lpk_file" > "$sig_tmp" || \
+       ! head -c "$footer_offset" -- "$lpk_file" > "$payload_tmp"; then
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    [[ "$(_crypto_size "$pub_raw_tmp")" -eq "$SIG_PUB_LEN" && "$(_crypto_size "$sig_tmp")" -eq "$SIG_RAW_LEN" ]] || { rm -rf -- "$tmp_dir"; return 1; }
 
-    local pub_raw_tmp="$tmp_dir/raw.bin"
-    local sig_tmp="$tmp_dir/sig.bin"
-    local pub_pem_tmp="$tmp_dir/pem.bin"
-
-    tail -c "$SIG_FOOTER_SIZE" "$lpk_file" | head -c $((SIG_MAGIC_LEN + SIG_PUB_LEN)) | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp"
-    tail -c "$SIG_RAW_LEN" "$lpk_file" > "$sig_tmp"
-
-    # Reconstruct ASN.1 SubjectPublicKeyInfo prefix for Ed25519
+    [[ "$(tail -c "$SIG_FOOTER_SIZE" -- "$lpk_file" | head -c "$SIG_MAGIC_LEN")" == "$SIG_MAGIC" ]] || { rm -rf -- "$tmp_dir"; return 2; }
     printf '%b' '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$tmp_dir/pub.der"
-    cat "$pub_raw_tmp" >> "$tmp_dir/pub.der"
-    openssl pkey -pubin -inform DER -in "$tmp_dir/pub.der" -pubout -out "$pub_pem_tmp" 2>/dev/null
-
-    local verified=0
-    head -c "$footer_offset" "$lpk_file" | openssl dgst -sha512 -verify "$pub_pem_tmp" -signature "$sig_tmp" >/dev/null 2>&1 && verified=1
-
-    if [[ "$verified" -ne 1 ]]; then
-        error "CRYPTOGRAPHIC FORGERY: Verification failed for $lpk_file!"
+    cat -- "$pub_raw_tmp" >> "$tmp_dir/pub.der"
+    if ! openssl pkey -pubin -inform DER -in "$tmp_dir/pub.der" -pubout -out "$pub_pem_tmp" 2>/dev/null; then
+        error "Invalid public key embedded in package: $lpk_file"
+        rm -rf -- "$tmp_dir"
+        return 1
+    fi
+    if ! openssl pkeyutl -verify -rawin -pubin -inkey "$pub_pem_tmp" -sigfile "$sig_tmp" -in "$payload_tmp" >/dev/null 2>&1; then
+        error "Signature verification failed for $lpk_file."
+        rm -rf -- "$tmp_dir"
         return 1
     fi
 
-    # Check key against trusted keys
+    local trusted_dir trusted is_trusted=0
+    trusted_dir="$(_crypto_trusted_dir)"
+    local keys_dir="${ULPM_KEYS_DIR:-$HOME/.config/ulpm/keys}"
     shopt -s nullglob
-    local trusted_keys=("$ULPM_KEYS_DIR"/*.pub)
+    local trusted_keys=("$trusted_dir"/*.pub "$keys_dir"/*.pub)
     shopt -u nullglob
-
-    local is_trusted=0
     for trusted in "${trusted_keys[@]}"; do
-        # Compare raw binary public keys (DER) to avoid PEM whitespace differences
+        [[ -f "$trusted" && -r "$trusted" && ! -L "$trusted" ]] || continue
+        _crypto_is_ed25519_key "$trusted" public || continue
         if cmp -s "$pub_raw_tmp" <(openssl pkey -pubin -in "$trusted" -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN"); then
             is_trusted=1
             break
         fi
     done
-
-    [[ "$is_trusted" -eq 1 ]] && return 0 || return 3
+    rm -rf -- "$tmp_dir"
+    [[ "$is_trusted" -eq 1 ]] && return 0
+    return 3
 }
 
 cmd_trust() {
     local pub_key="${1:-}"
-    [[ -z "$pub_key" || ! -f "$pub_key" ]] && { error "Usage: ulpm trust <key.pub>"; return 1; }
+    [[ -n "$pub_key" && -f "$pub_key" && -r "$pub_key" && ! -L "$pub_key" ]] || { error "Usage: ulpm trust <key.pub>"; return 1; }
+    ensure_crypto_prerequisites || return 1
+    _crypto_is_ed25519_key "$pub_key" public || { error "Invalid or non-Ed25519 public key: $pub_key"; return 1; }
 
-    # Validate that it is actually a valid public key before importing
-    if ! openssl pkey -pubin -in "$pub_key" -noout 2>/dev/null; then
-        error "Invalid public key format: $pub_key"
+    local key_name dest tmp trusted_dir raw_size
+    key_name="$(basename -- "$pub_key")"
+    [[ "$key_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.pub$ ]] || { error "Unsafe public-key filename: $key_name"; return 1; }
+    raw_size="$(openssl pkey -pubin -in "$pub_key" -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" | wc -c)"
+    [[ "$raw_size" -eq "$SIG_PUB_LEN" ]] || { error "Only Ed25519 public keys are supported."; return 1; }
+
+    trusted_dir="$(_crypto_trusted_dir)"
+    ( umask 077 && mkdir -p -- "$trusted_dir" ) || { error "Cannot create trust directory: $trusted_dir"; return 1; }
+    dest="$trusted_dir/$key_name"
+    if [[ -e "$dest" ]]; then
+        if cmp -s <(openssl pkey -pubin -in "$pub_key" -outform DER 2>/dev/null) <(openssl pkey -pubin -in "$dest" -outform DER 2>/dev/null); then
+            info "Key is already trusted: $dest"
+            return 0
+        fi
+        error "A different trusted key already uses this filename: $dest"
         return 1
     fi
-
-    mkdir -p "$ULPM_KEYS_DIR"
-    chmod 700 "$ULPM_KEYS_DIR" 2>/dev/null || true
-    cp -f "$pub_key" "$ULPM_KEYS_DIR/$(basename "$pub_key")"
-    chmod 644 "$ULPM_KEYS_DIR/$(basename "$pub_key")"
-    info "Key trusted: $pub_key"
+    tmp="$(mktemp "$trusted_dir/.${key_name}.XXXXXX")" || return 1
+    if ! cp -- "$pub_key" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    chmod 644 -- "$tmp" || { rm -f -- "$tmp"; return 1; }
+    if ! mv -f -- "$tmp" "$dest"; then
+        rm -f -- "$tmp"
+        error "Could not add key to trust store."
+        return 1
+    fi
+    info "Key trusted: $dest"
 }
