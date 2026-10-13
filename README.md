@@ -16,14 +16,14 @@
 ---
 
 >[!NOTE]
-> ### 🚀 Release Status: v4.0.0 Production Engine
+> ### 🚀 Release Status: v4.1.0 Production Engine
 >
-> **ULPM Engine v4.0.0** powers the autonomous **`.lpk` Format v4** specification with a hardened, modular architecture.
+>**ULPM Engine v4.1.0** powers the autonomous **`.lpk` Format v4** specification nwith a hardened, modular architecture.
 >
-> * **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`), granular runtime kill-switches (`--no-gpu`, `--no-audio`, `--no-gui`), and Ed25519 TOFU cryptographic key pinning.
-> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, andzero background resource footprint.
+> * **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`), granular runtime kill-switches (`--no-gpu`,`--no-audio`, `--no-gui`), strict permission gating, and Ed25519 TOFU cryptographic key pinning.
+> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, atomic installations with zero background resource footprint.
 > * **RootFS & Distro Engine:** Run entire unprivileged Linux distributions (Debian XFCE, Arch, Alpine, Recalbox) directly inside unshared namespaces without KVM or Docker.
-> * **Compatibility:** Validated on standard Linux distributions across minimal and enterprise hardware (amd64, arm64, armhf, i386, riscv64).
+>* **Compatibility:** Validated on standard Linux distributions across minimal and enterprise hardware (amd64, arm64, armhf, i386, riscv64).
 
 ---
 
@@ -43,7 +43,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 - 🎛️ **Granular Kill-Switches:** Dynamically sever network, GPU access, audio servers, or graphical display at launch via runtime CLI flags.
 
-- 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
+- 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
 
 - 🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), joysticks/gamepads (`/dev/input`, `/dev/js*`), Wayland, X11, PipeWire, and PulseAudio.
 
@@ -57,7 +57,7 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 - 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope,Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
 
-- 🐙 **Native GitHub CI/CD & OTA Updates:** Install and seamlessly track software straightfrom `owner/repo` releases with embedded cryptographic key pinning on upgrades.
+- 🐙 **Native GitHub CI/CD & OTA Updates:** Install and seamlessly track software straight from `owner/repo` releases with embedded cryptographic key pinning on upgrades.
 
 ---
 
@@ -260,15 +260,15 @@ ulpm clean
 
 ## 🔐 Cryptography & Trust (Autonomous Ed25519)
 
-Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or running any package without relying on detached `.sig` files:
+Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or runningany package without relying on detached `.sig` files:
 
 - **Self-Contained Footer:** Every signed `.lpk` embeds a fixed 104-byte cryptographic trailer (`[8B magic ULPM_SIG | 32B public key | 64B signature]`) at the end of the file.
 
-- **Key Pinning (TOFU):** On first installation, the SHA-256 fingerprint of the developer's public key is stored. Upgrades require matching keys, preventing supply-chain takeover.
+- **KeyPinning (TOFU):** On first installation, the SHA-256 fingerprint of the developer's publickey is stored. Upgrades require matching keys, preventing supply-chain takeover.
 
 - **Payload Integrity:** The SquashFS payload size is computed dynamically without tampering with the compressed data stream.
 
-1. **Automatic Keypair Generation:** On first pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
+1. **Automatic Keypair Generation:** Onfirst pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
 2. **Manual Key Management:**
 ```bash
 ulpm keygen release_key
