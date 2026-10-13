@@ -1,0 +1,38 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: ULPM
+Label: ULPM
+Suite: stable
+Codename: stable
+Version: 4.0.0
+Architectures: all amd64 arm64 armhf i386
+Components: main
+Description: ULPM Official APT Repository - Universal Linux Package Manager
+Date: Tue, 13 Oct 2026 10:47:24 UTC
+MD5Sum:
+ e9cfdc22498d540cfbcbc268be1abddb 1102 main/binary-all/Packages
+ f170a1436c2a410aac7da388ad75b43c 730 main/binary-all/Packages.gz
+SHA1:
+ 9be9e25bc9df8f32b4dc278559424ada7e8d1c0c 1102 main/binary-all/Packages
+ 005383dbf64eece05963133b4e957d893585cd30 730 main/binary-all/Packages.gz
+SHA256:
+ 936554cca601ba61d24f7f5caddabb103be7dce115e1046af6cf8442e4dee798 1102 main/binary-all/Packages
+ db38d62d0306725fe1cf3913c5e6d04a41b3e6373851bc14dee395e5b91afa5c 730 main/binary-all/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQJEBAEBCAAuFiEExsy1OEONAXQFxv1MaYIJBVE/3pAFAmrODJoQHHVscG1AcnVy
+YWFtLmRldgAKCRBpggkFUT/ekDb0EACygJAGuf0HZoqCbSAniag6bzNTKRajYwKD
+OM8ytv0bmH9p9RQGqUh8Fmj6+exPMewzLDjyl+T12yXQ48s9wAR+LrOGswrBjd2W
+1Ezt1pJIt/Pk60SHBoCGkPL2TJXxLDs7KjgR8r5iZPICZrs9Xe5oTbg7Tuj5uyAl
+cEw6OIjaTb8wN4ngxQSNy2rjLL9BrgoPwBeAyYHaLSDKWu0T/i6RjWJRBkNo8UrR
+CvjYaSoK4AnlGYl2FTcPhHCvMGdxV1lBJYyGNwQr9ZaNAmAm0pNFKQ49iVXiWzdj
+ndoQdzU77klA3TBkijV2d1J7KTgE/VVqMtJLjTbNDiKlw75BehOMR6lbIfmM9aUi
+VINP9/4owvgNKj6Yz8ROXqQUOwO9MgW0HBrr9ZWpuBUQb2rFAnqyahPteReBego/
+h0ZxIO4zdfqASASr3V3XgpbQaklii6noIkzn6BSpf2UDT4LqJjfYVJQ4eiP4tE8d
+fh+wbwuSAgMmuLCSl57z18GbH+Dc2RmOSUZcOD3o642i6xZS83Iy0boN2TwmPSqW
+VG98JOA2uQpckemTgX2xcnUAG33hlsBNNgXIP4kwuUn6QbW943j53YI6w7+WrA/s
+OxCBAy700tX8f9PfDy2J8pgMRSVMP7UA8Y67B9z8zA49HkTKvrcEtIUdRhJOpETB
+oLfbEoqnqg==
+=EXkA
+-----END PGP SIGNATURE-----
