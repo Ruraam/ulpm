@@ -52,9 +52,9 @@ done
 
 case "$ULPM_LIB_DIR" in
     "$ULPM_BIN_DIR") ULPM_ROOT_DIR="$ULPM_BIN_DIR" ;;
-    */lib/ulpm)      ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
-    */lib)           ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
-    *)               ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
+    */lib/ulpm) ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
+    */lib) ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
+    *) ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
 esac
 export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR ULPM_LIB_DIR
 
@@ -107,13 +107,14 @@ Execution:
   stream <url|repo> [flags] [-- args...]    Run ephemerally, using temporary storage
 
 Packaging:
-  pack <src> [name] [out.lpk] [version]    Create an LPK bundle
+  pack [flags] <src> [name] [out.lpk] [ver] Create an LPK bundle
+      --no-scan, --fast                     Bypass ELF dynamic dependency bundling
   deb-pack <pkg|file.deb> [name]            Build an LPK from a Debian package
 
 Application management:
-  install, -i <source> [name]               Install an application
+  install, -i <source> [name]                Install an application
   upgrade, -u                                Upgrade tracked applications
-  remove, -r [--purge] <app_name>           Uninstall an application
+  remove, -r [--purge] <app_name>            Uninstall an application
   list, -l                                   List installed applications
   search, -s <query>                         Search available applications
   inspect <package.lpk>                      Inspect package metadata and signature
@@ -164,7 +165,27 @@ main() {
     case "$cmd" in
         run)                 _dispatch cmd_run run "$@" ;;
         stream)              _dispatch cmd_stream stream "$@" ;;
-        pack)                _dispatch cmd_pack pack "$@" ;;
+        pack)
+            local pack_args=()
+            local no_scan=0
+            for arg in "$@"; do
+                case "$arg" in
+                    --no-scan|--fast)
+                        no_scan=1
+                        ;;
+                    *)
+                        pack_args+=("$arg")
+                        ;;
+                esac
+            done
+
+            if (( no_scan == 1 )) || [[ "${ULPM_NO_SCAN:-0}" == 1 ]]; then
+                export ULPM_NO_SCAN=1
+                _dispatch cmd_pack pack --no-scan "${pack_args[@]}"
+            else
+                _dispatch cmd_pack pack "${pack_args[@]}"
+            fi
+            ;;
         deb-pack|deb_pack)   _dispatch cmd_deb_pack deb-pack "$@" ;;
         install|-i|add|-a)   _dispatch cmd_install install "$@" ;;
         upgrade|-u)          _dispatch cmd_upgrade upgrade "$@" ;;
