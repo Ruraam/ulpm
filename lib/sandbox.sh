@@ -2,7 +2,7 @@
 # ==============================================================================
 # lib/sandbox.sh - ULPM Hardened Bubblewrap Sandbox Runtime
 # Public entry points: lpk_is_rootfs, lpk_run_rootfs, lpk_run_isolated.
-# ULPM v4.1.0
+# ULPM v4.1.0 (with Recalbox & Universal Downloads integrations)
 # ==============================================================================
 
 : "${ULPM_SANDBOX_RUNTIME_DIR:=${XDG_RUNTIME_DIR:-/tmp}/ulpm-${UID:-$(id -u)}}"
@@ -16,6 +16,8 @@ ENV_WHITELIST=(
     XDG_TEMPLATES_DIR XDG_VIDEOS_DIR DBUS_SESSION_BUS_ADDRESS PULSE_SERVER
     PIPEWIRE_REMOTE QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME GTK_THEME GDK_BACKEND
     SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND LIBGL_ALWAYS_SOFTWARE __GLX_VENDOR_LIBRARY_NAME
+    # Recalbox / Gaming specific variables
+    RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
 )
 
 _ulpm_log() {
@@ -38,19 +40,60 @@ _ulpm_abs_path() {
     fi
 }
 
+# ------------------------------------------------------------------------------
+# Universal Host Downloads Discovery & Linking (Multi-Language)
+# ------------------------------------------------------------------------------
+
 resolve_host_downloads_dir() {
     local candidate=""
-    if [[ -n "${XDG_DOWNLOAD_DIR:-}" && -d "$XDG_DOWNLOAD_DIR" ]]; then
-        candidate="$XDG_DOWNLOAD_DIR"
-    elif [[ -d "$HOME/Downloads" ]]; then
-        candidate="$HOME/Downloads"
-    elif [[ -d "$HOME/Téléchargements" ]]; then
-        candidate="$HOME/Téléchargements"
-    else
+
+    # 1. Use xdg-user-dir if available
+    if _ulpm_have xdg-user-dir; then
+        candidate="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
+    fi
+
+    # 2. Read standard XDG config file if not resolved
+    if [[ -z "$candidate" || "$candidate" == "$HOME" ]] && [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
+        local raw
+        raw="$(grep -E '^XDG_DOWNLOAD_DIR=' "$HOME/.config/user-dirs.dirs" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+        raw="${raw/#\$HOME/$HOME}"
+        [[ -n "$raw" && -d "$raw" ]] && candidate="$raw"
+    fi
+
+    # 3. Fallback detection of real multilingual directories
+    if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
+        for name in "Téléchargements" "Downloads" "Descargas" "Download" "Scaricati"; do
+            if [[ -d "$HOME/$name" ]]; then
+                candidate="$HOME/$name"
+                break
+            fi
+        done
+    fi
+
+    # 4. Ultimate fallback
+    if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
         candidate="$HOME/Downloads"
         mkdir -p -- "$candidate" 2>/dev/null || candidate="$HOME"
     fi
+
     printf '%s\n' "$candidate"
+}
+
+setup_sandbox_downloads_links() {
+    local target_home="$1"
+    local host_dl="$2"
+    local dl_basename
+    dl_basename="$(basename "$host_dl")"
+
+    mkdir -p -- "$target_home/$dl_basename" 2>/dev/null || true
+
+    # Make cross-compatibility links inside the isolated HOME
+    if [[ "$dl_basename" != "Downloads" ]]; then
+        ln -snf "$dl_basename" "$target_home/Downloads" 2>/dev/null || true
+    fi
+    if [[ "$dl_basename" != "Téléchargements" ]]; then
+        ln -snf "$dl_basename" "$target_home/Téléchargements" 2>/dev/null || true
+    fi
 }
 
 session_bus_socket() {
@@ -238,11 +281,31 @@ _ulpm_add_common_mounts() {
     [[ -d /etc/alternatives ]] && target_args+=(--ro-bind /etc/alternatives /etc/alternatives)
     [[ -d /sys ]] && target_args+=(--ro-bind /sys /sys)
 
+    # Hardware & Gamepad bindings
+    [[ -d /dev/input ]] && target_args+=(--dev-bind-try /dev/input /dev/input)
+    for js in /dev/js[0-9]*; do
+        [[ -e "$js" ]] && target_args+=(--dev-bind-try "$js" "$js")
+    done
+    [[ -e /dev/fb0 ]] && target_args+=(--dev-bind-try /dev/fb0 /dev/fb0)
+    [[ -e /dev/uinput ]] && target_args+=(--dev-bind-try /dev/uinput /dev/uinput)
+    [[ -d /run/udev ]] && target_args+=(--ro-bind-try /run/udev /run/udev)
+
     if (( allow_gpu )) && [[ -d /dev/dri ]]; then
         target_args+=(--dev-bind /dev/dri /dev/dri)
     fi
     if (( allow_audio )) && [[ -d /dev/snd ]]; then
         target_args+=(--dev-bind /dev/snd /dev/snd)
+    fi
+
+    # Recalbox persistence
+    if [[ -d "/recalbox/share" ]]; then
+        target_args+=(
+            --bind-try /recalbox/share /recalbox/share
+            --bind-try /recalbox/share/roms /recalbox/share/roms
+            --bind-try /recalbox/share/saves /recalbox/share/saves
+            --bind-try /recalbox/share/bios /recalbox/share/bios
+            --bind-try /recalbox/share/system /recalbox/share/system
+        )
     fi
 }
 
@@ -310,13 +373,48 @@ lpk_run_rootfs() {
     mkdir -p -- "$sandbox_home" || return 1
     chmod 700 -- "$sandbox_home" 2>/dev/null || true
 
+    # Prepare Multilingual Downloads
+    local host_downloads
+    host_downloads="$(resolve_host_downloads_dir)"
+    local dl_base
+    dl_base="$(basename "$host_downloads")"
+    setup_sandbox_downloads_links "$sandbox_home" "$host_downloads"
+
     args=(--die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --cap-drop ALL)
     args+=(--ro-bind "$rootfs_dir" / --proc /proc --dev /dev --tmpfs /tmp --dir /run --dir /var/tmp)
     [[ -d /sys ]] && args+=(--ro-bind /sys /sys)
     args+=(--bind "$sandbox_home" "$HOME")
+
+    # Bind the true Downloads folder directly to its realpath and its home path
+    args+=(--bind "$host_downloads" "$host_downloads")
+    [[ "$host_downloads" != "$HOME/$dl_base" ]] && args+=(--bind "$host_downloads" "$HOME/$dl_base")
+    [[ -f "$HOME/.config/user-dirs.dirs" ]] && args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+
     (( allow_gpu )) && [[ -d /dev/dri ]] && args+=(--dev-bind /dev/dri /dev/dri)
     (( allow_audio )) && [[ -d /dev/snd ]] && args+=(--dev-bind /dev/snd /dev/snd)
     [[ "${ULPM_SANDBOX_NETWORK:-0}" == 1 ]] || args+=(--unshare-net)
+
+    # Hardware & Gamepad bindings
+    args+=(
+        --dev-bind-try /dev/input /dev/input
+        --dev-bind-try /dev/fb0 /dev/fb0
+        --dev-bind-try /dev/uinput /dev/uinput
+        --ro-bind-try /run/udev /run/udev
+    )
+    for js in /dev/js[0-9]*; do
+        [[ -e "$js" ]] && args+=(--dev-bind-try "$js" "$js")
+    done
+
+    # Recalbox persistence
+    if [[ -d "/recalbox/share" ]]; then
+        args+=(
+            --bind-try /recalbox/share /recalbox/share
+            --bind-try /recalbox/share/roms /recalbox/share/roms
+            --bind-try /recalbox/share/saves /recalbox/share/saves
+            --bind-try /recalbox/share/bios /recalbox/share/bios
+            --bind-try /recalbox/share/system /recalbox/share/system
+        )
+    fi
 
     _ulpm_collect_env env_args
     args+=("${env_args[@]}")
@@ -451,6 +549,13 @@ lpk_run_isolated() {
     mkdir -p -- "$app_data" "$sandbox_home" || { _ulpm_cleanup_lpk_run; return 1; }
     chmod 700 -- "$app_data" "$sandbox_home" 2>/dev/null || true
 
+    # Prepare Multilingual Downloads
+    local host_downloads
+    host_downloads="$(resolve_host_downloads_dir)"
+    local dl_base
+    dl_base="$(basename "$host_downloads")"
+    setup_sandbox_downloads_links "$sandbox_home" "$host_downloads"
+
     args=(--die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --cap-drop ALL)
     args+=(--ro-bind "$app_source" /app --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run --dir /run/user)
     args+=(--perms 0700 --dir "/run/user/$(id -u)")
@@ -464,14 +569,12 @@ lpk_run_isolated() {
     fi
     args+=(--bind "$sandbox_home" "$HOME")
 
-    if [[ "${ULPM_SANDBOX_DOWNLOADS_LINKS}" == 1 ]]; then
-        local host_downloads
-        host_downloads="$(resolve_host_downloads_dir)"
-        if [[ -d "$host_downloads" ]]; then
-            mkdir -p -- "$sandbox_home/Downloads" 2>/dev/null || true
-            args+=(--bind "$host_downloads" "$HOME/Downloads")
-        fi
+    # Bind the true Downloads folder directly to its real path and its home path
+    if [[ -d "$host_downloads" ]]; then
+        args+=(--bind "$host_downloads" "$host_downloads")
+        [[ "$host_downloads" != "$HOME/$dl_base" ]] && args+=(--bind "$host_downloads" "$HOME/$dl_base")
     fi
+    [[ -f "$HOME/.config/user-dirs.dirs" ]] && args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
 
     _ulpm_add_common_mounts args "$allow_gpu" "$allow_audio"
 

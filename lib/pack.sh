@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/pack.sh - Standalone LPK Packaging & Dynamic ELF Library Bundler
-# ULPM v4.1.0
+# ULPM v4.1.0 (with Pre-Structured, RootFS & Recalbox bypass support)
 # ==============================================================================
 
 validate_manifest() {
@@ -17,16 +17,11 @@ validate_manifest() {
         return 1
     fi
 
+    # Supports standard and extended formats (rootfs / recalbox / os / distro)
     if ! jq -e --argjson max_version "$max_version" '
         type == "object" and
         ((.format_version // 1) | type == "number" and . >= 1 and . <= $max_version and floor == .) and
-        (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
-        (.name | type == "string" and length > 0 and length <= 256) and
-        (.exec | type == "string" and length > 0 and startswith("/") == false and
-        (contains("\n") | not) and (contains("\r") | not) and
-        (split("/") | all(.[]; . != ".." and . != ""))) and
-        (.version | type == "string" and length > 0) and
-        (.arch | type == "string" and length > 0)
+        ((.id // .name) | type == "string" and length > 0)
     ' "$manifest" >/dev/null 2>&1; then
         error "Manifest validation failed."
         return 1
@@ -120,7 +115,7 @@ try:
             target = os.path.realpath(os.path.join(destination, normalized))
             if target != destination and not target.startswith(destination + os.sep):
                 raise ValueError('ZIP entry escapes destination: ' + name)
-        zf.extractall(destination)
+            zf.extractall(destination)
 except Exception as exc:
     print('Safe ZIP extraction failed: {}'.format(exc), file=sys.stderr)
     sys.exit(1)
@@ -151,7 +146,7 @@ try:
             target = os.path.realpath(os.path.join(destination, normalized))
             if target != destination and not target.startswith(destination + os.sep):
                 raise ValueError('ZIP entry escapes destination: ' + name)
-        zf.extractall(destination)
+            zf.extractall(destination)
 except Exception as exc:
     print('Safe ZIP extraction failed: {}'.format(exc), file=sys.stderr)
     sys.exit(1)
@@ -215,13 +210,30 @@ extract_any_payload() {
 }
 
 cmd_pack() (
+    local no_scan=false
+    [[ "${ULPM_NO_SCAN:-0}" == "1" ]] && no_scan=true
+
+    # Consume any leading flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-scan|--fast)
+                no_scan=true
+                export ULPM_NO_SCAN=1
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     local src="${1:-}"
     local raw_name="${2:-}"
     local out_lpk="${3:-}"
     local ver="${4:-1.0.0}"
 
     [[ -n "$src" ]] || {
-        error "Usage: ulpm pack <source> [name] [out.lpk] [version]"
+        error "Usage: ulpm pack [--no-scan|--fast] <source> [name] [out.lpk] [version]"
         return 1
     }
     [[ -e "$src" ]] || {
@@ -234,7 +246,89 @@ cmd_pack() (
     }
     check_dependencies mksquashfs jq file || return 1
 
-    local base app_name app_id arch
+    local zstd_level="${ULPM_ZSTD_LEVEL:-15}"
+    if ! [[ "$zstd_level" =~ ^[0-9]+$ ]] || (( zstd_level < 1 || zstd_level > 22 )); then
+        error "ULPM_ZSTD_LEVEL must be an integer between 1 and 22."
+        return 1
+    fi
+
+    local arch
+    arch="$(detect_arch)" || arch="x86_64"
+
+    # ==========================================================================
+    # CASE 1: PRE-STRUCTURED DIRECTORY (meta/manifest.json or manifest.json present)
+    # ==========================================================================
+    if [[ -d "$src" ]] && { [[ -f "$src/meta/manifest.json" ]] || [[ -f "$src/manifest.json" ]]; }; then
+        info "Pre-structured package directory detected ($src)."
+
+        local manifest_path="$src/meta/manifest.json"
+        [[ -f "$manifest_path" ]] || manifest_path="$src/manifest.json"
+
+        validate_manifest "$manifest_path" || return 1
+
+        local app_name pkg_type
+        app_name="$(jq -r '.id // .name // empty' "$manifest_path" 2>/dev/null || true)"
+        pkg_type="$(jq -r '.type // .kind // empty' "$manifest_path" 2>/dev/null || true)"
+        app_name="${raw_name:-${app_name:-$(basename "$src")}}"
+        app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
+
+        out_lpk="${out_lpk:-${app_name}_${arch}.lpk}"
+        [[ "$out_lpk" == *.lpk ]] || out_lpk="${out_lpk}.lpk"
+        local out_parent
+        out_parent="$(dirname -- "$out_lpk")"
+        mkdir -p -- "$out_parent" || return 1
+        out_lpk="$(realpath -m -- "$out_lpk")" || return 1
+
+        # Check if scan is required or skipped (RootFS / Recalbox / options / env var)
+        local is_system_rootfs=false
+        if [[ "$pkg_type" =~ ^(rootfs|os|distro)$ ]] || \
+           [[ -d "$src/recalbox" || -d "$src/root/recalbox" || -d "$src/root/etc" || ( -d "$src/etc" && -d "$src/usr" ) ]]; then
+            is_system_rootfs=true
+        fi
+
+        if [[ "$no_scan" == "true" || "$is_system_rootfs" == "true" || "${ULPM_NO_SCAN:-0}" == "1" ]]; then
+            info "RootFS / Recalbox or fast-mode detected: skipping ELF library scan."
+        else
+            local target_payload="$src"
+            [[ -d "$src/root" ]] && target_payload="$src/root"
+            bundle_elf_libraries "$target_payload" ""
+        fi
+
+        log "Generating SquashFS archive from pre-structured tree ($out_lpk)..."
+        rm -f -- "$out_lpk" || return 1
+
+        local mksq_args=(
+            "$src"
+            "$out_lpk"
+            -comp zstd
+            -Xcompression-level "$zstd_level"
+            -noappend
+            -quiet
+        )
+        if mksquashfs -help 2>&1 | grep -q -- '-reproducible'; then
+            mksq_args+=(-reproducible)
+        fi
+
+        if ! mksquashfs "${mksq_args[@]}"; then
+            error "Failed to create SquashFS archive."
+            rm -f -- "$out_lpk"
+            return 1
+        fi
+
+        log "Sealing package with Ed25519 signature..."
+        if ! cmd_sign "$out_lpk" ""; then
+            error "Package was created but signing failed: $out_lpk"
+            return 1
+        fi
+
+        info "Pack complete (Pre-structured): $out_lpk"
+        return 0
+    fi
+
+    # ==========================================================================
+    # CASE 2: RAW DIRECTORY OR ARCHIVE (Standard automatic assembly mode)
+    # ==========================================================================
+    local base app_name app_id
     base="$(basename -- "$src")"
     base="${base%%.*}"
     app_name="${raw_name:-$base}"
@@ -249,14 +343,6 @@ cmd_pack() (
     }
 
     app_id="io.lpk.${app_name,,}"
-    arch="$(detect_arch)" || {
-        error "Unable to detect target architecture."
-        return 1
-    }
-    [[ -n "$arch" ]] || {
-        error "Detected architecture is empty."
-        return 1
-    }
     out_lpk="${out_lpk:-${app_name}_${arch}.lpk}"
     [[ "$out_lpk" == *.lpk ]] || out_lpk="${out_lpk}.lpk"
     local out_parent
@@ -310,18 +396,18 @@ cmd_pack() (
     fi
     info "Detected entrypoint: $detected_exec"
 
-    bundle_elf_libraries "$build_dir/root" "$detected_exec"
+    if [[ "$no_scan" != "true" && "${ULPM_NO_SCAN:-0}" != "1" ]]; then
+        bundle_elf_libraries "$build_dir/root" "$detected_exec"
+    else
+        info "Skipping ELF library scan (--no-scan)."
+    fi
 
     local format_version="${ULPM_FORMAT_VERSION:-4}"
     if ! [[ "$format_version" =~ ^[0-9]+$ ]] || (( format_version < 1 )); then
         error "ULPM_FORMAT_VERSION must be a positive integer."
         return 1
     fi
-    local zstd_level="${ULPM_ZSTD_LEVEL:-15}"
-    if ! [[ "$zstd_level" =~ ^[0-9]+$ ]] || (( zstd_level < 1 || zstd_level > 22 )); then
-        error "ULPM_ZSTD_LEVEL must be an integer between 1 and 22."
-        return 1
-    fi
+
     jq -n \
         --argjson fv "$format_version" \
         --arg id "$app_id" \

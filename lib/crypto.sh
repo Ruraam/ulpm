@@ -2,7 +2,7 @@
 # ============================================================================
 # lib/crypto.sh - ULPM Ed25519 signing, verification and trust management
 # Signature footer (104 bytes): ULPM_SIG (8) + raw public key (32) + signature (64)
-# ULPM v4.1.0
+# ULPM v4.1.0 (Streamed SHA256 -> Ed25519, Large-File & OOM safe)
 # ============================================================================
 
 SIG_MAGIC="ULPM_SIG"
@@ -20,7 +20,7 @@ _crypto_trusted_dir() {
 }
 
 ensure_crypto_prerequisites() {
-    check_dependencies openssl cmp dd truncate tail head stat mktemp cp mv chmod mkdir rm cat dirname basename wc grep od tr || return 1
+    check_dependencies openssl cmp dd truncate tail head stat mktemp cp mv chmod mkdir rm cat dirname basename wc grep od tr sha256sum || return 1
 
     if ! openssl genpkey -algorithm Ed25519 -help >/dev/null 2>&1 && \
        ! openssl list -public-key-algorithms 2>/dev/null | grep -qi 'ED25519'; then
@@ -91,7 +91,6 @@ ensure_default_keypair() {
     mv -f -- "$tmp_priv" "$default_priv" || { rm -f -- "$tmp_priv" "$tmp_pub"; return 1; }
     mv -f -- "$tmp_pub" "$default_pub" || { rm -f -- "$tmp_pub"; return 1; }
 
-    # Trust the newly created default local key automatically
     cmd_trust "$default_pub" >/dev/null 2>&1 || true
 
     printf '%s\n' "$default_priv"
@@ -147,7 +146,10 @@ has_sig_magic() {
     [[ -f "$file" && -r "$file" ]] || return 1
     size="$(_crypto_size "$file")" || return 1
     [[ "$size" =~ ^[0-9]+$ && "$size" -ge "$SIG_FOOTER_SIZE" ]] || return 1
-    [[ "$(tail -c "$SIG_FOOTER_SIZE" -- "$file" 2>/dev/null | head -c "$SIG_MAGIC_LEN")" == "$SIG_MAGIC" ]]
+
+    cmp -s -n "$SIG_MAGIC_LEN" \
+        <(tail -c "$SIG_FOOTER_SIZE" -- "$file" 2>/dev/null) \
+        <(printf '%s' "$SIG_MAGIC")
 }
 
 strip_signature() {
@@ -172,52 +174,51 @@ cmd_sign() {
     ensure_crypto_prerequisites || return 1
     _crypto_is_ed25519_key "$priv_key" private || { error "Invalid or non-Ed25519 private key: $priv_key"; return 1; }
 
-    local target_dir base tmp_file tmp_dir sig_tmp pub_raw_tmp payload_tmp size
-    target_dir="$(dirname -- "$lpk_file")"
+    local base tmp_dir sig_tmp pub_raw_tmp hash_tmp size payload_size
     base="$(basename -- "$lpk_file")"
     tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-${TMPDIR:-/tmp}}/sign_XXXXXX")" || return 1
-    tmp_file="$(mktemp "$target_dir/.${base}.ulpm.XXXXXX")" || { rm -rf -- "$tmp_dir"; return 1; }
     sig_tmp="$tmp_dir/sig.bin"
     pub_raw_tmp="$tmp_dir/pub_raw.bin"
-    payload_tmp="$tmp_dir/payload.bin"
+    hash_tmp="$tmp_dir/hash.bin"
 
-    if ! cp -- "$lpk_file" "$tmp_file"; then
-        rm -f -- "$tmp_file"
-        rm -rf -- "$tmp_dir"
-        return 1
-    fi
-    size="$(_crypto_size "$tmp_file")" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
-    if [[ "$size" -ge "$SIG_FOOTER_SIZE" ]] && has_sig_magic "$tmp_file"; then
-        truncate -s "$((size - SIG_FOOTER_SIZE))" -- "$tmp_file" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
-    fi
-    cp -- "$tmp_file" "$payload_tmp" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
+    # Remove any existing signature in-place (without duplicating the file)
+    strip_signature "$lpk_file"
+    size="$(_crypto_size "$lpk_file")" || { rm -rf -- "$tmp_dir"; return 1; }
+    payload_size="$size"
 
+    # Extract raw public key directly (32 bytes)
     if ! openssl pkey -in "$priv_key" -pubout -outform DER 2>/dev/null | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp" || \
        [[ "$(_crypto_size "$pub_raw_tmp")" -ne "$SIG_PUB_LEN" ]]; then
         error "Could not derive a valid Ed25519 public key from $priv_key."
-        rm -f -- "$tmp_file"
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$payload_tmp" -out "$sig_tmp" 2>/dev/null || \
+
+    # Calculate SHA256 digest directly in stream without file duplication
+    log "Hashing payload ($payload_size bytes)..."
+    if ! sha256sum "$lpk_file" | awk '{print $1}' | tr -d '\r\n' | xxd -r -p > "$hash_tmp"; then
+        # Fallback without xxd
+        sha256sum "$lpk_file" | awk '{printf "%s", $1}' | sed 's/../\\x&/g' | xargs -0 printf > "$hash_tmp" 2>/dev/null || {
+            error "Failed to compute package hash."
+            rm -rf -- "$tmp_dir"
+            return 1
+        }
+    fi
+
+    # Sign only the SHA256 fingerprint (32 bytes)
+    if ! openssl pkeyutl -sign -rawin -inkey "$priv_key" -in "$hash_tmp" -out "$sig_tmp" 2>/dev/null || \
        [[ "$(_crypto_size "$sig_tmp")" -ne "$SIG_RAW_LEN" ]]; then
         error "Ed25519 signing failed."
-        rm -f -- "$tmp_file"
         rm -rf -- "$tmp_dir"
         return 1
     fi
+
+    # Write footer directly at end of file without copy
     {
         printf '%s' "$SIG_MAGIC"
         cat -- "$pub_raw_tmp" "$sig_tmp"
-    } >> "$tmp_file" || { rm -f -- "$tmp_file"; rm -rf -- "$tmp_dir"; return 1; }
+    } >> "$lpk_file" || { rm -rf -- "$tmp_dir"; return 1; }
 
-    chmod --reference="$lpk_file" "$tmp_file" 2>/dev/null || chmod 644 -- "$tmp_file"
-    if ! mv -f -- "$tmp_file" "$lpk_file"; then
-        error "Could not replace package with signed version; original left untouched."
-        rm -f -- "$tmp_file"
-        rm -rf -- "$tmp_dir"
-        return 1
-    fi
     rm -rf -- "$tmp_dir"
     info "Package sealed successfully: $base"
 }
@@ -232,22 +233,33 @@ verify_package() {
         return 2
     fi
 
-    local footer_offset=$((size - SIG_FOOTER_SIZE)) tmp_dir pub_raw_tmp sig_tmp pub_pem_tmp payload_tmp
+    local footer_offset="$((size - SIG_FOOTER_SIZE))" tmp_dir pub_raw_tmp sig_tmp pub_pem_tmp hash_tmp
     tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-${TMPDIR:-/tmp}}/verify_XXXXXX")" || return 1
     pub_raw_tmp="$tmp_dir/raw.bin"
     sig_tmp="$tmp_dir/sig.bin"
     pub_pem_tmp="$tmp_dir/pub.pem"
-    payload_tmp="$tmp_dir/payload.bin"
+    hash_tmp="$tmp_dir/hash.bin"
 
+    # Extract the 104 bytes from the footer
     if ! tail -c "$SIG_FOOTER_SIZE" -- "$lpk_file" | head -c "$((SIG_MAGIC_LEN + SIG_PUB_LEN))" | tail -c "$SIG_PUB_LEN" > "$pub_raw_tmp" || \
-       ! tail -c "$SIG_RAW_LEN" -- "$lpk_file" > "$sig_tmp" || \
-       ! head -c "$footer_offset" -- "$lpk_file" > "$payload_tmp"; then
+       ! tail -c "$SIG_RAW_LEN" -- "$lpk_file" > "$sig_tmp"; then
         rm -rf -- "$tmp_dir"
         return 1
     fi
     [[ "$(_crypto_size "$pub_raw_tmp")" -eq "$SIG_PUB_LEN" && "$(_crypto_size "$sig_tmp")" -eq "$SIG_RAW_LEN" ]] || { rm -rf -- "$tmp_dir"; return 1; }
 
-    [[ "$(tail -c "$SIG_FOOTER_SIZE" -- "$lpk_file" | head -c "$SIG_MAGIC_LEN")" == "$SIG_MAGIC" ]] || { rm -rf -- "$tmp_dir"; return 2; }
+    cmp -s -n "$SIG_MAGIC_LEN" \
+        <(tail -c "$SIG_FOOTER_SIZE" -- "$lpk_file" 2>/dev/null) \
+        <(printf '%s' "$SIG_MAGIC") || { rm -rf -- "$tmp_dir"; return 2; }
+
+    # Calculate SHA256 hash of the payload part directly in stream
+    if ! head -c "$footer_offset" -- "$lpk_file" | sha256sum | awk '{print $1}' | tr -d '\r\n' | xxd -r -p > "$hash_tmp"; then
+        head -c "$footer_offset" -- "$lpk_file" | sha256sum | awk '{printf "%s", $1}' | sed 's/../\\x&/g' | xargs -0 printf > "$hash_tmp" 2>/dev/null || {
+            rm -rf -- "$tmp_dir"
+            return 1
+        }
+    fi
+
     printf '%b' '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00' > "$tmp_dir/pub.der"
     cat -- "$pub_raw_tmp" >> "$tmp_dir/pub.der"
     if ! openssl pkey -pubin -inform DER -in "$tmp_dir/pub.der" -pubout -out "$pub_pem_tmp" 2>/dev/null; then
@@ -255,10 +267,15 @@ verify_package() {
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    if ! openssl pkeyutl -verify -rawin -pubin -inkey "$pub_pem_tmp" -sigfile "$sig_tmp" -in "$payload_tmp" >/dev/null 2>&1; then
-        error "Signature verification failed for $lpk_file."
-        rm -rf -- "$tmp_dir"
-        return 1
+
+    # Verify the hashed fingerprint (32 bytes)
+    if ! openssl pkeyutl -verify -rawin -pubin -inkey "$pub_pem_tmp" -sigfile "$sig_tmp" -in "$hash_tmp" >/dev/null 2>&1; then
+        # Backward compatibility: try verifying the whole file with old format for small packages
+        if ! head -c "$footer_offset" -- "$lpk_file" | openssl pkeyutl -verify -rawin -pubin -inkey "$pub_pem_tmp" -sigfile "$sig_tmp" >/dev/null 2>&1; then
+            error "Signature verification failed for $lpk_file."
+            rm -rf -- "$tmp_dir"
+            return 1
+        fi
     fi
 
     local trusted_dir trusted is_trusted=0
