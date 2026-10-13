@@ -53,6 +53,10 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 - 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe ELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundleson the fly.
 
+- 🧬 **Seamless Host Graphics Bridge:** Prevents ABI divergence and crashes on proprietary drivers (NVIDIA / Mesa) inside containers by dynamically mounting and binding host display stacks, DRI, and GLVND loaders straight into guest runtimes.
+
+- 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope,Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
+
 ---
 
 ## 📊 Comparison
@@ -67,6 +71,8 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 | **Distro/RootFS Execution** |❌ No | ❌ No | ❌ No | 🐧 **Full RootFS support** |
 | **Mandatory Signatures** |Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning**|
 | **Multi-format Builder** | Complex recipe | Complex JSON/YAML | Manual recipes | 🪄 **Auto from .appimage/.deb/.rpm/tar** |
+| **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common | ⚡ **Nativehost passthrough** |
+| **Micro-Compositor (Gamescope)** | ❌ Difficult | ⚠️ Heavy tweaking| ❌ Fragile | 🎮 **Native nested session** |
 
 ---
 
@@ -272,8 +278,8 @@ Every application or RootFS runs within an ephemeral Bubblewrap namespace config
   - Native display pass-through: Wayland socket & X11 (with MIT-SHM IPC compatibility).
   - Native audio: Direct individual sockets for PipeWire and PulseAudio.
   - Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and `~/.icons` are mounted read-only.
-  - Hardware acceleration: Direct pass-through of`/dev/dri` and proprietary `/dev/nvidia*` devices.
-  - Gamepad & Gaming Controllers: Automatic mapping of `/dev/input`, `/dev/js*`, and `/dev/uinput`.
+  - Hardware acceleration: Direct pass-through of `/dev/dri`, `/usr/share/glvnd`, `/usr/share/vulkan`, and seamless host     proprietary `/dev/nvidia*` nodes to completely eradicate kernel-driver version mismatch in RootFS containers.
+  - Dedicated gaming rootfs paths: Automatic discovery and persistence bridges for retro-gaming suites (e.g.  `/recalbox/share` mounts for saves, BIOS, and ROMs).
 
 ---
 
@@ -291,6 +297,9 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - [x] Smart Cache with conditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
 - [x] Containerized unprivileged RootFS execution (Debian XFCE, Arch, Recalbox without KVM or Docker).
+- [x] Host graphic stackzero-mismatch bridge for proprietary NVIDIA drivers.
+- [x] Dedicated persistent bindings for guest retrogaming systems (`/recalbox/share`).
+- [x] Gamescope and unprivileged nested Wayland/Xwayland compositor execution support.
 
 ### Upcoming & Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
