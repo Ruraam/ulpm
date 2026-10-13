@@ -57,6 +57,8 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 
 - 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope,Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
 
+- 🐙 **Native GitHub CI/CD & OTA Updates:** Install and seamlessly track software straightfrom `owner/repo` releases with embedded cryptographic key pinning on upgrades.
+
 ---
 
 ## 📊 Comparison
@@ -69,10 +71,13 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 | **Sandbox Built-in**| AppArmor (Host root) | Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
 | **Dynamic Kill-Switches** | ❌ None | ⚠️ Manual overrides | ❌ None |🎛️ **`--no-gpu`, `--offline`, etc.** |
 | **Distro/RootFS Execution** |❌ No | ❌ No | ❌ No | 🐧 **Full RootFS support** |
+| **RAM Stream Apps (Zero-Disk)** | ❌ No | ❌ No | ❌ No | ⚡ **Direct volatile stream**|
+| **Instant Distro Preview** | ❌ No | ❌ No | ❌ No | 🪟 **Live RootFS test without install** |
 | **Mandatory Signatures** |Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning**|
 | **Multi-format Builder** | Complex recipe | Complex JSON/YAML | Manual recipes | 🪄 **Auto from .appimage/.deb/.rpm/tar** |
 | **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common | ⚡ **Nativehost passthrough** |
 | **Micro-Compositor (Gamescope)** | ❌ Difficult | ⚠️ Heavy tweaking| ❌ Fragile | 🎮 **Native nested session** |
+| **Zero-Config GitHub OTA** | ❌ Complex (Action + Store) | ⚠️ Flathub PR pipeline | ❌ Manual re-download | 🐙 **Native `owner/repo` tracking** |
 
 ---
 
@@ -218,9 +223,13 @@ ulpm deb-pack firefox-esr
 ```bash
 ulpm list
 ```
-**Check and update all GitHub-tracked packages (with key pinningverification)**
+**Upgrade allinstalled packages (automatically tracking upstream GitHub releases with key verification)**
 ```bash
 ulpm upgrade
+```
+**Upgrade a specific package fromits GitHub source**
+```bash
+ulpm upgrade owner/repo
 ```
 **Completely remove an application and its desktop integration**
 ```bash
@@ -230,6 +239,7 @@ ulpm remove io.lpk.brave
 ```bash
 ulpm clean
 ```
+
 ---
 
 ## 🔐 Cryptography & Trust (Autonomous Ed25519)
@@ -300,6 +310,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - [x] Host graphic stack zero-mismatch bridge for proprietary NVIDIA drivers.
 - [x] Dedicated persistent bindings for guest retrogaming systems (`/recalbox/share`).
 - [x] Gamescope and unprivileged nested Wayland/Xwayland compositor execution support.
+- [x] Autonomous GitHub repository release tracking & OTA updates (`ulpm upgrade`).
 
 ### Upcoming & Help Wanted
 - [ ] Add support for [your favorite distro] (PRs welcome!)
