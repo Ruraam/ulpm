@@ -140,16 +140,20 @@ _deb_download_direct_lib_deps() {
     command -v apt-cache >/dev/null 2>&1 || return 0
     command -v apt-get >/dev/null 2>&1 || return 0
 
-    apt-cache depends --no-recommends --no-suggests "$package_name" 2>/dev/null \
+    local -a deps=()
+    mapfile -t deps < <(
+        apt-cache depends --no-recommends --no-suggests "$package_name" 2>/dev/null \
         | awk '/^[[:space:]]*Depends:[[:space:]]+lib/ {print $2}' \
         | sed -E 's/^<([^>]+)>$/\1/' \
         | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
         | grep -vE '^<.*>$' \
-        | sort -u \
-        | while IFS= read -r dependency; do
-            [[ -n "$dependency" ]] || continue
-            apt-get download "$dependency" 2>/dev/null || true
-        done
+        | sort -u
+    )
+
+    if ((${#deps[@]} > 0)); then
+        log "Downloading ${#deps[@]} library dependency package(s)..."
+        apt-get download "${deps[@]}" 2>/dev/null || true
+    fi
 }
 
 cmd_deb_pack() {
@@ -249,7 +253,7 @@ _cmd_deb_pack_work() (
         check_dependencies apt-get apt-cache || return 1
         [[ -n "$app_name" ]] || app_name="$pkg_input"
 
-        log "Downloading '$pkg_input' and direct library dependencies..."
+        log "Downloading primary package '$pkg_input'..."
         (
             cd "$deb_dir" || exit 1
             if ! apt-get download "$pkg_input"; then
@@ -320,7 +324,7 @@ _cmd_deb_pack_work() (
         -name 'librt.so*' -o \
         -name 'libresolv.so*' -o \
         -name 'libm.so*' \
-        \) -delete 2>/dev/null || true
+    \) -delete 2>/dev/null || true
 
     log "Handing over payload to bundler..."
     cmd_pack "$root_dir" "$app_name" "$out_pkg"
