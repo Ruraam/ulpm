@@ -9,7 +9,7 @@
 # ==============================================================================
 
 if [ -z "${BASH_VERSION:-}" ]; then
-    echo "[X] This installer requires bash (try: curl -fsSL <url> | bash)" >&2
+    echo "[X] This installer requires bash (try: curl -fsSL <url>| bash)" >&2
     exit 1
 fi
 
@@ -52,11 +52,11 @@ print_banner() {
     fi
 
     clear
-    echo -e "           \033[0;97m▐\033[0;96m██\033[0;97m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
-    echo -e "            \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
-    echo -e "            \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
-    echo -e "           \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
-    echo -e "            \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+    echo -e "              \033[0;97m▐\033[0;96m██\033[0;97m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
+    echo -e "              \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
+    echo -e "\033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
+    echo -e "              \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
+    echo -e "              \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
 }
 
 # ------------------------------------------------------------
@@ -112,11 +112,11 @@ clean_path_file() {
     local tmp
     tmp="$(mktemp)"
     awk '
-    /# Added by ULPM installer/ { skip=1; next }
-    /# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
-    skip && /^[[:space:]]*export PATH=/ { skip=0; next }
-    skip { skip=0 }
-    { print }
+        /# Added by ULPM installer/ { skip=1; next }
+        /# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
+        skip && /^[[:space:]]*export PATH=/ { skip=0; next }
+        skip { skip=0 }
+        { print }
     ' "$cfg" > "$tmp"
     cat "$tmp" > "$cfg"
     rm -f "$tmp"
@@ -735,7 +735,7 @@ if [ "$MODE" = "user" ]; then
             mkdir -p "$(dirname "$cfg")"
             echo "fish_add_path -g \"$BIN_DIR\"" > "$cfg"
             ;;
-        zsh)  add_path_line "$HOME/.zshrc" ;;
+        zsh) add_path_line "$HOME/.zshrc" ;;
         bash) add_path_line "$HOME/.bashrc" ;;
         *)    add_path_line "$HOME/.profile" ;;
     esac
@@ -867,12 +867,12 @@ EOF
     cat <<EOF > "$desktop_file"
 [Desktop Entry]
 Type=Application
-Name=ULPM Package Handler
-Comment=Install and integrate sandboxed .lpk applications
-Exec=$BIN_DIR/ulpm install %f
+Name=ULPM Package Runner
+Comment=Run sandboxed .lpk applications directly
+Exec=sh -c 'F=\$(printf "%s" "\$1" | sed "s#^file://##"); exec "$BIN_DIR/ulpm" run "\$F"' dummy %u
 Icon=package-x-generic
 Terminal=false
-NoDisplay=true
+NoDisplay=false
 MimeType=application/x-lpk;
 Categories=System;Utility;
 EOF
@@ -895,6 +895,8 @@ EOF
             else
                 printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" | priv tee -a "$mimeapps_list" >/dev/null
             fi
+        else
+            priv sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
         fi
     else
         mkdir -p "$target_config"
@@ -905,6 +907,8 @@ EOF
             else
                 printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" >> "$mimeapps_list"
             fi
+        else
+            sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
         fi
     fi
 
