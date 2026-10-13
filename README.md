@@ -117,6 +117,10 @@ curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
 >
 > * **2) System-Wide Install:**
 > Installs globally to`/usr/local/bin/ulpm` for all users on the host.
+>
+> * **3) Debian/Ubuntu-based:**
+> Installs via ulpm official APT repo signed with gpg key
+
 
 ---
 
