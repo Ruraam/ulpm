@@ -137,3 +137,282 @@ find_host_loader() {
     done
     return 1
 }
+
+# ==============================================================================
+# GitHub Configuration, API & Authentication Helper
+# ==============================================================================
+
+ULPM_CONFIG_FILE="${ULPM_CONFIG_HOME:-$HOME/.config/ulpm}/ulpm.conf"
+
+get_github_token() {
+    # 1. Environment variable takes priority
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        printf '%s' "$GITHUB_TOKEN"
+        return 0
+    fi
+
+    # 2. Persistent ULPM configuration file
+    if [[ -f "$ULPM_CONFIG_FILE" ]]; then
+        local token
+        token="$(grep -E '^[[:space:]]*GITHUB_TOKEN=' "$ULPM_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"'\'' ' || true)"
+        if [[ -n "$token" ]]; then
+            printf '%s' "$token"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+cmd_token() {
+    local token="${1:-}"
+
+    if [[ -z "$token" ]]; then
+        printf "\033[0;36mEnter GitHub Personal Access Token (PAT): \033[0m"
+        read -rs token </dev/tty
+        echo ""
+    fi
+
+    if [[ -z "$token" ]]; then
+        error "Token cannot be empty."
+        return 1
+    fi
+
+    local conf_dir
+    conf_dir="$(dirname "$ULPM_CONFIG_FILE")"
+    mkdir -p "$conf_dir"
+    chmod 700 "$conf_dir" 2>/dev/null || true
+
+    if [[ -f "$ULPM_CONFIG_FILE" ]] && grep -q '^[[:space:]]*GITHUB_TOKEN=' "$ULPM_CONFIG_FILE"; then
+        sed -i "s|^[[:space:]]*GITHUB_TOKEN=.*|GITHUB_TOKEN=\"$token\"|" "$ULPM_CONFIG_FILE"
+    else
+        printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$ULPM_CONFIG_FILE"
+    fi
+    chmod 600 "$ULPM_CONFIG_FILE" 2>/dev/null || true
+
+    # Also export for the current session
+    export GITHUB_TOKEN="$token"
+    info "GitHub token saved successfully in $ULPM_CONFIG_FILE"
+}
+
+fetch_github_api() {
+    local endpoint="$1"
+    local ttl="${2:-15}" # Cache 15 minutes by default
+
+    endpoint="${endpoint#https://api.github.com/}"
+    endpoint="${endpoint#/}"
+
+    local cache_api_dir="${ULPM_CACHE_HOME:-$HOME/.cache/ulpm}/api"
+    mkdir -p "$cache_api_dir"
+
+    local cache_key
+    cache_key="$(printf '%s' "$endpoint" | tr '/' '_')"
+    local cache_file="$cache_api_dir/${cache_key}.json"
+
+    # Check local cache TTL
+    if [[ -f "$cache_file" ]] && [[ -z "$(find "$cache_file" -mmin +"$ttl" 2>/dev/null)" ]]; then
+        cat "$cache_file"
+        return 0
+    fi
+
+    local auth_header=()
+    local token
+    if token="$(get_github_token)"; then
+        auth_header=(-H "Authorization: Bearer $token")
+    fi
+
+    local response
+    response="$(curl -sS --connect-timeout 10 --max-time 25 --retry 2 \
+        "${auth_header[@]}" \
+        -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: ulpm-engine" \
+        "https://api.github.com/${endpoint}" 2>/dev/null)" || {
+        # If network fails but cache (even expired) exists, use it as fallback
+        if [[ -f "$cache_file" ]]; then
+            cat "$cache_file"
+            return 0
+        fi
+        return 1
+    }
+
+    # Detect rate limit or auth errors
+    if grep -qiE '"message"[[:space:]]*:[[:space:]]*"(API rate limit|Not Found|Bad credentials)' <<< "$response"; then
+        if [[ -f "$cache_file" ]]; then
+            cat "$cache_file"
+            return 0
+        fi
+        printf '%s\n' "$response"
+        return 1
+    fi
+
+    if [[ -n "$response" ]] && jq -e . >/dev/null 2>&1 <<< "$response"; then
+        printf '%s\n' "$response" > "$cache_file"
+        printf '%s\n' "$response"
+        return 0
+    fi
+
+    return 1
+}
+
+# ==============================================================================
+# System Diagnostic & Self-Update Engine
+# ==============================================================================
+
+cmd_doctor() {
+    info "Running ULPM Environmental & Kernel Capability Diagnostic..."
+    echo "--------------------------------------------------------------------------------"
+
+    local ok="${C_GREEN}✔ OK${C_RESET}"
+    local warn_tag="${C_YELLOW}⚠ WARN${C_RESET}"
+    local fail_tag="${C_RED}✖ FAIL${C_RESET}"
+
+    # 1. Host Architecture & Kernel
+    local arch kver
+    arch="$(detect_arch)"
+    kver="$(uname -r)"
+    printf "%-32s : %s (%s)\n" "Host Architecture & Kernel" "$arch" "$kver"
+
+    # 2. Linux Namespaces / Unprivileged Sandbox Support
+    if bwrap --ro-bind / / true >/dev/null 2>&1; then
+        printf "%-32s : %b (Unprivileged Namespaces)\n" "Bubblewrap Sandbox Engine" "$ok"
+    elif [[ $EUID -eq 0 ]] && bwrap --dev-bind / / true >/dev/null 2>&1; then
+        printf "%-32s : %b (Privileged / Root mode)\n" "Bubblewrap Sandbox Engine" "$warn_tag"
+    else
+        printf "%-32s : %b (Cannot create user namespace)\n" "Bubblewrap Sandbox Engine" "$fail_tag"
+    fi
+
+    # 3. SquashFS / FUSE Support
+    if command -v squashfuse >/dev/null 2>&1; then
+        printf "%-32s : %b\n" "Squashfuse (Mount Engine)" "$ok"
+    else
+        printf "%-32s : %b (Mounts will fallback to unsquashfs)\n" "Squashfuse" "$warn_tag"
+    fi
+
+    # 4. Storage Engine (fuse-overlayfs)
+    if command -v fuse-overlayfs >/dev/null 2>&1; then
+        printf "%-32s : %b\n" "fuse-overlayfs (COW Storage)" "$ok"
+    else
+        printf "%-32s : %b (Performance reduced on persistent layers)\n" "fuse-overlayfs" "$warn_tag"
+    fi
+
+    # 5. Core Binaries Audit
+    local missing_tools=()
+    for bin in mksquashfs unsquashfs jq curl openssl tar zstd; do
+        if ! command -v "$bin" >/dev/null 2>&1; then
+            missing_tools+=("$bin")
+        fi
+    done
+    if [[ ${#missing_tools[@]} -eq 0 ]]; then
+        printf "%-32s : %b (All critical tools present)\n" "Core CLI Dependencies" "$ok"
+    else
+        printf "%-32s : %b (Missing: %s)\n" "Core CLI Dependencies" "$fail_tag" "${missing_tools[*]}"
+    fi
+
+    # 6. Cryptography Engine & Keychain
+    local trusted_keys="${ULPM_CONFIG_HOME:-$HOME/.config/ulpm}/trusted_keys"
+    local local_sec="${ULPM_KEYS_DIR:-$HOME/.config/ulpm/keys}/local.sec"
+    if [[ -f "$local_sec" ]]; then
+        printf "%-32s : %b (Ed25519 Signing Key Active)\n" "Cryptographic Keypair" "$ok"
+    else
+        printf "%-32s : %b (No signing key, package signing disabled)\n" "Cryptographic Keypair" "$warn_tag"
+    fi
+
+    local trust_count=0
+    [[ -d "$trusted_keys" ]] && trust_count=$(find "$trusted_keys" -type f -name "*.pub" 2>/dev/null | wc -l)
+    printf "%-32s : %s key(s) registered\n" "Trust Keychain" "$trust_count"
+
+    # 7. GitHub API Token Status
+    local token
+    if token="$(get_github_token)"; then
+        local gh_rate
+        gh_rate="$(fetch_github_api "rate_limit" 0 2>/dev/null | jq -r '.resources.core.remaining // "Err"' 2>/dev/null || echo "Unknown")"
+        printf "%-32s : %b (Remaining requests: %s/5000)\n" "GitHub API Authentication" "$ok" "$gh_rate"
+    else
+        printf "%-32s : %b (Rate-limit restricted to 60 req/h)\n" "GitHub API Authentication" "$warn_tag"
+    fi
+
+    echo "--------------------------------------------------------------------------------"
+}
+
+cmd_self_update() {
+    local repo_target="${1:-${ULPM_GITHUB_REPO:-}}"
+    [[ -z "$repo_target" ]] && {
+        error "No update repository configured. Usage: ulpm self-update <owner/repo>"
+        return 1
+    }
+
+    info "Checking for ULPM core engine updates from '$repo_target'..."
+
+    local rel_data
+    rel_data="$(fetch_github_api "repos/${repo_target}/releases/latest" 5)" || {
+        error "Failed to contact update server."
+        return 1
+    }
+
+    local latest_tag tarball_url
+    latest_tag="$(jq -r '.tag_name // empty' <<< "$rel_data")"
+    tarball_url="$(jq -r '.tarball_url // empty' <<< "$rel_data")"
+
+    if [[ -z "$latest_tag" || -z "$tarball_url" ]]; then
+        error "No release archive found on remote repository."
+        return 1
+    fi
+
+    if [[ "$latest_tag" == "v${ULPM_VERSION}" || "$latest_tag" == "${ULPM_VERSION}" ]]; then
+        info "ULPM is already at the latest release ($latest_tag)."
+        return 0
+    fi
+
+    echo -e " ${C_GREEN}➜${C_RESET} Engine update available: ${C_RED}v${ULPM_VERSION}${C_RESET} ➔ ${C_GREEN}$latest_tag${C_RESET}"
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "${ULPM_CACHE_HOME:-/tmp}/ulpm_update_XXXXXX")"
+    trap 'rm -rf "${tmp_dir:-}"' RETURN
+
+    log "Downloading engine payload ($latest_tag)..."
+    local auth_header=()
+    local token
+    if token="$(get_github_token)"; then
+        auth_header=(-H "Authorization: Bearer $token")
+    fi
+
+    curl -fL "${auth_header[@]}" "$tarball_url" -o "$tmp_dir/update.tar.gz" || {
+        error "Download failed."
+        return 1
+    }
+
+    mkdir -p "$tmp_dir/extracted"
+    tar -xzf "$tmp_dir/update.tar.gz" -C "$tmp_dir/extracted" --strip-components=1 || {
+        error "Corrupted archive payload."
+        return 1
+    }
+
+    # Backup current engine before atomic replacement
+    local ulpm_root="${ULPM_LIB_DIR%/*}" # e.g. ~/.local
+    local backup_dir="${ULPM_CACHE_HOME:-/tmp}/ulpm_backup_v${ULPM_VERSION}"
+    mkdir -p "$backup_dir/lib" "$backup_dir/bin"
+    cp -rf "$ULPM_LIB_DIR" "$backup_dir/lib/" 2>/dev/null || true
+    cp -f "${ULPM_BIN:-$ulpm_root/bin/ulpm}" "$backup_dir/bin/" 2>/dev/null || true
+
+    log "Applying update payload..."
+    if [[ -d "$tmp_dir/extracted/lib" ]]; then
+        cp -rf "$tmp_dir/extracted/lib/"* "$ULPM_LIB_DIR/"
+    fi
+    if [[ -f "$tmp_dir/extracted/bin/ulpm" ]]; then
+        cp -f "$tmp_dir/extracted/bin/ulpm" "${ULPM_BIN:-$ulpm_root/bin/ulpm}"
+        chmod 755 "${ULPM_BIN:-$ulpm_root/bin/ulpm}"
+    fi
+
+    info "ULPM successfully upgraded to $latest_tag!"
+    cmd_doctor
+}
+
+    cmd_completion() {
+        local comp_file="${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/completion.bash"
+        if [[ -f "$comp_file" ]]; then
+            cat "$comp_file"
+        else
+            error "Completion file not found at $comp_file"
+            return 1
+        fi
+}
