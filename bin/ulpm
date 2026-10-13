@@ -1,71 +1,76 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# ULPM - Universal Linux Package Manager (v4.0.0 Architecture Engine)
-# Rootless, Zero-Daemon, Sandboxed Application Engine
-# ==============================================================================
+# ============================================================================
+# ULPM - Universal Linux Package Manager
+# Main CLI entry point | rootless by default | no resident daemon
+# ============================================================================
+set -Eeuo pipefail
 
-set -euo pipefail
+export ULPM_VERSION="4.1.0"
+export ULPM_FORMAT_VERSION="4"
 
-export ULPM_VERSION="4.0.0"
-export ULPM_FORMAT_VERSION=4
-
-# ANSI color helpers
-if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
-    RED='\033[0;31m'
-    NC='\033[0m'
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+    RED=$'\033[0;31m'; YELLOW=$'\033[0;33m'; NC=$'\033[0m'
 else
-    RED=''
-    NC=''
+    RED=''; YELLOW=''; NC=''
 fi
 
-# [PATCH] Fail with a clear message if $HOME is unset/invalid (otherwise: "unbound variable" under set -u)
-if [[ -z "${HOME:-}" || ! -d "$HOME" ]]; then
-    echo -e "${RED}[-] Critical: \$HOME is not set or is not a directory.${NC}" >&2
-    exit 1
-fi
+_die() { printf '%s[-] %s%s\n' "$RED" "$*" "$NC" >&2; exit 1; }
+_warn() { printf '%s[!] %s%s\n' "$YELLOW" "$*" "$NC" >&2; }
 
-# Resolve runtime base directory safely
+# Resolve HOME before expanding any user paths (set -u safe).
+[[ -n "${HOME:-}" && -d "$HOME" ]] || _die 'HOME is unset or is not an existing directory.'
+
+# Resolve this entry point.
 ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
     ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
 fi
-if [[ -z "$ULPM_BIN" ]]; then
-    echo -e "${RED}[-] Critical: Cannot resolve ULPM binary location.${NC}" >&2
-    exit 1
-fi
-ULPM_BIN_DIR="$(dirname "$ULPM_BIN")"
-ULPM_ROOT_DIR="$(cd "$ULPM_BIN_DIR/.." && pwd)"
-export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR
+[[ -n "$ULPM_BIN" && -f "$ULPM_BIN" ]] || _die 'Cannot resolve the ULPM executable path.'
+ULPM_BIN_DIR="$(cd -- "$(dirname -- "$ULPM_BIN")" && pwd -P)"
 
-# PATH Self-Healing (Ensures GUI-launched apps find internal and user binaries)
+# Find the module directory in common source-tree and installed layouts.
+_ulpm_lib_candidates=()
+if [[ -n "${ULPM_LIB_DIR:-}" ]]; then _ulpm_lib_candidates+=("$ULPM_LIB_DIR"); fi
+_ulpm_lib_candidates+=(
+    "$ULPM_BIN_DIR/lib/ulpm"
+    "$ULPM_BIN_DIR/lib"
+    "$ULPM_BIN_DIR"
+    "$(dirname -- "$ULPM_BIN_DIR")/lib/ulpm"
+    "$(dirname -- "$ULPM_BIN_DIR")/lib"
+    "$HOME/.local/lib/ulpm"
+    "/usr/local/lib/ulpm"
+    "/usr/lib/ulpm"
+)
+ULPM_LIB_DIR=''
+for _candidate in "${_ulpm_lib_candidates[@]}"; do
+    if [[ -f "$_candidate/utils.sh" ]]; then
+        ULPM_LIB_DIR="$(cd -- "$_candidate" && pwd -P)"
+        break
+    fi
+done
+[[ -n "$ULPM_LIB_DIR" ]] || _die 'ULPM library directory not found (utils.sh is missing).'
+
+case "$ULPM_LIB_DIR" in
+    "$ULPM_BIN_DIR") ULPM_ROOT_DIR="$ULPM_BIN_DIR" ;;
+    */lib/ulpm)      ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
+    */lib)           ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
+    *)               ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
+esac
+export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR ULPM_LIB_DIR
+
+# Help GUI-launched apps find ULPM and user-installed commands too.
 _path_add() {
-    [[ -n "$1" && -d "$1" ]] || return 0
-    case ":${PATH:-}:" in
-        *":$1:"*) return 0 ;;
-    esac
-    PATH="$1${PATH:+:$PATH}"
+    local dir="${1:-}"
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    case ":${PATH:-}:" in *":$dir:"*) return 0 ;; esac
+    PATH="$dir${PATH:+:$PATH}"
+    return 0
 }
 _path_add "$ULPM_BIN_DIR"
 _path_add "$HOME/.local/bin"
 export PATH
 
-# Multi-path library discovery (paired with binary location first)
-if [[ -f "$ULPM_ROOT_DIR/lib/ulpm/utils.sh" ]]; then
-    export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib/ulpm"
-elif [[ -f "$ULPM_ROOT_DIR/lib/utils.sh" ]]; then
-    export ULPM_LIB_DIR="$ULPM_ROOT_DIR/lib"
-elif [[ -f "$HOME/.local/lib/ulpm/utils.sh" ]]; then
-    export ULPM_LIB_DIR="$HOME/.local/lib/ulpm"
-elif [[ -f "/usr/local/lib/ulpm/utils.sh" ]]; then
-    export ULPM_LIB_DIR="/usr/local/lib/ulpm"
-elif [[ -f "/usr/lib/ulpm/utils.sh" ]]; then
-    export ULPM_LIB_DIR="/usr/lib/ulpm"
-else
-    echo -e "${RED}[-] Critical: ULPM library directory not found (utils.sh missing).${NC}" >&2
-    exit 1
-fi
-
-# Standard paths
+# Standard XDG paths; do not require root privileges.
 export ULPM_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
 export ULPM_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
 export ULPM_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
@@ -74,93 +79,116 @@ export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
 export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 
-# Ensure required directories exist
-mkdir -p "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" "$ULPM_KEYS_DIR"
+# Atomic directory creation with strict umask on keys
+mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" || _die 'Unable to create ULPM directories.'
+( umask 077 && mkdir -p -- "$ULPM_KEYS_DIR" ) || _die 'Unable to create secure keys directory.'
 
-# [PATCH] Keep the keyring (private keys) private to the user, same as the installer does
-chmod 700 "$ULPM_KEYS_DIR" 2>/dev/null || true
-
-# Module loading
+# Load modules in dependency order.
 for mod in utils crypto sandbox pack deb run stream manage; do
-    if [[ ! -f "$ULPM_LIB_DIR/$mod.sh" ]]; then
-        echo -e "${RED}[-] Critical: Module '$mod.sh' not found in $ULPM_LIB_DIR${NC}" >&2
-        exit 1
-    fi
+    module="$ULPM_LIB_DIR/$mod.sh"
+    [[ -r "$module" ]] || _die "Required module '$mod.sh' is missing or unreadable in $ULPM_LIB_DIR."
     # shellcheck disable=SC1090
-    source "$ULPM_LIB_DIR/$mod.sh"
+    source "$module"
 done
+unset mod module _candidate _ulpm_lib_candidates
 
-# Initialize environment
 if declare -F init_environment >/dev/null 2>&1; then
     init_environment
 fi
 
 show_help() {
-    cat <<EOF
+    cat <<EOF_HELP
 ULPM - Universal Linux Package Manager (v${ULPM_VERSION})
 
 Usage: ulpm <command> [options] [arguments]
 
-Execution Commands:
-run [flags] <target> [-- args...]       Run application in Bubblewrap sandbox
-stream <url|repo> [flags] [-- args...]  Run ephemerally directly in RAM/tmpfs
+Execution:
+  run [flags] <target> [-- args...]        Run an application in a Bubblewrap sandbox
+  stream <url|repo> [flags] [-- args...]    Run ephemerally, using temporary storage
 
-Packaging Commands:
-pack <src> [name] [out.lpk] [version]   Create a standalone .lpk bundle
-deb-pack <pkg|file.deb> [name]          Build LPK from Debian repositories
+Packaging:
+  pack <src> [name] [out.lpk] [version]    Create an LPK bundle
+  deb-pack <pkg|file.deb> [name]            Build an LPK from a Debian package
 
-Management Commands:
-install, -i <source> [name]             Install application locally
-upgrade, -u                             Upgrade GitHub-tracked applications
-remove, -r [--purge] <app_name>         Uninstall an application
-list, -l                                List installed applications
-clean                                   Unmount dangling sessions & wipe cache
-integrate                               (Re)register MIME types and desktop links
+Application management:
+  install, -i <source> [name]               Install an application
+  upgrade, -u                                Upgrade tracked applications
+  remove, -r [--purge] <app_name>           Uninstall an application
+  list, -l                                   List installed applications
+  search, -s <query>                         Search available applications
+  inspect <package.lpk>                      Inspect package metadata and signature
+  clean                                      Clean ULPM cache and dangling sessions
+  integrate                                  Register desktop and MIME integration
 
-Cryptographic Commands:
-keygen [name]                           Generate hardened Ed25519 keypair
-sign <file.lpk> [priv_key]              Sign an LPK package
-trust <public_key.pub>                  Add public key to trusted keyring
+Security and maintenance:
+  keygen [name]                              Generate an Ed25519 keypair
+  sign <file.lpk> [priv_key]                 Sign an LPK package
+  trust <public_key.pub>                     Trust a public key
+  token [PAT]                                Configure a GitHub access token
+  doctor                                     Diagnose runtime and sandbox support
+  self-update [repo]                         Update ULPM from a release source
+  completion                                 Print shell completion configuration
 
-Sandbox Runtime Flags (used with 'run' or 'stream'):
---offline, --no-net                     Disable network connectivity
---no-gpu                                Disable GPU acceleration (/dev/dri, Vulkan, NVIDIA)
---no-audio                              Disable sound server access (PulseAudio/PipeWire)
---no-gui                                Disable graphical display (X11 and Wayland)
---bind <host>:<dest>                    Bind-mount an arbitrary host path into the sandbox
-EOF
+Runtime flags (run/stream):
+  --offline, --no-net                        Disable network access
+  --no-gpu                                   Disable GPU device access
+  --no-audio                                 Disable audio server access
+  --no-gui                                   Disable graphical display access
+  --bind <host>:<dest>                       Bind a host path into the sandbox
+
+Global:
+  -h, --help                                 Show this help
+  -v, --version                              Show version
+EOF_HELP
+}
+
+# Route to a module function without eval, preserving every argument exactly.
+_dispatch() {
+    local fn="$1" label="$2"
+    shift 2
+    if ! declare -F "$fn" >/dev/null 2>&1; then
+        _die "Command '$label' is not available: module function '$fn' is not defined. Check the installed ULPM modules."
+    fi
+    "$fn" "$@"
 }
 
 main() {
-    [[ $# -eq 0 ]] && { show_help; exit 0; }
+    if (($# == 0)); then show_help; return 0; fi
+    case "$1" in
+        -h|--help|help)        show_help; return 0 ;;
+        -v|--version|version)  printf 'ulpm v%s (LPK format %s)\n' "$ULPM_VERSION" "$ULPM_FORMAT_VERSION"; return 0 ;;
+    esac
 
     local cmd="$1"
     shift
-
     case "$cmd" in
-        run)                  cmd_run "$@" ;;
-        stream)               cmd_stream "$@" ;;
-        pack)                 cmd_pack "$@" ;;
-        deb-pack)             cmd_deb_pack "$@" ;;
-        install|-i|add|-a)    cmd_install "$@" ;;
-        upgrade|-u)           cmd_upgrade "$@" ;;
-        remove|-r|rm)         cmd_remove "$@" ;;
-        list|-l|ls)           cmd_list "$@" ;;
-        clean)                cmd_clean "$@" ;;
-        integrate)            cmd_integrate "$@" ;;
-        keygen)               cmd_keygen "$@" ;;
-        sign)                 cmd_sign "$@" ;;
-        trust)                cmd_trust "$@" ;;
-        -h|--help|help)       show_help ;;
-        -v|--version|version) echo "ulpm v${ULPM_VERSION}" ;;
+        run)                 _dispatch cmd_run run "$@" ;;
+        stream)              _dispatch cmd_stream stream "$@" ;;
+        pack)                _dispatch cmd_pack pack "$@" ;;
+        deb-pack|deb_pack)   _dispatch cmd_deb_pack deb-pack "$@" ;;
+        install|-i|add|-a)   _dispatch cmd_install install "$@" ;;
+        upgrade|-u)          _dispatch cmd_upgrade upgrade "$@" ;;
+        remove|-r|rm)        _dispatch cmd_remove remove "$@" ;;
+        search|-s)           _dispatch cmd_search search "$@" ;;
+        list|-l|ls)          _dispatch cmd_list list "$@" ;;
+        inspect|info)        _dispatch cmd_inspect inspect "$@" ;;
+        clean)               _dispatch cmd_clean clean "$@" ;;
+        integrate)           _dispatch cmd_integrate integrate "$@" ;;
+        keygen)              _dispatch cmd_keygen keygen "$@" ;;
+        sign)                _dispatch cmd_sign sign "$@" ;;
+        trust)               _dispatch cmd_trust trust "$@" ;;
+        token|auth)          _dispatch cmd_token token "$@" ;;
+        doctor|check)        _dispatch cmd_doctor doctor "$@" ;;
+        self-update)         _dispatch cmd_self_update self-update "$@" ;;
+        completion)          _dispatch cmd_completion completion "$@" ;;
         *)
             if declare -F error >/dev/null 2>&1; then
                 error "Unknown command: $cmd"
             else
-                echo -e "${RED}[-] Unknown command: $cmd${NC}" >&2
+                _warn "Unknown command: $cmd"
             fi
             show_help
-            exit 1
+            return 2
             ;;
     esac
 }
