@@ -150,34 +150,34 @@ Packaging:
 
 Application management:
   install, -i <source> [name]              Install an application
-  upgrade, -u                               Upgrade tracked applications
+  upgrade, -u                              Upgrade tracked applications
   remove, -r [--purge] <app_name>          Uninstall an application
-  list, -l                                  List installed applications
-  search, -s <query>                        Search available applications
-  inspect <package.lpk>                     Inspect package metadata and signature
-  clean                                     Clean ULPM cache and dangling sessions
-  integrate                                 Register desktop and MIME integration
+  list, -l                                 List installed applications
+  search, -s <query>                       Search available applications
+  inspect <package.lpk>                    Inspect package metadata and signature
+  clean                                    Clean ULPM cache and dangling sessions
+  integrate                                Register desktop and MIME integration
 
 Security and maintenance:
-  keygen [name]                             Generate an Ed25519 keypair
-  sign <file.lpk> [priv_key]                Sign an LPK package
-  trust <public_key.pub>                    Trust a public key
-  token [PAT]                               Configure a GitHub access token
-  doctor                                    Diagnose runtime and sandbox support
-  self-update [repo]                        Update ULPM from a release source
-  completion                                Print shell completion configuration
+  keygen [name]                            Generate an Ed25519 keypair
+  sign <file.lpk> [priv_key]               Sign an LPK package
+  trust <public_key.pub>                   Trust a public key
+  token [PAT]                              Configure a GitHub access token
+  doctor                                   Diagnose runtime and sandbox support
+  self-update [repo]                       Update ULPM from a release source
+  completion                               Print shell completion configuration
 
 Runtime flags (run/stream):
-  --offline, --no-net                       Disable network access
-  --no-gpu                                  Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
-  --no-audio                                Disable audio server access (PulseAudio/PipeWire)
-  --no-gui                                  Disable graphical display access (X11 & Wayland)
-  --no-input                                Disable gamepad & host input devices
-  --bind <host>:<dest>                      Bind a host path into the sandbox
+  --offline, --no-net                      Disable network access
+  --no-gpu                                 Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
+  --no-audio                               Disable audio server access (PulseAudio/PipeWire)
+  --no-gui                                 Disable graphical display access (X11 & Wayland)
+  --no-input                               Disable gamepad & host input devices
+  --bind <host>:<dest>                     Bind a host path into the sandbox
 
 Global:
-  -h, --help                                Show this help
-  -v, --version                             Show version
+  -h, --help                               Show this help
+  -v, --version                            Show version
 EOF_HELP
 }
 
