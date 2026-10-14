@@ -13,7 +13,7 @@ ENV_WHITELIST=(
     GDK_BACKEND GDK_SCALE GDK_DPI_SCALE GTK_THEME
     QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR
     XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
-    __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD __VK_LAYER_NV_optimus
+    __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD__ VK_LAYER_NV_optimus
     VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
     # Recalbox / Gaming specific variables
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
@@ -26,12 +26,10 @@ ENV_WHITELIST=(
 resolve_host_downloads_dir() {
     local candidate=""
 
-    # 1. Use xdg-user-dir if available
     if command -v xdg-user-dir &>/dev/null; then
         candidate="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
     fi
 
-    # 2. Read standard XDG config file if not resolved
     if [[ -z "$candidate" || "$candidate" == "$HOME" ]] && [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
         local raw
         raw="$(grep -E '^XDG_DOWNLOAD_DIR=' "$HOME/.config/user-dirs.dirs" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
@@ -39,7 +37,6 @@ resolve_host_downloads_dir() {
         [[ -n "$raw" && -d "$raw" ]] && candidate="$raw"
     fi
 
-    # 3. Multilingual fallback detection
     if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
         for name in "Téléchargements" "Downloads" "Descargas" "Download" "Scaricati"; do
             if [[ -d "$HOME/$name" ]]; then
@@ -58,11 +55,10 @@ setup_sandbox_downloads_links() {
     local target_home="$1"
     local host_dl="$2"
     local dl_basename
-    dl_basename="$(basename "$host_dl")"
+    dl_basename="$(basename -- "$host_dl")"
 
     mkdir -p "$target_home/$dl_basename" 2>/dev/null || true
 
-    # Cross-compatibility symlinks inside the virtual HOME
     if [[ "$dl_basename" != "Downloads" ]]; then
         ln -snf "$dl_basename" "$target_home/Downloads" 2>/dev/null || true
     fi
@@ -493,7 +489,10 @@ lpk_run_isolated() {
     local manifest="$mnt_dir/meta/manifest.json"
     [[ ! -f "$manifest" ]] && manifest="$mnt_dir/lpk.json"
 
-    local app_id="app_$(basename "$target" .lpk)"
+    # Correct SC2155: separate declaration and assignment
+    local app_id
+    app_id="app_$(basename -- "$target" .lpk)"
+
     local exec_bin="bin/main"
     local is_chromium=false
     local allow_net=true
@@ -640,8 +639,8 @@ EOF
     # System configurations & themes
     local etc_item
     for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
-                   fonts X11 xdg gtk-2.0 gtk-3.0 gtk-4.0 pulse vulkan glvnd \
-                   localtime timezone os-release machine-id passwd group; do
+        fonts X11 xdg gtk-2.0 gtk-3.0 gtk-4.0 pulse vulkan glvnd \
+        localtime timezone os-release machine-id passwd group; do
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
 

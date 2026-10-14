@@ -331,9 +331,9 @@ cmd_remove() (
     local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
     local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
     _safe_managed_dir "$apps_dir" || { error "Refusing unsafe application directory: $apps_dir"; return 1; }
-    local resolved_id='' resolved_name='' id name ver installed origin
+    local resolved_id='' resolved_name='' id name ver origin
     if [[ -s "$db_file" ]]; then
-        while IFS='|' read -r id name ver installed origin; do
+        while IFS='|' read -r id name ver _installed origin; do
             if [[ "$id" == "$target" || "$name" == "$target" ]]; then
                 resolved_id="$id"; resolved_name="$name"; break
             fi
@@ -403,12 +403,13 @@ cmd_search() {
     arch="$(detect_arch)"
     case "$arch" in
         arm64|aarch64) arch_regex='arm64|aarch64|arm-64|armv8|arm64v8|all' ;;
-        x86_64|amd64) arch_regex='amd64|x86_64|x86-64|x64|all' ;;
+        x86_64|amd64)  arch_regex='amd64|x86_64|x86-64|x64|all' ;;
         armv7l|armhf)  arch_regex='armv7|armhf|armv7l|all' ;;
         *)             arch_regex="$arch|all" ;;
     esac
     info "Searching for '$query' across GitHub Releases and Local Repositories..."
 
+    # shellcheck disable=SC2034
     local -a global_targets=() global_types=() global_assets=() global_labels=()
     local display_idx=1 gh_query raw_results raw_count
     gh_query="$(printf '%s' "$query" | sed 's/ /+/g')"
@@ -476,7 +477,7 @@ cmd_search() {
                 local apt_pkg apt_desc
                 apt_pkg="$(awk '{print $1}' <<< "$line")"
                 apt_desc="$(cut -d' ' -f2- <<< "$line")"
-                global_targets[display_idx]="$apt_pkg"; global_types[display_idx]=APT; global_assets[display_idx]=''; global_labels[display_idx]="$apt_desc"
+                global_targets[display_idx]="$apt_pkg"; global_types[display_idx]=APT; global_assets[display_idx]=''
                 printf " \033[1;33m[%d]\033[0m \033[0;35m[4. APT]\033[0m \033[1m%-25s\033[0m\n     \033[0;90m%s\033[0m\n" \
                     "$display_idx" "$apt_pkg" "${apt_desc:0:70}"
                 ((display_idx++))
@@ -523,7 +524,7 @@ cmd_search() {
                 info 'Wrapping AppImage upstream release into LPK...'
                 local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
                 mkdir -p "$cache_home" || continue
-                local app_bin="${target##*/}" tmp_ai wrap_root out_lpk
+                local app_bin="${global_labels[idx]}" tmp_ai wrap_root out_lpk
                 tmp_ai="$(mktemp "$cache_home/stream_ai_XXXXXX.AppImage")" || continue
                 if ! curl -fL --retry 2 --connect-timeout 15 --progress-bar "$asset_url" -o "$tmp_ai"; then
                     error "Failed to download $asset_url"; rm -f -- "$tmp_ai"; continue
