@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/pack.sh - Standalone LPK Packaging & Dynamic ELF Library Bundler
-# ULPM v4.1.0 (with Pre-Structured, RootFS & Recalbox bypass support)
+# ULPM v4.1.0 Unified Architecture (Pre-Structured, RootFS & Offset-Safe AppImage)
 # ==============================================================================
 
 validate_manifest() {
@@ -21,7 +21,7 @@ validate_manifest() {
     if ! jq -e --argjson max_version "$max_version" '
         type == "object" and
         ((.format_version // 1) | type == "number" and . >= 1 and . <= $max_version and floor == .) and
-        ((.id // .name) | type == "string" and length > 0)
+        ((.name // .id) | type == "string" and length > 0)
     ' "$manifest" >/dev/null 2>&1; then
         error "Manifest validation failed."
         return 1
@@ -64,6 +64,7 @@ bundle_elf_libraries() {
                 [[ "$lib_path" == /* && -f "$lib_path" ]] || continue
                 bname="$(basename -- "$lib_path")"
 
+                # Exclude core system and graphics stack to prevent ABI collisions
                 if [[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libresolv\.so|libGL|libEGL|libdrm|libvulkan|libX11|libasound|libwayland) ]]; then
                     continue
                 fi
@@ -78,15 +79,15 @@ bundle_elf_libraries() {
             done < <(
                 "$loader" --list "$bin" 2>/dev/null |
                 awk '
-                {
-                    for (i = 1; i <= NF; i++) {
-                        token = $i
-                        if (token ~ /^\//) {
-                            sub(/[),;]+$/, "", token)
-                            print token
+                    {
+                        for (i = 1; i <= NF; i++) {
+                            token = $i
+                            if (token ~ /^\//) {
+                                sub(/[),;]+$/, "", token)
+                                print token
+                            }
                         }
                     }
-                }
                 ' | sort -u
             )
         done < <(find "$root_dir" -xdev -type f \( -perm -0100 -o -name '*.so' -o -name '*.so.*' \) -print0 2>/dev/null)
@@ -96,6 +97,17 @@ bundle_elf_libraries() {
         warn "ELF dependency bundling reached its iteration limit ($max_iterations)."
     fi
     return 0
+}
+
+# Byte offset calculation of SquashFS inside Type-2 AppImage (safe non-exec unpacking)
+appimage_squashfs_offset() {
+    local f="$1" hdr shoff shentsize shnum
+    hdr="$(readelf -h "$f" 2>/dev/null)" || return 1
+    shoff="$(sed -nE 's/^ *Start of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
+    shentsize="$(sed -nE 's/^ *Size of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
+    shnum="$(sed -nE 's/^ *Number of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
+    [[ "$shoff" =~ ^[0-9]+$ && "$shentsize" =~ ^[0-9]+$ && "$shnum" =~ ^[0-9]+$ ]] || return 1
+    echo $((shoff + shentsize * shnum))
 }
 
 _extract_zip_safely() {
@@ -173,13 +185,28 @@ extract_any_payload() {
         cp -a -- "$src/." "$dest/"
     elif [[ "$src" =~ \.(appimage|AppImage)$ ]]; then
         check_dependencies unsquashfs || return 1
-        if ! (cd "$dest" && "$src" --appimage-extract >/dev/null 2>&1); then
-            rm -rf -- "$dest/squashfs-root"
-            unsquashfs -d "$dest/squashfs-root" "$src" >/dev/null 2>&1 || {
-                error "Failed to extract AppImage payload: $src"
-                return 1
-            }
+        local extracted=false
+
+        # Default safe non-executing extraction via ELF section offset
+        if [[ "${ULPM_ALLOW_APPIMAGE_EXEC:-0}" != "1" ]] && command -v readelf >/dev/null 2>&1; then
+            local sq_off
+            if sq_off="$(appimage_squashfs_offset "$src")"; then
+                if unsquashfs -f -no-progress -d "$dest/squashfs-root" -o "$sq_off" "$src" >/dev/null 2>&1; then
+                    extracted=true
+                fi
+            fi
         fi
+
+        # Fallback to AppImage self-extract if offset failed or explicitly permitted
+        if [[ "$extracted" != "true" ]]; then
+            if ! (cd "$dest" && "$src" --appimage-extract >/dev/null 2>&1); then
+                unsquashfs -d "$dest/squashfs-root" "$src" >/dev/null 2>&1 || {
+                    error "Failed to extract AppImage payload: $src"
+                    return 1
+                }
+            fi
+        fi
+
         if [[ -d "$dest/squashfs-root" ]]; then
             cp -a -- "$dest/squashfs-root/." "$dest/" || return 1
             rm -rf -- "$dest/squashfs-root"
@@ -255,9 +282,9 @@ cmd_pack() (
     local arch
     arch="$(detect_arch)" || arch="x86_64"
 
-    # ==========================================================================
+    # ======================================================================
     # CASE 1: PRE-STRUCTURED DIRECTORY (meta/manifest.json or manifest.json present)
-    # ==========================================================================
+    # ======================================================================
     if [[ -d "$src" ]] && { [[ -f "$src/meta/manifest.json" ]] || [[ -f "$src/manifest.json" ]]; }; then
         info "Pre-structured package directory detected ($src)."
 
@@ -267,9 +294,13 @@ cmd_pack() (
         validate_manifest "$manifest_path" || return 1
 
         local app_name pkg_type
-        app_name="$(jq -r '.id // .name // empty' "$manifest_path" 2>/dev/null || true)"
+        # Strict priority to .name over .id
+        app_name="$(jq -r '.name // .id // empty' "$manifest_path" 2>/dev/null || true)"
         pkg_type="$(jq -r '.type // .kind // empty' "$manifest_path" 2>/dev/null || true)"
         app_name="${raw_name:-${app_name:-$(basename "$src")}}"
+
+        # Strip namespace prefixes if present
+        app_name="${app_name#io.lpk.}"
         app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
 
         out_lpk="${out_lpk:-${app_name}_${arch}.lpk}"
@@ -325,13 +356,14 @@ cmd_pack() (
         return 0
     fi
 
-    # ==========================================================================
+    # ======================================================================
     # CASE 2: RAW DIRECTORY OR ARCHIVE (Standard automatic assembly mode)
-    # ==========================================================================
+    # ======================================================================
     local base app_name app_id
     base="$(basename -- "$src")"
     base="${base%%.*}"
     app_name="${raw_name:-$base}"
+    app_name="${app_name#io.lpk.}"
     app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
     [[ -n "$app_name" ]] || {
         error "Application name is empty or contains no supported characters."

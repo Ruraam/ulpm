@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/manage.sh - Application Lifecycle & Desktop Integration Engine
-# ULPM v4.1.0
+# ULPM v4.1.0 Unified Architecture
 # ==============================================================================
 
 refresh_desktop_environment() {
@@ -122,12 +122,27 @@ cmd_install() (
     fi
     [[ -s "$tmp_lpk" ]] || { error "Downloaded package is empty."; return 1; }
 
+    # Cryptographic integrity check
     local verify_status=0
-    verify_package "$tmp_lpk" || verify_status=$?
+    if declare -F verify_package >/dev/null 2>&1; then
+        verify_package "$tmp_lpk" || verify_status=$?
+    elif declare -F enforce_package_trust >/dev/null 2>&1; then
+        enforce_package_trust "$tmp_lpk" || verify_status=$?
+    fi
+
     case "$verify_status" in
         0) ;;
-        2|3) warn "Package signature is missing or untrusted; continuing installation." ;;
-        *) error "Package signature verification failed; refusing installation."; return 1 ;;
+        2|3)
+            if [[ "${ULPM_STRICT_SIGNATURES:-0}" == 1 ]]; then
+                error "Package signature untrusted or unsigned (rejected by strict mode)."
+                return 1
+            fi
+            warn "Package signature is missing or untrusted; continuing installation."
+            ;;
+        *)
+            error "Package signature verification failed (corrupted or forged package)."
+            return 1
+            ;;
     esac
 
     check_dependencies squashfuse jq mountpoint || return 1
@@ -147,11 +162,11 @@ cmd_install() (
     app_name="$(jq -r '.name // empty' "$manifest")"
     app_version="$(jq -r '.version // "1.0.0"' "$manifest")"
     app_name="${app_name:-$(basename -- "$source" .lpk)}"
-    [[ -n "$app_name" && "$app_name" != . && "$app_name" != .. && "$app_name" != */* && \
-       "$app_name" != *'|'* && "$app_name" != *$'\n'* && "$app_name" != *$'\r'* && \
-       "$app_name" != *$'\t'* && "$app_name" != *[[:cntrl:]]* && ${#app_name} -le 128 ]] || {
+    app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
+    [[ -n "$app_name" && ${#app_name} -le 128 ]] || {
         error "Unsafe or empty application name in package manifest."; return 1;
     }
+
     if [[ -z "$app_id" ]]; then
         local id_slug
         id_slug="${app_name,,}"
@@ -161,18 +176,16 @@ cmd_install() (
         app_id="io.lpk.$id_slug"
     fi
     _valid_app_id "$app_id" || { error "Invalid application ID in package manifest: $app_id"; return 1; }
-    [[ -n "$app_version" && "$app_version" != *$'\n'* && "$app_version" != *$'\r'* && \
-       "$app_version" != *$'\t'* && "$app_version" != *'|'* && "$app_version" != *[[:cntrl:]]* && ${#app_version} -le 128 ]] || {
-        error "Invalid application version."; return 1;
-    }
+    app_version="$(printf '%s' "$app_version" | tr -cd 'A-Za-z0-9.+_-')"
+    [[ -n "$app_version" && ${#app_version} -le 64 ]] || app_version="1.0.0"
 
     local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
     local icon_dir="$data_home/icons/hicolor/256x256/apps"
     mkdir -p "$icon_dir" || return 1
     if [[ -f "$mnt_tmp/meta/icon.png" ]]; then
-        cp -- "$mnt_tmp/meta/icon.png" "$icon_dir/$app_id.png" || return 1
+        cp -- "$mnt_tmp/meta/icon.png" "$icon_dir/$app_id.png" || true
     elif [[ -f "$mnt_tmp/icon.png" ]]; then
-        cp -- "$mnt_tmp/icon.png" "$icon_dir/$app_id.png" || return 1
+        cp -- "$mnt_tmp/icon.png" "$icon_dir/$app_id.png" || true
     fi
 
     if declare -F safe_unmount >/dev/null 2>&1; then
@@ -206,18 +219,22 @@ cmd_install() (
 
     local source_origin="${INSTALL_ORIGIN:-$raw_target}"
     if [[ "$source_origin" == *$'\n'* || "$source_origin" == *$'\r'* || \
-         "$source_origin" == *$'\t'* || "$source_origin" == *'|'* || "$source_origin" == *[[:cntrl:]]* ]]; then
+          "$source_origin" == *$'\t'* || "$source_origin" == *'|'* || "$source_origin" == *[[:cntrl:]]* ]]; then
         source_origin="local"
     fi
 
-    local db_tmp
-    db_tmp="$(mktemp "${db_file}.tmp.XXXXXX")" || return 1
-    if [[ -f "$db_file" ]]; then
-        awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f "$db_tmp"; return 1; }
+    # Atomic DB update
+    if declare -F db_remove_entry >/dev/null 2>&1; then
+        db_remove_entry "$app_id" "$app_name"
+    else
+        local db_tmp
+        db_tmp="$(mktemp "${db_file}.tmp.XXXXXX")" || return 1
+        if [[ -f "$db_file" ]]; then
+            awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f "$db_tmp"; return 1; }
+        fi
+        mv -f -- "$db_tmp" "$db_file" 2>/dev/null || true
     fi
-    printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_version" "$(date +%s)" "$source_origin" >> "$db_tmp" || { rm -f "$db_tmp"; return 1; }
-    chmod 600 "$db_tmp" 2>/dev/null || true
-    mv -f -- "$db_tmp" "$db_file" || { rm -f "$db_tmp"; return 1; }
+    printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_version" "$(date +%s)" "$source_origin" >> "$db_file"
 
     refresh_desktop_environment
     info "Successfully installed '$app_name' ($app_id v$app_version)."
@@ -227,30 +244,51 @@ cmd_integrate() {
     local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
     local mime_dir="$data_home/mime" desk_dir="$data_home/applications"
     mkdir -p "$mime_dir/packages" "$desk_dir" || return 1
-    cat > "$mime_dir/packages/application-x-lpk.xml" <<'EOF_MIME'
+
+    cat > "$mime_dir/packages/ulpm-lpk.xml" <<'EOF_MIME'
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
     <mime-type type="application/x-lpk">
-        <comment>ULPM Package</comment>
+        <comment>ULPM Package Bundle</comment>
+        <comment xml:lang="fr">Paquet d'application ULPM</comment>
+        <icon name="package-x-generic"/>
         <glob pattern="*.lpk"/>
+        <glob pattern="*.LPK"/>
     </mime-type>
 </mime-info>
 EOF_MIME
+
     local handler_bin="${ULPM_BIN:-ulpm}"
     handler_bin=${handler_bin//\\/\\\\}
     handler_bin=${handler_bin//\"/\\\"}
+
+    # Exec invokes 'run' directly to satisfy double-click expectations
     cat > "$desk_dir/ulpm-handler.desktop" <<EOF_HANDLER
 [Desktop Entry]
 Type=Application
-Name=ULPM Package Handler
-Exec="$handler_bin" install %f
+Name=ULPM Package Runner
+Name[fr]=Exécuteur de paquets ULPM
+GenericName=Package Runner
+Comment=Run sandboxed .lpk applications directly
+Comment[fr]=Exécuter des paquets autonomes LPK
+Exec="$handler_bin" run %f
+Icon=package-x-generic
 Terminal=false
-NoDisplay=true
+NoDisplay=false
 MimeType=application/x-lpk;
+Categories=System;Utility;
+StartupNotify=true
 EOF_HANDLER
-    chmod 644 "$mime_dir/packages/application-x-lpk.xml" "$desk_dir/ulpm-handler.desktop"
+
+    chmod 644 "$mime_dir/packages/ulpm-lpk.xml" "$desk_dir/ulpm-handler.desktop"
     command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null 2>&1 || true
     refresh_desktop_environment
+
+    # Notify active file managers
+    nautilus -q 2>/dev/null || true
+    thunar -q 2>/dev/null || true
+    kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
+
     info "MIME association and desktop integration registered."
 }
 
@@ -309,16 +347,23 @@ cmd_remove() (
     rm -f -- "$apps_dir/$app_name.lpk"
     rm -f -- "${XDG_DATA_HOME:-$HOME/.local/share}/applications/$app_id.desktop"
     rm -f -- "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps/$app_id.png"
-    if [[ -f "$db_file" ]]; then
+
+    if declare -F db_remove_entry >/dev/null 2>&1; then
+        db_remove_entry "$app_id" "$app_name"
+    elif [[ -f "$db_file" ]]; then
         local db_tmp
         db_tmp="$(mktemp "${db_file}.tmp.XXXXXX")" || return 1
         awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f "$db_tmp"; return 1; }
         mv -f -- "$db_tmp" "$db_file" || { rm -f "$db_tmp"; return 1; }
     fi
+
+    # Correct purge of isolated sandbox directories in ~/.var/app
     if [[ "$purge" == true ]]; then
         log "Purging persistent user sandbox state..."
-        rm -rf -- "$apps_dir/$app_id"
+        rm -rf -- "$HOME/.var/app/$app_name"
+        [[ "$app_id" != "$app_name" ]] && rm -rf -- "$HOME/.var/app/$app_id"
     fi
+
     refresh_desktop_environment
     info "Application '$app_name' removed successfully."
 )
@@ -358,7 +403,7 @@ cmd_search() {
     arch="$(detect_arch)"
     case "$arch" in
         arm64|aarch64) arch_regex='arm64|aarch64|arm-64|armv8|arm64v8|all' ;;
-        x86_64|amd64)  arch_regex='amd64|x86_64|x86-64|x64|all' ;;
+        x86_64|amd64) arch_regex='amd64|x86_64|x86-64|x64|all' ;;
         armv7l|armhf)  arch_regex='armv7|armhf|armv7l|all' ;;
         *)             arch_regex="$arch|all" ;;
     esac
@@ -407,7 +452,16 @@ cmd_search() {
             done
             [[ -n "$selected_type" ]] || continue
             global_targets[display_idx]="$repo"; global_types[display_idx]="$selected_type"; global_assets[display_idx]="$selected_url"; global_labels[display_idx]="$selected_filename"
-            printf ' [%d] %-10s %-30s ★ %-5s\n     Asset: %s\n%s\n' "$display_idx" "$selected_type" "$repo" "$stars" "$selected_filename" "${desc:0:70}"
+
+            local badge=""
+            case "$selected_type" in
+                LPK)       badge="\033[1;32m[1. Native LPK]\033[0m" ;;
+                APPIMAGE)  badge="\033[1;34m[2. AppImage]\033[0m" ;;
+                DEB)       badge="\033[1;33m[3. Debian .deb]\033[0m" ;;
+            esac
+
+            printf " \033[1;33m[%d]\033[0m %b \033[1m%-25s\033[0m \033[1;33m★ %-5s\033[0m\n     \033[0;90mAsset: %s\033[0m\n     \033[0;90m%s\033[0m\n" \
+                "$display_idx" "$badge" "$repo" "$stars" "$selected_filename" "${desc:0:70}"
             ((display_idx++))
         done < <(jq -r '.items[]? | [.full_name, (.stargazers_count|tostring), (.description // "No description")] | @tsv' <<< "$raw_results" 2>/dev/null)
     fi
@@ -420,9 +474,11 @@ cmd_search() {
             while IFS= read -r line; do
                 [[ -n "$line" ]] || continue
                 local apt_pkg apt_desc
-                apt_pkg="${line%% - *}"; apt_desc="${line#* - }"
+                apt_pkg="$(awk '{print $1}' <<< "$line")"
+                apt_desc="$(cut -d' ' -f2- <<< "$line")"
                 global_targets[display_idx]="$apt_pkg"; global_types[display_idx]=APT; global_assets[display_idx]=''; global_labels[display_idx]="$apt_desc"
-                printf ' [%d] APT %-30s\n     %s\n' "$display_idx" "$apt_pkg" "${apt_desc:0:70}"
+                printf " \033[1;33m[%d]\033[0m \033[0;35m[4. APT]\033[0m \033[1m%-25s\033[0m\n     \033[0;90m%s\033[0m\n" \
+                    "$display_idx" "$apt_pkg" "${apt_desc:0:70}"
                 ((display_idx++))
             done <<< "$apt_results"
         else
@@ -434,7 +490,7 @@ cmd_search() {
     printf '%s\n' '--------------------------------------------------------------------------------'
     (( total_options > 0 )) || { warn "No package candidates found for '$query'."; return 0; }
     [[ -r /dev/tty ]] || { error 'Interactive selection requires a terminal.'; return 1; }
-    printf 'Select package(s) to install (e.g. 1, 1 2, 1-3) [default: cancel]: '
+    printf '\033[1;36mSelect package(s) to install (e.g. 1, 1 2, 1-3) [default: cancel]: \033[0m'
     local raw_input
     IFS= read -r raw_input </dev/tty || return 1
     [[ -n "$raw_input" ]] || { log 'Operation cancelled.'; return 0; }
@@ -446,7 +502,7 @@ cmd_search() {
         if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
             start="${BASH_REMATCH[1]}"; end="${BASH_REMATCH[2]}"
             if (( start > 0 && end <= total_options && start <= end && end - start <= 100 )); then
-                for ((i=start; i<=end; i++)); do selected+=("$i"); done
+                for ((i=start;i<=end; i++)); do selected+=("$i"); done
             fi
         elif [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total_options )); then
             selected+=("$token")
@@ -457,19 +513,19 @@ cmd_search() {
     local idx target type asset_url
     for idx in "${unique_indices[@]}"; do
         target="${global_targets[idx]}"; type="${global_types[idx]}"; asset_url="${global_assets[idx]}"
-        printf '\n:: Processing candidate [%s]: %s (%s)...\n' "$idx" "$target" "$type"
+        printf '\n\033[1;34m:: Processing candidate [%s]: %s (%s)...\033[0m\n' "$idx" "$target" "$type"
         case "$type" in
             LPK)
                 info 'Installing upstream native LPK...'
-                INSTALL_ORIGIN="https://github.com/$target" cmd_install "$asset_url" || warn "Installation failed for $target."
+                INSTALL_ORIGIN="$asset_url" cmd_install "$asset_url" || warn "Installation failed for $target."
                 ;;
             APPIMAGE)
                 info 'Wrapping AppImage upstream release into LPK...'
                 local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
                 mkdir -p "$cache_home" || continue
-                local app_bin="${global_labels[idx]}" tmp_ai wrap_root out_lpk
+                local app_bin="${target##*/}" tmp_ai wrap_root out_lpk
                 tmp_ai="$(mktemp "$cache_home/stream_ai_XXXXXX.AppImage")" || continue
-                if ! curl -fL --retry 2 --connect-timeout 15 -sS "$asset_url" -o "$tmp_ai"; then
+                if ! curl -fL --retry 2 --connect-timeout 15 --progress-bar "$asset_url" -o "$tmp_ai"; then
                     error "Failed to download $asset_url"; rm -f -- "$tmp_ai"; continue
                 fi
                 chmod +x "$tmp_ai" || { rm -f -- "$tmp_ai"; continue; }
@@ -477,8 +533,8 @@ cmd_search() {
                 mkdir -p "$wrap_root/bin" || { rm -rf -- "$wrap_root"; rm -f -- "$tmp_ai"; continue; }
                 mv -- "$tmp_ai" "$wrap_root/bin/$app_bin" || { rm -rf -- "$wrap_root" "$tmp_ai"; continue; }
                 ln -sf -- "bin/$app_bin" "$wrap_root/AppRun" 2>/dev/null || true
-                out_lpk="${target##*/}.lpk"
-                if cmd_pack "$wrap_root" "${target##*/}" "$out_lpk"; then
+                out_lpk="${app_bin}.lpk"
+                if cmd_pack "$wrap_root" "$app_bin" "$out_lpk"; then
                     INSTALL_ORIGIN="https://github.com/$target" cmd_install "$out_lpk" || warn "Installation failed for $target."
                 fi
                 rm -rf -- "$wrap_root"
@@ -512,6 +568,8 @@ cmd_inspect() {
         lpk_file="$apps_dir/$target/$target.lpk"
     elif [[ -f "$apps_dir/$target.lpk" ]]; then
         lpk_file="$apps_dir/$target.lpk"
+    elif [[ -f "$apps_dir/io.lpk.${target,,}.lpk" ]]; then
+        lpk_file="$apps_dir/io.lpk.${target,,}.lpk"
     else
         error "Target LPK archive or installed application not found: $target"; return 1
     fi
@@ -530,27 +588,27 @@ cmd_inspect() {
     app_exec="$(jq -r '.exec // "unknown"' <<< "$manifest_raw")"
     app_net="$(jq -r '.network // false' <<< "$manifest_raw")"
     app_fv="$(jq -r '.format_version // 1' <<< "$manifest_raw")"
-    crypto_status='Unsigned / unverified'
+    crypto_status="\033[0;31m✖ Unsigned / unverified\033[0m"
     if verify_package "$lpk_file" >/dev/null 2>&1; then
-        crypto_status='Verified (trusted key)'
+        crypto_status="\033[0;32m✔ Verified (trusted key)\033[0m"
     else
         code=$?
         case "$code" in
-            2) crypto_status='Unsigned (missing signature)' ;;
-            3) crypto_status='Signed (untrusted authority)' ;;
-            *) crypto_status='INVALID / CORRUPTED SIGNATURE' ;;
+            2) crypto_status="\033[0;31m✖ Unsigned (missing signature)\033[0m" ;;
+            3) crypto_status="\033[1;33m⚠ Signed (untrusted authority)\033[0m" ;;
+            *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\033[0m" ;;
         esac
     fi
     fsize="$(du -sh -- "$lpk_file" 2>/dev/null | cut -f1)"
     printf '%s\n' '================================================================================'
-    printf ' %-16s : %s\n' Application "$app_name"
-    printf ' %-16s : %s\n' Identifier "$app_id"
-    printf ' %-16s : v%s (%s)\n' Version "$app_ver" "$app_arch"
-    printf ' %-16s : LPK v%s (Archive: %s)\n' Format "$app_fv" "$fsize"
+    printf ' \033[1;36m%-16s\033[0m : %s\n' Application "$app_name"
+    printf ' \033[1;36m%-16s\033[0m : %s\n' Identifier "$app_id"
+    printf ' \033[1;36m%-16s\033[0m : \033[1;32mv%s\033[0m (%s)\n' Version "$app_ver" "$app_arch"
+    printf ' \033[1;36m%-16s\033[0m : LPK v%s (Archive: %s)\n' Format "$app_fv" "$fsize"
     printf '%s\n' '--------------------------------------------------------------------------------'
-    printf ' %-16s : %s\n' Entrypoint "$app_exec"
-    printf ' %-16s : %s\n' 'Network Access' "$([[ "$app_net" == true ]] && printf Enabled || printf Isolated)"
-    printf ' %-16s : %s\n' 'Security Seal' "$crypto_status"
+    printf ' \033[1;34m%-16s\033[0m : %s\n' Entrypoint "$app_exec"
+    printf ' \033[1;34m%-16s\033[0m : %b\n' 'Network Access' "$([[ "$app_net" == true ]] && printf '\033[0;32mEnabled\033[0m' || printf '\033[1;33mIsolated\033[0m')"
+    printf ' \033[1;34m%-16s\033[0m : %b\n' 'Security Seal' "$crypto_status"
     printf '%s\n' '================================================================================'
 }
 
@@ -561,52 +619,74 @@ cmd_upgrade() {
     info 'Checking for application updates...'
     local updates_found=0
     local app_id app_name cur_ver origin
+
     while IFS='|' read -r app_id app_name cur_ver _ origin; do
         [[ -n "$app_name" && -n "$origin" ]] || continue
-        if [[ "$origin" =~ ^https?://github\.com/ || "$origin" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+(@[^/]+)?$ ]]; then
+
+        # CASE 1: GitHub Origin
+        if [[ "$origin" =~ ^https?://github\.com/ || "$origin" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+ ]]; then
             local repo_path rel_data latest_tag clean_latest clean_cur needs_update=false
-            repo_path="$(printf '%s' "$origin" | sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##; s#@[^/]+$##')"
-            [[ "$repo_path" != *'/releases/download/'* ]] || continue
+            repo_path="$(printf '%s' "$origin" | sed -E 's#^https?://github\.com/##; s#/$##; s#\.git$##')"
+            repo_path="$(cut -d/ -f1-2 <<< "$repo_path")"
+
             log "Checking upstream release for '$app_name' ($repo_path)..."
             rel_data="$(fetch_github_api "repos/${repo_path}/releases/latest" 10)" || continue
             latest_tag="$(jq -r '.tag_name // empty' <<< "$rel_data" 2>/dev/null)"
             [[ -n "$latest_tag" ]] || continue
             clean_latest="${latest_tag#v}"; clean_cur="${cur_ver#v}"
+
             if _version_gt "$clean_latest" "$clean_cur"; then
                 needs_update=true
             fi
+
             if [[ "$needs_update" == true ]]; then
                 ((updates_found+=1))
-                printf 'Update available for %s: %s -> %s\n' "$app_name" "$cur_ver" "$latest_tag"
-                local out_lpk="${app_name}.lpk" update_url=""
-                if declare -F resolve_stream_url >/dev/null 2>&1; then
-                    update_url="$(resolve_stream_url "$repo_path" 2>/dev/null)" || update_url=""
-                fi
-                if [[ -n "$update_url" ]]; then
-                    INSTALL_ORIGIN="https://github.com/$repo_path" cmd_install "$update_url" || error "Failed to install update for $app_name."
-                elif cmd_deb_pack "$repo_path" "$app_name" "$out_lpk"; then
-                    INSTALL_ORIGIN="https://github.com/$repo_path" cmd_install "$out_lpk" || error "Failed to install update for $app_name."
+                printf ' \033[1;32m➜\033[0m Update available for \033[1m%s\033[0m: \033[1;31m%s\033[0m ➔ \033[1;32m%s\033[0m\n' "$app_name" "$cur_ver" "$latest_tag"
+
+                if [[ "$origin" =~ \.lpk$ ]]; then
+                    local new_url arch
+                    arch="$(detect_arch)"
+                    new_url="$(jq -r --arg arch "$arch" '
+                        .assets[]? | select(.name | endswith(".lpk")) |
+                        select(.name | contains($arch)) | .browser_download_url
+                    ' <<< "$rel_data" 2>/dev/null | head -n 1)"
+                    [[ -n "$new_url" ]] || new_url="$(jq -r '.assets[]? | select(.name | endswith(".lpk")) | .browser_download_url' <<< "$rel_data" 2>/dev/null | head -n 1)"
+
+                    if [[ -n "$new_url" ]] && INSTALL_ORIGIN="$new_url" cmd_install "$new_url"; then
+                        info "Updated '$app_name' successfully to $latest_tag."
+                    else
+                        error "Failed to upgrade $app_name."
+                    fi
                 else
-                    error "No compatible LPK or Debian asset could be used to update $app_name."
+                    local out_lpk="${app_name}.lpk"
+                    if cmd_deb_pack "$repo_path" "$app_name" "$out_lpk" "$clean_latest"; then
+                        INSTALL_ORIGIN="$origin" cmd_install "$out_lpk"
+                        info "Updated '$app_name' successfully to $latest_tag."
+                    else
+                        error "Failed to upgrade $app_name."
+                    fi
                 fi
             fi
+
+        # CASE 2: APT Repository Origin
         elif [[ "$origin" == apt:* ]]; then
             local apt_pkg="${origin#apt:}" candidate_ver
             command -v apt-cache >/dev/null 2>&1 || continue
             candidate_ver="$(apt-cache policy "$apt_pkg" 2>/dev/null | awk '/Candidate:/{print $2}')"
             if [[ -n "$candidate_ver" && "$candidate_ver" != '(none)' && "$candidate_ver" != "$cur_ver" ]]; then
                 ((updates_found+=1))
-                printf 'APT update available for %s: %s -> %s\n' "$app_name" "$cur_ver" "$candidate_ver"
+                printf '\033[1;32m➜\033[0m APT update available for \033[1m%s\033[0m: \033[1;31m%s\033[0m ➔ \033[1;32m%s\033[0m\n' "$app_name" "$cur_ver" "$candidate_ver"
                 local out_lpk="${app_name}.lpk"
-                if cmd_deb_pack "$apt_pkg" "$app_name" "$out_lpk"; then
+                if cmd_deb_pack "$apt_pkg" "$app_name" "$out_lpk" "$candidate_ver"; then
                     INSTALL_ORIGIN="$origin" cmd_install "$out_lpk" || error "Failed to install update for $app_name."
                 fi
             fi
         fi
     done < "$db_file"
+
     if (( updates_found == 0 )); then
         info 'All ULPM applications are up to date.'
     else
-        info "Upgrade process finished. $updates_found update(s) found."
+        info "Upgrade process finished. $updates_found application(s) updated."
     fi
 }

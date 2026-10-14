@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/deb.sh - Debian Package Downloader & Converter Engine
-# ULPM v4.1.0
+# ULPM v4.1.0 Unified Architecture
 # ==============================================================================
 
 # Extract a .deb archive using dpkg-deb or fallback to ar+tar
@@ -143,11 +143,11 @@ _deb_download_direct_lib_deps() {
     local -a deps=()
     mapfile -t deps < <(
         apt-cache depends --no-recommends --no-suggests "$package_name" 2>/dev/null \
-        | awk '/^[[:space:]]*Depends:[[:space:]]+lib/ {print $2}' \
-        | sed -E 's/^<([^>]+)>$/\1/' \
-        | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
-        | grep -vE '^<.*>$' \
-        | sort -u
+            | awk '/^[[:space:]]*Depends:[[:space:]]+lib/ {print $2}' \
+            | sed -E 's/^<([^>]+)>$/\1/' \
+            | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
+            | grep -vE '^<.*>$' \
+            | sort -u
     )
 
     if ((${#deps[@]} > 0)); then
@@ -160,10 +160,11 @@ cmd_deb_pack() {
     local pkg_input="${1:-}"
     local app_name_hint="${2:-}"
     local out_pkg="${3:-}"
+    local pkg_ver="${4:-}"
     local build_dir
 
     [[ -n "$pkg_input" ]] || {
-        error "Usage: ulpm deb-pack <pkg|file.deb|github_repo> [name] [out.lpk]"
+        error "Usage: ulpm deb-pack <pkg|file.deb|github_repo> [name] [out.lpk] [version]"
         return 1
     }
 
@@ -177,14 +178,15 @@ cmd_deb_pack() {
         return 1
     }
 
-    _cmd_deb_pack_work "$pkg_input" "$app_name_hint" "$out_pkg" "$build_dir"
+    _cmd_deb_pack_work "$pkg_input" "$app_name_hint" "$out_pkg" "$pkg_ver" "$build_dir"
 }
 
 _cmd_deb_pack_work() (
     local pkg_input="${1:-}"
     local app_name_hint="${2:-}"
     local out_pkg="${3:-}"
-    local build_dir="${4:-}"
+    local pkg_ver="${4:-}"
+    local build_dir="${5:-}"
     local deb_dir="$build_dir/debs"
     local root_dir="$build_dir/root"
     local app_name="$app_name_hint"
@@ -236,6 +238,7 @@ _cmd_deb_pack_work() (
         log "Processing local Debian package: $(basename "$pkg_input")"
         extracted_name="$(_deb_read_control_field "$pkg_input" Package)"
         [[ -n "$app_name" ]] || app_name="${extracted_name:-$(basename "$pkg_input" .deb)}"
+        [[ -n "$pkg_ver" ]] || pkg_ver="$(_deb_read_control_field "$pkg_input" Version)"
 
         if [[ ! -f "$deb_dir/$(basename "$pkg_input")" ]]; then
             cp -- "$pkg_input" "$deb_dir/" || {
@@ -273,6 +276,21 @@ _cmd_deb_pack_work() (
         return 1
     fi
 
+    # If version wasn't specified or resolved yet, look at the primary downloaded deb
+    if [[ -z "$pkg_ver" ]]; then
+        for deb_file in "${downloaded_debs[@]}"; do
+            local cur_pkg
+            cur_pkg="$(_deb_read_control_field "$deb_file" Package)"
+            if [[ "$cur_pkg" == "$app_name" || "$cur_pkg" == "$extracted_name" ]]; then
+                pkg_ver="$(_deb_read_control_field "$deb_file" Version)"
+                break
+            fi
+        done
+        [[ -n "$pkg_ver" ]] || pkg_ver="$(_deb_read_control_field "${downloaded_debs[0]}" Version)"
+    fi
+    # Sanitize version string for manifest compliance
+    pkg_ver="$(printf '%s' "${pkg_ver:-1.0.0}" | tr -cd 'A-Za-z0-9.+_-')"
+
     log "Extracting ${#downloaded_debs[@]} package archive(s)..."
     native_arch="$(dpkg --print-architecture 2>/dev/null || detect_arch 2>/dev/null || true)"
     for deb_file in "${downloaded_debs[@]}"; do
@@ -303,7 +321,7 @@ _cmd_deb_pack_work() (
     done
 
     # Fallback entrypoint if the binary name does not match $app_name exactly
-    if ((entry_found == 0)); then
+    if (( entry_found == 0 )); then
         while IFS= read -r -d '' cand_bin; do
             if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
                 mkdir -p -- "$root_dir/bin"
@@ -324,8 +342,8 @@ _cmd_deb_pack_work() (
         -name 'librt.so*' -o \
         -name 'libresolv.so*' -o \
         -name 'libm.so*' \
-    \) -delete 2>/dev/null || true
+        \) -delete 2>/dev/null || true
 
-    log "Handing over payload to bundler..."
-    cmd_pack "$root_dir" "$app_name" "$out_pkg"
+    log "Handing over payload to bundler (Version: $pkg_ver)..."
+    cmd_pack "$root_dir" "$app_name" "$out_pkg" "$pkg_ver"
 )

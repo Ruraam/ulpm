@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/stream.sh - Ephemeral RAM Streaming Engine
-# ULPM v4.1.0
+# ULPM v4.1.0 Unified Architecture
 # ==============================================================================
 
 resolve_stream_url() {
@@ -93,22 +93,26 @@ resolve_stream_url() {
         download_url="$(jq -er --arg arch_re "$arch_regex" --arg universal_re "$universal_regex" '
             if (.assets | type) != "array" then error("missing assets array") else . end
             | ([.assets[]? | select((.name | type) == "string")
-            | select(.name | test("\\.lpk$"; "i"))
-            | select(.name | test($arch_re; "i"))
-            | .browser_download_url? | select(type == "string")][0] // empty)
+               | select(.name | test("\\.lpk$"; "i"))
+               | select(.name | test($arch_re; "i"))
+               | .browser_download_url? | select(type == "string")][0] // empty)
             // ([.assets[]? | select((.name | type) == "string")
-            | select(.name | test("\\.lpk$"; "i"))
-            | select(.name | test($universal_re; "i"))
-            | .browser_download_url? | select(type == "string")][0] // empty)
+               | select(.name | test("\\.lpk$"; "i"))
+               | select(.name | test($universal_re; "i"))
+               | .browser_download_url? | select(type == "string")][0] // empty)
+            // ([.assets[]? | select((.name | type) == "string")
+               | select(.name | test("\\.lpk$"; "i"))
+               | .browser_download_url? | select(type == "string")][0] // empty)
             // empty
         ' <<< "$release_json" 2>/dev/null)" || download_url=""
 
         if [[ -z "$download_url" ]]; then
-            error "No architecture-compatible or universal .lpk asset found in ${owner}/${repo}."
+            error "No .lpk release asset found in ${owner}/${repo}."
             return 1
         fi
+
         if [[ ! "$download_url" =~ ^https://(github\.com|objects\.githubusercontent\.com|release-assets\.githubusercontent\.com)/ ]]; then
-            error "GitHub returned an unexpected asset download URL."
+            error "GitHub returned an unexpected asset download URL: $download_url"
             return 1
         fi
 
@@ -142,7 +146,7 @@ cmd_stream() (
         [[ "$free_kb" =~ ^[0-9]+$ ]] || free_kb=0
     fi
 
-    # Fall back if /dev/shm has less than 1 GB (1048576KB) free
+    # Fall back if /dev/shm has less than 1 GB (1048576 KB) free
     if (( free_kb < 1048576 )) || [[ ! -w "$ram_base" ]]; then
         ram_base="${XDG_RUNTIME_DIR:-${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/tmp}"
     fi

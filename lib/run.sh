@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/run.sh - Direct Sandbox Execution Dispatcher
-# ULPM v4.1.0
+# ULPM v4.1.0 Unified Architecture
 # ==============================================================================
 
 _run_resolve_target() {
@@ -12,22 +12,32 @@ _run_resolve_target() {
     if declare -F normalize_target >/dev/null 2>&1; then
         target="$(normalize_target "$target")"
     fi
+
+    # 1. Direct path to file
     if [[ -f "$target" ]]; then
         printf '%s\n' "$target"
         return 0
     fi
 
+    # 2. Direct directory lookups in apps directory
     if [[ -f "$apps_dir/$target/$target.lpk" ]]; then
         printf '%s\n' "$apps_dir/$target/$target.lpk"
         return 0
     elif [[ -f "$apps_dir/$target.lpk" ]]; then
         printf '%s\n' "$apps_dir/$target.lpk"
         return 0
+    elif [[ -f "$apps_dir/io.lpk.${target,,}.lpk" ]]; then
+        printf '%s\n' "$apps_dir/io.lpk.${target,,}.lpk"
+        return 0
+    elif [[ -f "$apps_dir/io.lpk.${target,,}/io.lpk.${target,,}.lpk" ]]; then
+        printf '%s\n' "$apps_dir/io.lpk.${target,,}/io.lpk.${target,,}.lpk"
+        return 0
     fi
 
+    # 3. Lookup inside installed.db
     if [[ -f "$db_file" ]]; then
-        local id name
-        while IFS='|' read -r id name _; do
+        local id name _rest
+        while IFS='|' read -r id name _rest; do
             if [[ "$id" == "$target" || "$name" == "$target" ]]; then
                 if [[ -f "$apps_dir/$name/$name.lpk" ]]; then
                     printf '%s\n' "$apps_dir/$name/$name.lpk"
@@ -75,7 +85,7 @@ cmd_run() {
                 sandbox_opts+=("--offline")
                 shift
                 ;;
-            --no-gpu|--no-audio|--no-gui)
+            --no-gpu|--no-audio|--no-gui|--no-input)
                 sandbox_opts+=("$arg")
                 shift
                 ;;
@@ -131,5 +141,9 @@ cmd_run() {
         return 1
     }
 
-    lpk_run_isolated "$resolved_target" "${sandbox_opts[@]}" -- "${app_args[@]}"
+    # Pass sandbox options FIRST, then resolved target, then application arguments
+    lpk_run_isolated \
+        ${sandbox_opts[@]+"${sandbox_opts[@]}"} \
+        "$resolved_target" \
+        -- ${app_args[@]+"${app_args[@]}"}
 }

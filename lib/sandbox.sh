@@ -1,54 +1,33 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/sandbox.sh - ULPM Hardened Bubblewrap Sandbox Runtime
-# Public entry points: lpk_is_rootfs, lpk_run_rootfs, lpk_run_isolated.
-# ULPM v4.1.0 (with Recalbox & Universal Downloads integrations)
+# lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
+# ULPM v4.1.0 Unified Architecture
 # ==============================================================================
 
-: "${ULPM_SANDBOX_RUNTIME_DIR:=${XDG_RUNTIME_DIR:-/tmp}/ulpm-${UID:-$(id -u)}}"
-: "${ULPM_SANDBOX_DOWNLOADS_LINKS:=1}"
-
+# Whitelist of environment variables forwarded into the sandbox
 ENV_WHITELIST=(
-    HOME USER LOGNAME SHELL LANG LANGUAGE TERM COLORTERM DISPLAY WAYLAND_DISPLAY
-    XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP
-    XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DESKTOP_DIR
-    XDG_DOCUMENTS_DIR XDG_DOWNLOAD_DIR XDG_MUSIC_DIR XDG_PICTURES_DIR XDG_PUBLICSHARE_DIR
-    XDG_TEMPLATES_DIR XDG_VIDEOS_DIR DBUS_SESSION_BUS_ADDRESS PULSE_SERVER
-    PIPEWIRE_REMOTE QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME GTK_THEME GDK_BACKEND
-    SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND LIBGL_ALWAYS_SOFTWARE __GLX_VENDOR_LIBRARY_NAME
+    HOME USER LOGNAME LANG LANGUAGE LC_ALL TZ TERM COLORTERM
+    DISPLAY XAUTHORITY WAYLAND_DISPLAY
+    XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
+    XDG_RUNTIME_DIR
+    GDK_BACKEND GDK_SCALE GDK_DPI_SCALE GTK_THEME
+    QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR
+    XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
+    __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD __VK_LAYER_NV_optimus
+    VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
     # Recalbox / Gaming specific variables
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
 )
 
-_ulpm_log() {
-    local level="$1"; shift
-    if declare -F "$level" >/dev/null 2>&1; then
-        "$level" "$@"
-    else
-        printf '[ULPM:%s] %s\n' "$level" "$*" >&2
-    fi
-}
-
-_ulpm_have() { command -v "$1" >/dev/null 2>&1; }
-
-_ulpm_abs_path() {
-    local path="$1"
-    if _ulpm_have realpath; then
-        realpath -m -- "$path" 2>/dev/null || printf '%s\n' "$path"
-    else
-        printf '%s\n' "$path"
-    fi
-}
-
 # ------------------------------------------------------------------------------
-# Universal Host Downloads Discovery & Linking (Multi-Language)
+# Universal Host Downloads Discovery & Linking (Multi-Language Aware)
 # ------------------------------------------------------------------------------
 
 resolve_host_downloads_dir() {
     local candidate=""
 
     # 1. Use xdg-user-dir if available
-    if _ulpm_have xdg-user-dir; then
+    if command -v xdg-user-dir &>/dev/null; then
         candidate="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
     fi
 
@@ -60,7 +39,7 @@ resolve_host_downloads_dir() {
         [[ -n "$raw" && -d "$raw" ]] && candidate="$raw"
     fi
 
-    # 3. Fallback detection of real multilingual directories
+    # 3. Multilingual fallback detection
     if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
         for name in "Téléchargements" "Downloads" "Descargas" "Download" "Scaricati"; do
             if [[ -d "$HOME/$name" ]]; then
@@ -70,12 +49,8 @@ resolve_host_downloads_dir() {
         done
     fi
 
-    # 4. Ultimate fallback
-    if [[ -z "$candidate" || "$candidate" == "$HOME" ]]; then
-        candidate="$HOME/Downloads"
-        mkdir -p -- "$candidate" 2>/dev/null || candidate="$HOME"
-    fi
-
+    candidate="${candidate:-$HOME/Downloads}"
+    mkdir -p "$candidate" 2>/dev/null || candidate="$HOME"
     printf '%s\n' "$candidate"
 }
 
@@ -85,9 +60,9 @@ setup_sandbox_downloads_links() {
     local dl_basename
     dl_basename="$(basename "$host_dl")"
 
-    mkdir -p -- "$target_home/$dl_basename" 2>/dev/null || true
+    mkdir -p "$target_home/$dl_basename" 2>/dev/null || true
 
-    # Make cross-compatibility links inside the isolated HOME
+    # Cross-compatibility symlinks inside the virtual HOME
     if [[ "$dl_basename" != "Downloads" ]]; then
         ln -snf "$dl_basename" "$target_home/Downloads" 2>/dev/null || true
     fi
@@ -97,73 +72,22 @@ setup_sandbox_downloads_links() {
 }
 
 session_bus_socket() {
-    if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
-        case "$DBUS_SESSION_BUS_ADDRESS" in
-            unix:path=*)
-                printf '%s\n' "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" | cut -d, -f1
-                return 0
-                ;;
-            unix:abstract=*)
-                return 1
-                ;;
-        esac
+    local run_user_dir="$1"
+    local addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}"
+    if [[ "$addr" =~ ^unix:path=([^,]+) ]] && [[ -S "${BASH_REMATCH[1]}" ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
     fi
-    if [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/bus" ]]; then
-        printf '%s\n' "$XDG_RUNTIME_DIR/bus"
+    if [[ -n "$run_user_dir" && -S "$run_user_dir/bus" ]]; then
+        printf '%s\n' "$run_user_dir/bus"
         return 0
     fi
     return 1
 }
 
-lpk_is_rootfs() {
-    local path="${1:-}"
-    [[ -n "$path" && -d "$path" ]] || return 1
-    [[ -x "$path/bin/sh" || -x "$path/usr/bin/env" || -x "$path/usr/bin/sh" ]] || return 1
-    [[ -d "$path/etc" && ( -d "$path/usr" || -d "$path/bin" ) ]]
-}
-
-_ulpm_check_bwrap() {
-    if ! _ulpm_have bwrap; then
-        _ulpm_log error "bubblewrap (bwrap) is required to run isolated packages."
-        return 127
-    fi
-    return 0
-}
-
-_ulpm_check_signature() {
-    local pkg_path="$1" rc=0
-    if ! declare -F verify_package >/dev/null 2>&1; then
-        _ulpm_log error "Signature verifier unavailable; refusing to execute package."
-        return 1
-    fi
-
-    verify_package "$pkg_path" || rc=$?
-    case "$rc" in
-        0)
-            return 0
-            ;;
-        3)
-            if [[ "${ULPM_STRICT_SIGNATURES:-0}" != 1 ]]; then
-                _ulpm_log warn "Package signature is untrusted; running in compatibility mode."
-                return 0
-            fi
-            _ulpm_log error "Untrusted package signature; rejected by strict mode."
-            return 1
-            ;;
-        2)
-            if [[ "${ULPM_ALLOW_UNSIGNED:-0}" == 1 && "${ULPM_STRICT_SIGNATURES:-0}" != 1 ]]; then
-                _ulpm_log warn "Executing unsigned package (ULPM_ALLOW_UNSIGNED=1)."
-                return 0
-            fi
-            _ulpm_log error "Package is unsigned; execution refused."
-            return 1
-            ;;
-        *)
-            _ulpm_log error "Invalid or corrupted package signature."
-            return 1
-            ;;
-    esac
-}
+# ------------------------------------------------------------------------------
+# Security & Bind Validation
+# ------------------------------------------------------------------------------
 
 _ulpm_valid_bind_dest() {
     local dest="$1"
@@ -178,236 +102,192 @@ _ulpm_valid_bind_dest() {
     return 0
 }
 
-_ulpm_parse_bind() {
-    local spec="$1"; local -n host_out="$2"; local -n dest_out="$3"
-    [[ "$spec" == *:* ]] || { _ulpm_log error "Invalid bind syntax '$spec' (expected HOST:DEST)."; return 2; }
-    host_out="${spec%%:*}"
-    dest_out="${spec#*:}"
-    [[ -n "$host_out" && -e "$host_out" ]] || { _ulpm_log error "Bind source does not exist: $host_out"; return 2; }
-    _ulpm_valid_bind_dest "$dest_out" || { _ulpm_log error "Unsafe bind destination: $dest_out"; return 2; }
-}
-
-_ulpm_collect_env() {
-    local -n out="$1"; local name
-    out=()
-    for name in "${ENV_WHITELIST[@]}"; do
-        [[ -v "$name" ]] && out+=(--setenv "$name" "${!name}")
-    done
-    if [[ -n "${ULPM_PRESERVE_LD_LIBRARY_PATH:-}" && -n "${LD_LIBRARY_PATH:-}" ]]; then
-        out+=(--setenv LD_LIBRARY_PATH "$LD_LIBRARY_PATH")
-    fi
-}
-
-_ulpm_add_gui_mounts() {
-    # shellcheck disable=SC2178
-    local -n target_args="$1"
-    local allow_gui="${2:-1}"
-    local allow_audio="${3:-1}"
-
-    if (( allow_gui )); then
-        if [[ -n "${DISPLAY:-}" && -d /tmp/.X11-unix ]]; then
-            target_args+=(--ro-bind /tmp/.X11-unix /tmp/.X11-unix)
-            [[ -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" ]] && target_args+=(--ro-bind "$XAUTHORITY" "$XAUTHORITY")
-        fi
-        if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
-            local wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-            [[ -S "$wayland_socket" ]] && target_args+=(--bind "$wayland_socket" "$wayland_socket")
-        fi
-    fi
-
-    if (( allow_audio )); then
-        if [[ -z "${PULSE_SERVER:-}" && -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/pulse/native" ]]; then
-            target_args+=(--bind "$XDG_RUNTIME_DIR/pulse/native" "$XDG_RUNTIME_DIR/pulse/native")
-        fi
-        if [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/pipewire-0" ]]; then
-            target_args+=(--bind "$XDG_RUNTIME_DIR/pipewire-0" "$XDG_RUNTIME_DIR/pipewire-0")
-        fi
-    fi
-}
-
-_ulpm_add_dbus() {
-    # shellcheck disable=SC2178
-    local -n target_args="$1"
-    local bus
-    if bus="$(session_bus_socket 2>/dev/null)" && [[ -S "$bus" ]]; then
-        if _ulpm_have xdg-dbus-proxy && [[ "${ULPM_DISABLE_DBUS_PROXY:-0}" != 1 ]]; then
-            local proxy_dir="${ULPM_SANDBOX_RUNTIME_DIR}/dbus-$$"
-            mkdir -p -- "$proxy_dir" || return 0
-            chmod 700 -- "$proxy_dir" 2>/dev/null || true
-            local proxy_socket="$proxy_dir/session-bus"
-            local -a extra=()
-            if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-                read -r -a extra <<< "$ULPM_DBUS_EXTRA"
-            fi
-            xdg-dbus-proxy "$bus" "$proxy_socket" --filter --talk=org.freedesktop.DBus --see=org.freedesktop.DBus "${extra[@]}" >/dev/null 2>&1 &
-            ULPM_DBUS_PROXY_PID=$!
-            ULPM_DBUS_PROXY_DIR="$proxy_dir"
-            local attempt
-            # shellcheck disable=SC2034
-            for attempt in {1..40}; do
-                [[ -S "$proxy_socket" ]] && break
-                kill -0 "$ULPM_DBUS_PROXY_PID" >/dev/null 2>&1 || break
-                sleep 0.05
-            done
-            if [[ -S "$proxy_socket" ]]; then
-                target_args+=(--bind "$proxy_socket" "$bus" --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$bus")
-            else
-                kill "$ULPM_DBUS_PROXY_PID" >/dev/null 2>&1 || true
-                wait "$ULPM_DBUS_PROXY_PID" >/dev/null 2>&1 || true
-                unset ULPM_DBUS_PROXY_PID ULPM_DBUS_PROXY_DIR
-                rm -rf -- "$proxy_dir"
-                _ulpm_log warn "D-Bus proxy failed to start; D-Bus disabled."
-            fi
-        else
-            target_args+=(--ro-bind "$bus" "$bus" --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$bus")
-        fi
-    fi
-}
-
-_ulpm_add_common_mounts() {
-    # shellcheck disable=SC2178
-    local -n target_args="$1"
-    local allow_gpu="${2:-1}"
-    local allow_audio="${3:-1}"
-
-    target_args+=(--ro-bind /usr /usr)
-    [[ -d /etc ]] && target_args+=(--ro-bind /etc /etc)
-    [[ -d /bin ]] && target_args+=(--ro-bind /bin /bin)
-    [[ -d /sbin ]] && target_args+=(--ro-bind /sbin /sbin)
-    [[ -d /lib ]] && target_args+=(--ro-bind /lib /lib)
-    [[ -d /lib64 ]] && target_args+=(--ro-bind /lib64 /lib64)
-    [[ -d /opt ]] && target_args+=(--ro-bind /opt /opt)
-    [[ -d /etc/ssl ]] && target_args+=(--ro-bind /etc/ssl /etc/ssl)
-    [[ -d /etc/alternatives ]] && target_args+=(--ro-bind /etc/alternatives /etc/alternatives)
-    [[ -d /sys ]] && target_args+=(--ro-bind /sys /sys)
-
-    # Hardware & Gamepad bindings
-    [[ -d /dev/input ]] && target_args+=(--dev-bind-try /dev/input /dev/input)
-    for js in /dev/js[0-9]*; do
-        [[ -e "$js" ]] && target_args+=(--dev-bind-try "$js" "$js")
-    done
-    [[ -e /dev/fb0 ]] && target_args+=(--dev-bind-try /dev/fb0 /dev/fb0)
-    [[ -e /dev/uinput ]] && target_args+=(--dev-bind-try /dev/uinput /dev/uinput)
-    [[ -d /run/udev ]] && target_args+=(--ro-bind-try /run/udev /run/udev)
-
-    if (( allow_gpu )) && [[ -d /dev/dri ]]; then
-        target_args+=(--dev-bind /dev/dri /dev/dri)
-    fi
-    if (( allow_audio )) && [[ -d /dev/snd ]]; then
-        target_args+=(--dev-bind /dev/snd /dev/snd)
-    fi
-
-    # Recalbox persistence
-    if [[ -d "/recalbox/share" ]]; then
-        target_args+=(
-            --bind-try /recalbox/share /recalbox/share
-            --bind-try /recalbox/share/roms /recalbox/share/roms
-            --bind-try /recalbox/share/saves /recalbox/share/saves
-            --bind-try /recalbox/share/bios /recalbox/share/bios
-            --bind-try /recalbox/share/system /recalbox/share/system
-        )
-    fi
-}
-
-_ulpm_add_custom_binds() {
-    # shellcheck disable=SC2178
-    local -n target_args="$1"; shift
-    local spec host dest
-    while (($#)); do
-        case "$1" in
-            --bind)
-                (($# >= 2)) || { _ulpm_log error "--bind requires HOST:DEST"; return 2; }
-                spec="$2"; shift 2
-                _ulpm_parse_bind "$spec" host dest || return $?
-                [[ -d "$host" ]] && target_args+=(--bind "$host" "$dest") || target_args+=(--ro-bind "$host" "$dest")
-                ;;
-            *)
-                _ulpm_log error "Unknown sandbox option: $1"; return 2
-                ;;
-        esac
-    done
-}
-
-_ulpm_cleanup_mount() {
-    local mountpoint="${1:-}"
-    [[ -n "$mountpoint" ]] || return 0
-    if _ulpm_have fusermount3; then
-        fusermount3 -u -z "$mountpoint" >/dev/null 2>&1 || umount -l "$mountpoint" >/dev/null 2>&1 || true
-    elif _ulpm_have fusermount; then
-        fusermount -u -z "$mountpoint" >/dev/null 2>&1 || umount -l "$mountpoint" >/dev/null 2>&1 || true
+_ulpm_check_signature() {
+    local pkg_path="$1" rc=0
+    if declare -F verify_package >/dev/null 2>&1; then
+        verify_package "$pkg_path" || rc=$?
+    elif declare -F enforce_package_trust >/dev/null 2>&1; then
+        enforce_package_trust "$pkg_path" || rc=$?
     else
-        umount -l "$mountpoint" >/dev/null 2>&1 || true
+        return 0
     fi
-    rmdir -- "$mountpoint" >/dev/null 2>&1 || true
+
+    case "$rc" in
+        0) return 0 ;;
+        3)
+            if [[ "${ULPM_STRICT_SIGNATURES:-0}" != 1 ]]; then
+                warn "Package signature is untrusted; running in compatibility mode."
+                return 0
+            fi
+            error "Untrusted package signature; rejected by strict mode."
+            return 1
+            ;;
+        2)
+            if [[ "${ULPM_ALLOW_UNSIGNED:-0}" == 1 && "${ULPM_STRICT_SIGNATURES:-0}" != 1 ]]; then
+                warn "Executing unsigned package (ULPM_ALLOW_UNSIGNED=1)."
+                return 0
+            fi
+            error "Package is unsigned; execution refused."
+            return 1
+            ;;
+        *)
+            error "Invalid or corrupted package signature."
+            return 1
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# RootFS Detection & Container Execution Mode
+# ------------------------------------------------------------------------------
+
+lpk_is_rootfs() {
+    local mount_dir="$1"
+    local manifest="${2:-}"
+
+    if [[ -f "$manifest" ]]; then
+        local is_rootfs
+        is_rootfs=$(jq -r '.type // .kind // empty' "$manifest" 2>/dev/null || true)
+        if [[ "$is_rootfs" =~ ^(rootfs|distro|os)$ ]]; then
+            return 0
+        fi
+    fi
+
+    if [[ -d "$mount_dir/root/etc" && -d "$mount_dir/root/usr" && -d "$mount_dir/root/bin" ]] || \
+       [[ -d "$mount_dir/etc" && -d "$mount_dir/usr" && -d "$mount_dir/bin" ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 lpk_run_rootfs() {
-    local rootfs_dir="${1:-}"; shift || true
-    [[ -n "$rootfs_dir" ]] || { _ulpm_log error "lpk_run_rootfs: missing rootfs directory"; return 2; }
-    rootfs_dir="$(_ulpm_abs_path "$rootfs_dir")"
-    lpk_is_rootfs "$rootfs_dir" || { _ulpm_log error "Not a valid LPK rootfs: $rootfs_dir"; return 2; }
-    _ulpm_check_bwrap || return $?
+    local mnt_dir="$1"
+    local app_id="$2"
+    local exec_bin="$3"
+    local force_offline="$4"
+    local allow_net="$5"
+    local disable_gpu="$6"
+    local disable_audio="$7"
+    local disable_gui="$8"
+    local disable_input="${9:-false}"
+    local custom_binds_ref="${10:-}"
+    shift 10 2>/dev/null || shift $#
 
-    local -a custom_binds=() cmd=() args=() env_args=()
-    local in_options=1 allow_gpu=1 allow_audio=1 allow_gui=1
-    while (($#)); do
-        if ((in_options)) && [[ "$1" == --bind ]]; then
-            (($# >= 2)) || { _ulpm_log error "--bind requires HOST:DEST"; return 2; }
-            custom_binds+=(--bind "$2"); shift 2
-        elif ((in_options)) && [[ "$1" == --no-gpu ]]; then
-            allow_gpu=0; shift
-        elif ((in_options)) && [[ "$1" == --no-audio ]]; then
-            allow_audio=0; shift
-        elif ((in_options)) && [[ "$1" == --no-gui ]]; then
-            allow_gui=0; shift
-        elif ((in_options)) && [[ "$1" == -- ]]; then
-            in_options=0; shift
-        else
-            cmd+=("$1"); shift
-        fi
-    done
-    ((${#cmd[@]})) || cmd=(/bin/sh)
+    local -a cbinds=()
+    if [[ -n "$custom_binds_ref" ]]; then
+        eval "cbinds=(\"\${${custom_binds_ref}[@]}\")"
+    fi
 
-    local data_root="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm/apps/_rootfs"
-    local sandbox_home="$data_root/home"
-    mkdir -p -- "$sandbox_home" || return 1
-    chmod 700 -- "$sandbox_home" 2>/dev/null || true
+    local rootfs_dir="$mnt_dir"
+    if [[ -d "$mnt_dir/root" && -d "$mnt_dir/root/etc" ]]; then
+        rootfs_dir="$mnt_dir/root"
+    fi
 
-    # Prepare Multilingual Downloads
-    local host_downloads
-    host_downloads="$(resolve_host_downloads_dir)"
-    local dl_base
-    dl_base="$(basename "$host_downloads")"
-    setup_sandbox_downloads_links "$sandbox_home" "$host_downloads"
+    local app_data_dir="$HOME/.var/app/$app_id"
+    mkdir -p "$app_data_dir/home" "$app_data_dir/cache" "$app_data_dir/tmp"
 
-    args=(--die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --cap-drop ALL)
-    args+=(--ro-bind "$rootfs_dir" / --proc /proc --dev /dev --tmpfs /tmp --dir /run --dir /var/tmp)
-    [[ -d /sys ]] && args+=(--ro-bind /sys /sys)
-    args+=(--bind "$sandbox_home" "$HOME")
+    local run_uid run_user_dir
+    run_uid="$(id -u)"
+    run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
 
-    # Bind the true Downloads folder directly to its realpath and its home path
-    args+=(--bind "$host_downloads" "$host_downloads")
-    [[ "$host_downloads" != "$HOME/$dl_base" ]] && args+=(--bind "$host_downloads" "$HOME/$dl_base")
-    [[ -f "$HOME/.config/user-dirs.dirs" ]] && args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    local dl_host_dir
+    dl_host_dir="$(resolve_host_downloads_dir)"
+    setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
 
-    (( allow_gpu )) && [[ -d /dev/dri ]] && args+=(--dev-bind /dev/dri /dev/dri)
-    (( allow_audio )) && [[ -d /dev/snd ]] && args+=(--dev-bind /dev/snd /dev/snd)
-    [[ "${ULPM_SANDBOX_NETWORK:-0}" == 1 ]] || args+=(--unshare-net)
+    local bwrap_args=(
+        bwrap
+        --die-with-parent
+        --new-session
+        --clearenv
+        --cap-drop ALL
+        --unshare-uts
+        --unshare-pid
+        --unshare-cgroup-try
+        --chdir "$HOME"
+        --proc /proc
+        --dev /dev
+        --dev-bind /dev/shm /dev/shm
+        --ro-bind /sys /sys
+        --tmpfs /tmp
+        --tmpfs /run
+        --tmpfs /var/tmp
+        --ro-bind "$rootfs_dir" /
+        --bind "$app_data_dir/home" "$HOME"
+        --bind "$app_data_dir/tmp" /tmp
+        --bind "$dl_host_dir" "$dl_host_dir"
+    )
+
+    if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
+        bwrap_args+=(--unshare-ipc)
+    fi
+
+    if [[ -f "$HOME/.config/user-dirs.dirs" ]]; then
+        bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    fi
+
+    # Network routing
+    if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
+        bwrap_args+=(--unshare-net)
+    else
+        bwrap_args+=(--share-net)
+        local real_resolv
+        real_resolv="$(realpath /etc/resolv.conf 2>/dev/null || echo "/etc/resolv.conf")"
+        [[ -f "$real_resolv" ]] && bwrap_args+=(--ro-bind-try "$real_resolv" "$real_resolv")
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /etc/hosts /etc/hosts
+            --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+            --ro-bind-try /etc/gai.conf /etc/gai.conf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+            --ro-bind-try /etc/ssl /etc/ssl
+            --ro-bind-try /etc/pki /etc/pki
+            --ro-bind-try /etc/ca-certificates /etc/ca-certificates
+            --ro-bind-try /usr/share/ca-certificates /usr/share/ca-certificates
+        )
+    fi
 
     # Hardware & Gamepad bindings
-    args+=(
-        --dev-bind-try /dev/input /dev/input
+    if [[ "$disable_input" != "true" ]]; then
+        bwrap_args+=(
+            --dev-bind-try /dev/input /dev/input
+            --dev-bind-try /dev/uinput /dev/uinput
+        )
+        for js in /dev/js[0-9]*; do
+            [[ -e "$js" ]] && bwrap_args+=(--dev-bind-try "$js" "$js")
+        done
+    fi
+    bwrap_args+=(
         --dev-bind-try /dev/fb0 /dev/fb0
-        --dev-bind-try /dev/uinput /dev/uinput
         --ro-bind-try /run/udev /run/udev
     )
-    for js in /dev/js[0-9]*; do
-        [[ -e "$js" ]] && args+=(--dev-bind-try "$js" "$js")
-    done
+
+    # GPU
+    if [[ "$disable_gpu" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/dri /dev/dri)
+        shopt -s nullglob
+        for dev in /dev/nvidia*; do
+            [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+        done
+        shopt -u nullglob
+    fi
+
+    # Audio
+    if [[ "$disable_audio" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
+        local pulse_sock="$run_user_dir/pulse/native"
+        if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
+            pulse_sock="${BASH_REMATCH[1]}"
+        fi
+        bwrap_args+=(
+            --bind-try "$pulse_sock" "$pulse_sock"
+            --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
+        )
+    fi
 
     # Recalbox persistence
     if [[ -d "/recalbox/share" ]]; then
-        args+=(
+        bwrap_args+=(
             --bind-try /recalbox/share /recalbox/share
             --bind-try /recalbox/share/roms /recalbox/share/roms
             --bind-try /recalbox/share/saves /recalbox/share/saves
@@ -416,45 +296,180 @@ lpk_run_rootfs() {
         )
     fi
 
-    _ulpm_collect_env env_args
-    args+=("${env_args[@]}")
-    _ulpm_add_gui_mounts args "$allow_gui" "$allow_audio"
-    _ulpm_add_dbus args
-    _ulpm_add_custom_binds args "${custom_binds[@]}" || return $?
-    exec bwrap "${args[@]}" --chdir "$HOME" -- "${cmd[@]}"
+    # GUI (X11 & Wayland)
+    if [[ "$disable_gui" != "true" ]]; then
+        if [[ -n "${DISPLAY:-}" ]]; then
+            local x_sock
+            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
+                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
+                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
+            else
+                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+            fi
+            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+            [[ -f "$xauth_file" ]] && bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+        fi
+
+        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+            local wayland_sock
+            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+                wayland_sock="$WAYLAND_DISPLAY"
+            else
+                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+            fi
+            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
+        fi
+    fi
+
+    # Custom Host-Directory Bindings (--bind host:dest)
+    for b in "${cbinds[@]}"; do
+        local h_dir="${b%%:*}"
+        local d_dir="${b#*:}"
+        if [[ -e "$h_dir" ]]; then
+            if _ulpm_valid_bind_dest "$d_dir"; then
+                bwrap_args+=(--bind "$h_dir" "$d_dir")
+            else
+                warn "Skipping unsafe bind destination: $d_dir"
+            fi
+        else
+            warn "Host bind source does not exist: $h_dir"
+        fi
+    done
+
+    for env_var in "${ENV_WHITELIST[@]}"; do
+        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+            continue
+        fi
+        if [[ -n "${!env_var:-}" ]]; then
+            bwrap_args+=(--setenv "$env_var" "${!env_var}")
+        fi
+    done
+
+    # Deterministic entrypoint resolution
+    local entrypoint="${exec_bin:-/bin/sh}"
+    if [[ -z "$exec_bin" || "$exec_bin" == "/bin/main" || "$exec_bin" == "bin/main" ]]; then
+        if [[ -x "$rootfs_dir/usr/bin/startxfce4" ]]; then
+            entrypoint="/usr/bin/startxfce4"
+        elif [[ -x "$rootfs_dir/usr/bin/x-session-manager" ]]; then
+            entrypoint="/usr/bin/x-session-manager"
+        elif [[ -x "$rootfs_dir/bin/bash" ]]; then
+            entrypoint="/bin/bash"
+        fi
+    fi
+
+    local sanitized_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            ""|"%u"|"%U"|"%f"|"%F") ;;
+            *) sanitized_args+=("$arg") ;;
+        esac
+    done
+
+    log "Starting RootFS session [$app_id] (Entrypoint: $entrypoint)..."
+    "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
+# ------------------------------------------------------------------------------
+# App Mode Execution (Shared Host Base + Isolated Sandbox)
+# ------------------------------------------------------------------------------
+
 lpk_run_isolated() {
-    local pkg_path="${1:-}"; shift || true
-    [[ -n "$pkg_path" && -f "$pkg_path" && ! -L "$pkg_path" ]] || {
-        _ulpm_log error "lpk_run_isolated: LPK must be a regular file: $pkg_path"
-        return 2
-    }
-    pkg_path="$(_ulpm_abs_path "$pkg_path")"
-    _ulpm_check_bwrap || return $?
+    local force_offline=false
+    local disable_gpu=false
+    local disable_audio=false
+    local disable_gui=false
+    local disable_input=false
+    local custom_binds=()
+
+    # Parse Sandbox Runtime Flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --offline|--no-net)
+                force_offline=true
+                shift
+                ;;
+            --no-gpu)
+                disable_gpu=true
+                shift
+                ;;
+            --no-audio)
+                disable_audio=true
+                shift
+                ;;
+            --no-gui)
+                disable_gui=true
+                shift
+                ;;
+            --no-input)
+                disable_input=true
+                shift
+                ;;
+            --bind)
+                if [[ -n "${2:-}" && "$2" == *:* ]]; then
+                    custom_binds+=("$2")
+                    shift 2
+                else
+                    error "--bind requires argument formatted as <host_path>:<dest_path>"
+                    return 1
+                fi
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                error "Unknown sandbox flag: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        error "No target specified"
+        return 1
+    fi
+    shift || true
+
+    target="$(normalize_target "$target")"
+
+    local pkg_path=""
+    if [[ -f "$target" ]]; then
+        pkg_path="$(realpath -- "$target")"
+    elif [[ -f "$ULPM_APPS_DIR/$target.lpk" ]]; then
+        pkg_path="$ULPM_APPS_DIR/$target.lpk"
+    elif [[ -f "$ULPM_APPS_DIR/$target/$target.lpk" ]]; then
+        pkg_path="$ULPM_APPS_DIR/$target/$target.lpk"
+    elif [[ -f "$ULPM_APPS_DIR/io.lpk.${target,,}.lpk" ]]; then
+        pkg_path="$ULPM_APPS_DIR/io.lpk.${target,,}.lpk"
+    else
+        error "Target package '$target' could not be resolved"
+        return 1
+    fi
+
+    # Cryptographic signature validation
     _ulpm_check_signature "$pkg_path" || return 1
-    _ulpm_have squashfuse || { _ulpm_log error "squashfuse is required to mount LPK packages."; return 127; }
 
-    local runtime_dir="${ULPM_SANDBOX_RUNTIME_DIR}"
-    mkdir -p -- "$runtime_dir" || return 1
-    chmod 700 -- "$runtime_dir" 2>/dev/null || true
-    local mountpoint
-    mountpoint="$(mktemp -d "$runtime_dir/lpk.XXXXXXXX")" || return 1
+    local instance_id="$$_${RANDOM}"
+    local mnt_dir dbus_proxy_dir dbus_pid=""
+    mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME}/mnt_${instance_id}.XXXXXX")"
 
+    # Encapsulated instance cleanup with trap restoration
     local cleanup_done=0
-    _ulpm_cleanup_lpk_run() {
-        ((cleanup_done)) && return 0
+    _cleanup_sandbox_instance() {
+        (( cleanup_done )) && return 0
         cleanup_done=1
-        _ulpm_cleanup_mount "$mountpoint"
-        if [[ -n "${ULPM_DBUS_PROXY_PID:-}" ]]; then
-            kill "$ULPM_DBUS_PROXY_PID" >/dev/null 2>&1 || true
-            wait "$ULPM_DBUS_PROXY_PID" >/dev/null 2>&1 || true
-            unset ULPM_DBUS_PROXY_PID
+        if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
+            kill "$dbus_pid" 2>/dev/null || true
+            wait "$dbus_pid" 2>/dev/null || true
         fi
-        if [[ -n "${ULPM_DBUS_PROXY_DIR:-}" ]]; then
-            rm -rf -- "$ULPM_DBUS_PROXY_DIR" 2>/dev/null || true
-            unset ULPM_DBUS_PROXY_DIR
-        fi
+        [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
+        safe_unmount "$mnt_dir"
+        rm -rf "$mnt_dir"
+
         eval "$old_int" 2>/dev/null || trap - INT
         eval "$old_term" 2>/dev/null || trap - TERM
         eval "$old_hup" 2>/dev/null || trap - HUP
@@ -464,147 +479,378 @@ lpk_run_isolated() {
     old_int="$(trap -p INT || true)"
     old_term="$(trap -p TERM || true)"
     old_hup="$(trap -p HUP || true)"
-    trap '_ulpm_cleanup_lpk_run; exit 130' INT
-    trap '_ulpm_cleanup_lpk_run; exit 143' TERM
-    trap '_ulpm_cleanup_lpk_run; exit 129' HUP
 
-    if ! squashfuse "$pkg_path" "$mountpoint"; then
-        _ulpm_cleanup_lpk_run
-        _ulpm_log error "Unable to mount LPK package: $pkg_path"
+    trap '_cleanup_sandbox_instance; exit 130' INT
+    trap '_cleanup_sandbox_instance; exit 143' TERM
+    trap '_cleanup_sandbox_instance; exit 129' HUP
+
+    if ! squashfuse "$pkg_path" "$mnt_dir" 2>/dev/null; then
+        error "Failed to mount SquashFS image ($pkg_path)"
+        _cleanup_sandbox_instance
         return 1
     fi
 
-    # Read manifest
-    local manifest="" entrypoint="" app_id="" app_name="" app_net=""
-    for manifest in "$mountpoint/meta/manifest.json" "$mountpoint/manifest.json" "$mountpoint/lpk.json"; do
-        [[ -f "$manifest" ]] && break
-        manifest=""
+    local manifest="$mnt_dir/meta/manifest.json"
+    [[ ! -f "$manifest" ]] && manifest="$mnt_dir/lpk.json"
+
+    local app_id="app_$(basename "$target" .lpk)"
+    local exec_bin="bin/main"
+    local is_chromium=false
+    local allow_net=true
+
+    if [[ -f "$manifest" ]]; then
+        local raw_id raw_exec
+        raw_id=$(jq -r '.id // .name // empty' "$manifest" 2>/dev/null || true)
+        if [[ -n "$raw_id" ]]; then
+            if ! is_safe_app_id "$raw_id"; then
+                error "Refusing to run: unsafe application id in manifest: '$raw_id'"
+                _cleanup_sandbox_instance
+                return 1
+            fi
+            app_id="$raw_id"
+        fi
+
+        raw_exec=$(jq -r '.exec // empty' "$manifest" 2>/dev/null || true)
+        [[ -n "$raw_exec" ]] && exec_bin="$raw_exec"
+
+        is_chromium=$(jq -r '.chromium // false' "$manifest" 2>/dev/null || echo "false")
+        allow_net=$(jq -r 'if has("network") then .network else true end' "$manifest" 2>/dev/null || echo "true")
+    fi
+
+    # ROOTFS ROUTING
+    if lpk_is_rootfs "$mnt_dir" "$manifest"; then
+        local rootfs_rc=0
+        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" \
+            "$disable_gpu" "$disable_audio" "$disable_gui" "$disable_input" custom_binds "$@" || rootfs_rc=$?
+        _cleanup_sandbox_instance
+        return "$rootfs_rc"
+    fi
+
+    # STANDARD APP SANDBOX SETUP
+    local app_data_dir="$HOME/.var/app/$app_id"
+    mkdir -p "$app_data_dir/home" "$app_data_dir/config" "$app_data_dir/data" "$app_data_dir/cache"
+
+    local run_uid run_user_dir dl_host_dir
+    run_uid="$(id -u)"
+    run_user_dir="${XDG_RUNTIME_DIR:-/run/user/$run_uid}"
+
+    dl_host_dir="$(resolve_host_downloads_dir)"
+    setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
+
+    local clean_exec="${exec_bin#/}"
+    local app_payload_dir="$mnt_dir"
+    [[ -d "$mnt_dir/root" ]] && app_payload_dir="$mnt_dir/root"
+
+    # Chromium / Electron specific flags
+    local extra_app_flags=()
+    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$app_payload_dir/$clean_exec" 2>/dev/null; then
+        extra_app_flags=(
+            --no-sandbox
+            --test-type
+            --disable-gpu-sandbox
+            --disable-setuid-sandbox
+            --disable-dev-shm-usage
+            --log-level=3
+        )
+        if [[ -n "${WAYLAND_DISPLAY:-}" && "$disable_gui" != "true" ]]; then
+            extra_app_flags+=(--ozone-platform-hint=auto)
+        fi
+    fi
+
+    # Specific profile provisioning for Firefox
+    if [[ "$app_id" =~ (firefox|Firefox) ]] || [[ "$clean_exec" =~ firefox ]]; then
+        find "$app_data_dir/home/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
+        local ff_profile_dir="$app_data_dir/home/.mozilla/firefox/ulpm.default-release"
+        mkdir -p "$ff_profile_dir"
+        if [[ ! -f "$ff_profile_dir/user.js" ]]; then
+            cat << 'EOF' > "$ff_profile_dir/user.js"
+user_pref("browser.startup.page", 1);
+user_pref("browser.startup.homepage", "https://start.duckduckgo.com");
+user_pref("browser.newtabpage.enabled", true);
+user_pref("datareporting.policy.firstRunURL", "");
+EOF
+        fi
+        if [[ ! -f "$app_data_dir/home/.mozilla/firefox/profiles.ini" ]]; then
+            cat << EOF > "$app_data_dir/home/.mozilla/firefox/profiles.ini"
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=ulpm.default-release
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOF
+        fi
+    fi
+
+    local bwrap_args=(
+        bwrap
+        --die-with-parent
+        --new-session
+        --clearenv
+        --cap-drop ALL
+        --unshare-uts
+        --unshare-pid
+        --unshare-cgroup-try
+        --chdir "$HOME"
+        --ro-bind /usr /usr
+        --proc /proc
+        --dev /dev
+        --dev-bind /dev/shm /dev/shm
+        --ro-bind /sys /sys
+        --tmpfs /tmp
+        --tmpfs /run
+        --tmpfs /var/tmp
+        --bind "$app_data_dir/home" "$HOME"
+        --bind "$dl_host_dir" "$dl_host_dir"
+    )
+
+    if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
+        bwrap_args+=(--unshare-ipc)
+    fi
+
+    # Multiarch library symlinks support
+    for dir in /lib /lib64 /lib32 /bin /sbin; do
+        [[ -d "$dir" ]] && bwrap_args+=(--ro-bind "$dir" "$dir")
     done
 
-    if [[ -n "$manifest" ]] && _ulpm_have jq; then
-        entrypoint="$(jq -r 'if (.exec // .entrypoint // .command) | type == "string" then (.exec // .entrypoint // .command) else empty end' "$manifest" 2>/dev/null || true)"
-        app_id="$(jq -r 'if (.id // .app_id) | type == "string" then (.id // .app_id) else empty end' "$manifest" 2>/dev/null || true)"
-        app_name="$(jq -r 'if .name | type == "string" then .name else empty end' "$manifest" 2>/dev/null || true)"
-        app_net="$(jq -r 'if .network | type == "boolean" then .network else empty end' "$manifest" 2>/dev/null || true)"
+    # Network & Certificates
+    if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
+        bwrap_args+=(--unshare-net)
+    else
+        bwrap_args+=(--share-net)
+        local real_resolv
+        real_resolv="$(realpath /etc/resolv.conf 2>/dev/null || echo "/etc/resolv.conf")"
+        [[ -f "$real_resolv" ]] && bwrap_args+=(--ro-bind-try "$real_resolv" "$real_resolv")
+        bwrap_args+=(
+            --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+            --ro-bind-try /etc/hosts /etc/hosts
+            --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+            --ro-bind-try /etc/gai.conf /etc/gai.conf
+            --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+            --ro-bind-try /etc/ssl /etc/ssl
+            --ro-bind-try /etc/pki /etc/pki
+            --ro-bind-try /etc/ca-certificates /etc/ca-certificates
+            --ro-bind-try /usr/share/ca-certificates /usr/share/ca-certificates
+        )
     fi
 
-    if [[ -n "$app_id" && ! "$app_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
-        _ulpm_log warn "Invalid app ID in manifest; falling back to package name."
-        app_id=""
+    # System configurations & themes
+    local etc_item
+    for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
+                   fonts X11 xdg gtk-2.0 gtk-3.0 gtk-4.0 pulse vulkan glvnd \
+                   localtime timezone os-release machine-id passwd group; do
+        bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
+    done
+
+    # Hardware & Gamepad bindings
+    if [[ "$disable_input" != "true" ]]; then
+        bwrap_args+=(
+            --dev-bind-try /dev/input /dev/input
+            --dev-bind-try /dev/uinput /dev/uinput
+        )
+        for js in /dev/js[0-9]*; do
+            [[ -e "$js" ]] && bwrap_args+=(--dev-bind-try "$js" "$js")
+        done
+    fi
+    bwrap_args+=(
+        --dev-bind-try /dev/fb0 /dev/fb0
+        --ro-bind-try /run/udev /run/udev
+        --ro-bind-try /usr/share/fonts /usr/share/fonts
+        --ro-bind-try /usr/share/themes /usr/share/themes
+        --ro-bind-try /usr/share/icons /usr/share/icons
+        --perms 0700 --dir "$run_user_dir"
+        --bind "$app_data_dir/config" "$HOME/.config"
+        --bind "$app_data_dir/data" "$HOME/.local/share"
+        --bind "$app_data_dir/cache" "$HOME/.cache"
+        --ro-bind "$app_payload_dir" /app
+    )
+
+    # GPU
+    if [[ "$disable_gpu" != "true" ]]; then
+        bwrap_args+=(
+            --dev-bind-try /dev/dri /dev/dri
+            --ro-bind-try /usr/share/vulkan /usr/share/vulkan
+            --ro-bind-try /usr/share/glvnd /usr/share/glvnd
+        )
+        shopt -s nullglob
+        for dev in /dev/nvidia*; do
+            [[ -e "$dev" ]] && bwrap_args+=(--dev-bind-try "$dev" "$dev")
+        done
+        shopt -u nullglob
     fi
 
-    # Determine app root inside squashfs (support both layout with root/ and flat layout)
-    local app_source="$mountpoint"
-    if [[ -d "$mountpoint/root" ]]; then
-        app_source="$mountpoint/root"
+    # Audio
+    if [[ "$disable_audio" != "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
+        local pulse_sock="$run_user_dir/pulse/native"
+        if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
+            pulse_sock="${BASH_REMATCH[1]}"
+        fi
+        bwrap_args+=(
+            --bind-try "$pulse_sock" "$pulse_sock"
+            --bind-try "$run_user_dir/pipewire-0" "$run_user_dir/pipewire-0"
+        )
     fi
 
-    if [[ -z "$entrypoint" ]]; then
-        for candidate in "$app_source/AppRun" "$app_source/bin/main" "$app_source/run.sh"; do
-            if [[ -x "$candidate" ]]; then
-                entrypoint="${candidate#"$app_source/"}"
+    [[ -f "$HOME/.config/user-dirs.dirs" ]] && bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
+    [[ -d "/recalbox/share" ]] && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
+
+    # Display Protocols (Wayland & X11)
+    if [[ "$disable_gui" != "true" ]]; then
+        if [[ -n "${DISPLAY:-}" ]]; then
+            local x_sock
+            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
+                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
+                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
+            else
+                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
+            fi
+            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+            [[ -f "$xauth_file" ]] && bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
+        fi
+
+        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+            local wayland_sock
+            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+                wayland_sock="$WAYLAND_DISPLAY"
+            else
+                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+            fi
+            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
+        fi
+    fi
+
+    # D-Bus Isolation Proxy
+    if [[ "$disable_gui" != "true" ]]; then
+        if command -v xdg-dbus-proxy &>/dev/null; then
+            local real_sock
+            if real_sock=$(session_bus_socket "$run_user_dir"); then
+                dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
+                if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
+                    local dbus_extra=()
+                    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                        # shellcheck disable=SC2206
+                        dbus_extra=($ULPM_DBUS_EXTRA)
+                    fi
+
+                    local dbus_own=()
+                    case "$app_id" in
+                        org.freedesktop*|org.gnome*|org.kde*|org.mpris*|com.canonical*)
+                            warn "App id '$app_id' collides with system D-Bus namespace: no --own granted."
+                            ;;
+                        *) dbus_own=(--own="${app_id}.*") ;;
+                    esac
+
+                    xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
+                        ${dbus_own[@]+"${dbus_own[@]}"} \
+                        --own='org.mpris.MediaPlayer2.*' \
+                        --talk=org.freedesktop.Notifications \
+                        --talk=org.freedesktop.ScreenSaver \
+                        --talk=org.freedesktop.PowerManagement.Inhibit \
+                        --talk=org.freedesktop.portal.Desktop \
+                        --talk=org.freedesktop.portal.Documents \
+                        --talk=org.kde.StatusNotifierWatcher \
+                        ${dbus_extra[@]+"${dbus_extra[@]}"} &
+                    dbus_pid=$!
+
+                    for _ in {1..30}; do
+                        [[ -S "$dbus_proxy_dir/bus" ]] && break
+                        kill -0 "$dbus_pid" 2>/dev/null || break
+                        sleep 0.05
+                    done
+
+                    if [[ -S "$dbus_proxy_dir/bus" ]]; then
+                        bwrap_args+=(--bind "$dbus_proxy_dir/bus" "$run_user_dir/bus")
+                    fi
+                fi
+            fi
+        else
+            warn "xdg-dbus-proxy not installed. Sandboxed app won't have session D-Bus access."
+        fi
+    fi
+
+    # Custom Host-Directory Bindings (--bind host:dest)
+    for b in "${custom_binds[@]}"; do
+        local h_dir="${b%%:*}"
+        local d_dir="${b#*:}"
+        if [[ -e "$h_dir" ]]; then
+            if _ulpm_valid_bind_dest "$d_dir"; then
+                bwrap_args+=(--bind "$h_dir" "$d_dir")
+            else
+                warn "Skipping unsafe bind destination: $d_dir"
+            fi
+        else
+            warn "Host bind source does not exist: $h_dir"
+        fi
+    done
+
+    for env_var in "${ENV_WHITELIST[@]}"; do
+        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+            continue
+        fi
+        if [[ -n "${!env_var:-}" ]]; then
+            bwrap_args+=(--setenv "$env_var" "${!env_var}")
+        fi
+    done
+
+    # Deterministic entrypoint resolution
+    local real_exec="/app/$clean_exec"
+    if [[ ! -x "$app_payload_dir/$clean_exec" ]]; then
+        for cand in /app/AppRun /app/bin/main /app/main; do
+            if [[ -x "$app_payload_dir/${cand#/app/}" ]]; then
+                real_exec="$cand"
                 break
             fi
         done
     fi
-    [[ -n "$entrypoint" ]] || entrypoint="bin/sh"
 
-    entrypoint="${entrypoint#/}"
-    if [[ "$entrypoint" == *$'\n'* || "$entrypoint" == *$'\r'* || "$entrypoint" =~ (^|/)\.\.(/|$) ]]; then
-        _ulpm_log error "Unsafe LPK entrypoint in manifest: $entrypoint"
-        _ulpm_cleanup_lpk_run
-        return 2
-    fi
+    # Multiarch Host Libraries Support
+    local host_multiarch
+    case "$(detect_arch)" in
+        amd64)   host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
+        arm64)   host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
+        armhf)   host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
+        i386)    host_multiarch="/usr/lib/i386-linux-gnu" ;;
+        riscv64) host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
+        *)       host_multiarch="" ;;
+    esac
 
-    if [[ ! -x "$app_source/$entrypoint" ]]; then
-        _ulpm_log error "LPK entrypoint missing or not executable: $entrypoint"
-        _ulpm_cleanup_lpk_run
-        return 1
-    fi
+    local ld_paths="/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64"
+    [[ -n "$host_multiarch" ]] && ld_paths="${ld_paths}:${host_multiarch}"
+    ld_paths="${ld_paths}:/usr/lib64:/usr/lib"
 
-    local -a custom_binds=() command_args=() args=() env_args=()
-    local parse_options=1 disable_net=0 allow_gpu=1 allow_audio=1 allow_gui=1
-    while (($#)); do
-        if ((parse_options)) && [[ "$1" == --bind ]]; then
-            (($# >= 2)) || { _ulpm_cleanup_lpk_run; _ulpm_log error "--bind requires HOST:DEST"; return 2; }
-            custom_binds+=(--bind "$2"); shift 2
-        elif ((parse_options)) && [[ "$1" == --offline || "$1" == --no-net ]]; then
-            disable_net=1; shift
-        elif ((parse_options)) && [[ "$1" == --no-gpu ]]; then
-            allow_gpu=0; shift
-        elif ((parse_options)) && [[ "$1" == --no-audio ]]; then
-            allow_audio=0; shift
-        elif ((parse_options)) && [[ "$1" == --no-gui ]]; then
-            allow_gui=0; shift
-        elif ((parse_options)) && [[ "$1" == -- ]]; then
-            parse_options=0; shift
-        else
-            command_args+=("$1"); shift
-        fi
+    bwrap_args+=(
+        --setenv PATH "/app/bin:/app/usr/bin:/app:$PATH"
+        --setenv LD_LIBRARY_PATH "$ld_paths"
+        --setenv XDG_CONFIG_HOME "$HOME/.config"
+        --setenv XDG_DATA_HOME "$HOME/.local/share"
+        --setenv XDG_CACHE_HOME "$HOME/.cache"
+        --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
+    )
+
+    # Sanitize CLI arguments
+    local sanitized_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            ""|"%u"|"%U"|"%f"|"%F") ;;
+            *) sanitized_args+=("$arg") ;;
+        esac
     done
 
-    local data_root="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm/apps"
-    local app_data="$data_root/${app_id:-$(basename "$pkg_path" .lpk)}"
-    local sandbox_home="$app_data/home"
-    mkdir -p -- "$app_data" "$sandbox_home" || { _ulpm_cleanup_lpk_run; return 1; }
-    chmod 700 -- "$app_data" "$sandbox_home" 2>/dev/null || true
-
-    # Prepare Multilingual Downloads
-    local host_downloads
-    host_downloads="$(resolve_host_downloads_dir)"
-    local dl_base
-    dl_base="$(basename "$host_downloads")"
-    setup_sandbox_downloads_links "$sandbox_home" "$host_downloads"
-
-    args=(--die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --cap-drop ALL)
-    args+=(--ro-bind "$app_source" /app --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run --dir /run/user)
-    args+=(--perms 0700 --dir "/run/user/$(id -u)")
-    args+=(--dir /var --dir /var/lib)
-    args+=(--bind "$app_data" /var/lib/ulpm)
-
-    if [[ "$HOME" == /* && "$HOME" != / ]]; then
-        local home_parent
-        home_parent="$(dirname -- "$HOME")"
-        [[ "$home_parent" == / ]] || args+=(--dir "$home_parent")
-    fi
-    args+=(--bind "$sandbox_home" "$HOME")
-
-    # Bind the true Downloads folder directly to its real path and its home path
-    if [[ -d "$host_downloads" ]]; then
-        args+=(--bind "$host_downloads" "$host_downloads")
-        [[ "$host_downloads" != "$HOME/$dl_base" ]] && args+=(--bind "$host_downloads" "$HOME/$dl_base")
-    fi
-    [[ -f "$HOME/.config/user-dirs.dirs" ]] && args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
-
-    _ulpm_add_common_mounts args "$allow_gpu" "$allow_audio"
-
-    if (( disable_net )) || [[ "$app_net" == "false" && "${ULPM_SANDBOX_NETWORK:-0}" != 1 ]]; then
-        args+=(--unshare-net)
-    fi
-
-    _ulpm_collect_env env_args
-    args+=("${env_args[@]}")
-    args+=(--setenv HOME "$HOME" --setenv ULPM_APP_NAME "${app_name:-$(basename "$pkg_path" .lpk)}")
-
-    _ulpm_add_gui_mounts args "$allow_gui" "$allow_audio"
-    _ulpm_add_dbus args
-
-    local bind_rc=0
-    _ulpm_add_custom_binds args "${custom_binds[@]}" || bind_rc=$?
-    if ((bind_rc != 0)); then
-        _ulpm_cleanup_lpk_run
-        return "$bind_rc"
-    fi
-
-    if [[ "$entrypoint" == *chrom* || "$entrypoint" == *electron* || "$entrypoint" == *AppRun* ]]; then
-        if [[ "${ULPM_CHROMIUM_NO_SANDBOX:-1}" == 1 ]]; then
-            command_args+=(--no-sandbox --disable-dev-shm-usage)
+    # Prevent Firefox from opening raw sandboxed directory if launched empty
+    if [[ "$app_id" =~ (firefox|Firefox) ]] || [[ "$clean_exec" =~ firefox ]]; then
+        if [ ${#sanitized_args[@]} -eq 0 ]; then
+            sanitized_args=("about:home")
         fi
     fi
 
-    local rc=0
-    bwrap "${args[@]}" --chdir /app -- "/app/$entrypoint" "${command_args[@]}" || rc=$?
+    log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
+    local app_exit_code=0
+    "${bwrap_args[@]}" "$real_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
 
-    _ulpm_cleanup_lpk_run
-    return "$rc"
+    _cleanup_sandbox_instance
+    return "$app_exit_code"
 }

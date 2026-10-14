@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
 # lib/utils.sh - Core utilities, binary helpers and environment setup
-# ULPM v4.1.0
+# ULPM v4.1.0 Unified
 # ============================================================================
 
-# This module is sourced by the ULPM launcher. Avoid changing shell options
-# globally here; the main executable owns set -euo pipefail.
-
+# Strict color configuration (supports NO_COLOR standard & terminal detection)
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_RESET=$'\033[0m'
     C_RED=$'\033[0;31m'
@@ -25,14 +23,14 @@ else
     C_BOLD=''
 fi
 
-log()    { printf '%b[ulpm]%b %s\n' "${C_BLUE}${C_BOLD}" "$C_RESET" "$*"; }
-info()   { printf '%b[+]%b %s\n' "${C_GREEN}${C_BOLD}" "$C_RESET" "$*"; }
-warn()   { printf '%b[!]%b %s\n' "${C_YELLOW}${C_BOLD}" "$C_RESET" "$*" >&2; }
-error()  { printf '%b[x]%b %s\n' "${C_RED}${C_BOLD}" "$C_RESET" "$*" >&2; }
-die()    { error "$*"; exit 1; }
+log()   { printf '%b[ulpm]%b %s\n' "${C_BLUE}${C_BOLD}" "$C_RESET" "$*"; }
+info()  { printf '%b[+]%b %s\n' "${C_GREEN}${C_BOLD}" "$C_RESET" "$*"; }
+warn()  { printf '%b[!]%b %s\n' "${C_YELLOW}${C_BOLD}" "$C_RESET" "$*" >&2; }
+error() { printf '%b[x]%b %s\n' "${C_RED}${C_BOLD}" "$C_RESET" "$*" >&2; }
+die()   { error "$*"; exit 1; }
 
 # Normalize local file:// URIs without interpreting ordinary backslashes.
-# Bash cannot represent NUL bytes, so encoded NULs are rejected.
+# Rejects embedded NUL bytes for memory and path safety.
 normalize_target() {
     local t="${1:-}" rest escape hex prefix ch decoded=''
     if [[ "$t" != file://* ]]; then
@@ -75,7 +73,10 @@ init_environment() {
     local trusted_dir="${config_home}/trusted_keys"
     local db_file="${ULPM_DB:-$data_home/installed.db}"
 
-    [[ -n "$HOME" && -d "$HOME" ]] || { error 'HOME is unset or is not a directory.'; return 1; }
+    [[ -n "${HOME:-}" && -d "$HOME" ]] || {
+        error 'HOME is unset or is not an existing directory.'
+        return 1
+    }
     mkdir -p -- "$data_home" "$config_home" "$cache_home/tmp" "$apps_dir" || {
         error 'Could not create ULPM data directories.'
         return 1
@@ -86,11 +87,42 @@ init_environment() {
     }
 
     if [[ ! -e "$db_file" ]]; then
-        ( umask 077; : >> "$db_file" ) || { error "Could not create ULPM database: $db_file"; return 1; }
+        ( umask 077; : >> "$db_file" ) || {
+            error "Could not create ULPM database: $db_file"
+            return 1
+        }
     elif [[ ! -f "$db_file" || ! -w "$db_file" ]]; then
         error "ULPM database is not a writable regular file: $db_file"
         return 1
     fi
+}
+
+# ------------------------------------------------------------------------------
+# Identifier validation (Manifest-controlled values are untrusted input)
+# ------------------------------------------------------------------------------
+
+# Application ID: used in paths (~/.var/app/<id>), D-Bus names and the install DB
+is_safe_app_id() {
+    local v="${1:-}"
+    [[ -n "$v" && "$v" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && "$v" != *..* ]]
+}
+
+# Application name: used in paths (apps/<name>) and the install DB
+is_safe_app_name() {
+    local v="${1:-}"
+    [[ -n "$v" && "$v" != "." && "$v" != ".." && "$v" != */* && "$v" != *'|'* \
+        && "$v" != -* && "$v" != *$'\n'* && "$v" != *$'\r'* && "$v" != *$'\t'* ]]
+}
+
+# Remove an entry from the install DB without interpreting id/name as code
+db_remove_entry() {
+    local id="$1" name="$2" tmp
+    local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share}/ulpm/installed.db}"
+    [[ -f "$db_file" ]] || return 0
+    tmp="$(mktemp "${db_file}.XXXXXX")" || return 1
+    awk -F'|' -v id="$id" -v name="$name" '!($1 == id || $2 == name)' "$db_file" > "$tmp" 2>/dev/null || true
+    chmod --reference="$db_file" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$db_file"
 }
 
 check_dependencies() {
@@ -104,17 +136,30 @@ check_dependencies() {
     fi
 }
 
-# Advisory lock. FD 200 is retained for compatibility with other ULPM modules.
+# Concurrency locking mechanism (prevents race conditions on database)
 # shellcheck disable=SC2034
 ULPM_LOCK_FD=200
 ULPM_LOCK_HELD=0
+
 acquire_lock() {
     local timeout="${1:-10}"
     local lock_file="${ULPM_LOCK:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db.lock}"
-    [[ "$timeout" =~ ^[0-9]+([.][0-9]+)?$ ]] || { error "Invalid lock timeout: $timeout"; return 2; }
-    command -v flock >/dev/null 2>&1 || { error 'Required command not found: flock'; return 1; }
-    mkdir -p -- "$(dirname -- "$lock_file")" || { error "Could not create lock directory for $lock_file."; return 1; }
-    exec 200>"$lock_file" || { error "Could not open lock file: $lock_file"; return 1; }
+    [[ "$timeout" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+        error "Invalid lock timeout: $timeout"
+        return 2
+    }
+    command -v flock >/dev/null 2>&1 || {
+        error 'Required command not found: flock'
+        return 1
+    }
+    mkdir -p -- "$(dirname -- "$lock_file")" || {
+        error "Could not create lock directory for $lock_file."
+        return 1
+    }
+    exec 200>"$lock_file" || {
+        error "Could not open lockfile: $lock_file"
+        return 1
+    }
     if flock -n 200; then
         ULPM_LOCK_HELD=1
         return 0
@@ -148,7 +193,10 @@ with_lock() {
 safe_unmount() {
     local mount_point="${1:-}"
     [[ -n "$mount_point" && -d "$mount_point" ]] || return 0
-    command -v mountpoint >/dev/null 2>&1 || { error 'Cannot verify mount state: mountpoint command is missing.'; return 1; }
+    command -v mountpoint >/dev/null 2>&1 || {
+        error 'Cannot verify mount state: mountpoint command is missing.'
+        return 1
+    }
     mountpoint -q -- "$mount_point" 2>/dev/null || return 0
     if command -v fusermount3 >/dev/null 2>&1 && fusermount3 -u -z -- "$mount_point" 2>/dev/null; then
         return 0
@@ -234,7 +282,10 @@ find_host_loader() {
     return 1
 }
 
-# GitHub configuration and API helpers.
+# ==============================================================================
+# GitHub Configuration, API & Authentication Helper
+# ==============================================================================
+
 ULPM_CONFIG_FILE="${ULPM_CONFIG_FILE:-${ULPM_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ulpm}/ulpm.conf}"
 
 get_github_token() {
@@ -259,31 +310,59 @@ get_github_token() {
 cmd_token() {
     local token="${1:-}" conf_dir tmp_file line found=0
     if [[ -z "$token" ]]; then
-        [[ -r /dev/tty ]] || { error 'No terminal available to read the GitHub token.'; return 1; }
+        [[ -r /dev/tty ]] || {
+            error 'No terminal available to read the GitHub token.'
+            return 1
+        }
         printf '%b' "${C_CYAN}Enter GitHub Personal Access Token (PAT): ${C_RESET}" >/dev/tty
-        IFS= read -r -s token </dev/tty || { printf '\n' >/dev/tty; error 'Could not read token.'; return 1; }
+        IFS= read -r -s token </dev/tty || {
+            printf '\n' >/dev/tty
+            error 'Could not read token.'
+            return 1
+        }
         printf '\n' >/dev/tty
     fi
-    [[ "$token" =~ ^[A-Za-z0-9_.-]+$ ]] || { error 'Invalid token format; use only alphanumeric characters, underscores, dots, or hyphens.'; return 1; }
+    [[ "$token" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+        error 'Invalid token format; use only alphanumeric characters, underscores, dots, or hyphens.'
+        return 1
+    }
 
     conf_dir="$(dirname -- "$ULPM_CONFIG_FILE")"
-    mkdir -p -- "$conf_dir" || { error "Could not create $conf_dir"; return 1; }
+    mkdir -p -- "$conf_dir" || {
+        error "Could not create $conf_dir"
+        return 1
+    }
     chmod 700 -- "$conf_dir" 2>/dev/null || true
-    tmp_file="$(mktemp "$conf_dir/.ulpm.conf.XXXXXX")" || { error 'Could not create temporary config file.'; return 1; }
-    chmod 600 -- "$tmp_file" || { rm -f -- "$tmp_file"; return 1; }
+    tmp_file="$(mktemp "$conf_dir/.ulpm.conf.XXXXXX")" || {
+        error 'Could not create temporary config file.'
+        return 1
+    }
+    chmod 600 -- "$tmp_file" || {
+        rm -f -- "$tmp_file"
+        return 1
+    }
     if [[ -f "$ULPM_CONFIG_FILE" ]]; then
         while IFS= read -r line || [[ -n "$line" ]]; do
             if [[ "$line" =~ ^[[:space:]]*GITHUB_TOKEN= ]]; then
                 if (( found == 0 )); then
-                    printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$tmp_file" || { rm -f -- "$tmp_file"; return 1; }
+                    printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$tmp_file" || {
+                        rm -f -- "$tmp_file"
+                        return 1
+                    }
                     found=1
                 fi
             else
-                printf '%s\n' "$line" >> "$tmp_file" || { rm -f -- "$tmp_file"; return 1; }
+                printf '%s\n' "$line" >> "$tmp_file" || {
+                    rm -f -- "$tmp_file"
+                    return 1
+                }
             fi
         done < "$ULPM_CONFIG_FILE"
     fi
-    (( found == 1 )) || printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$tmp_file" || { rm -f -- "$tmp_file"; return 1; }
+    (( found == 1 )) || printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$tmp_file" || {
+        rm -f -- "$tmp_file"
+        return 1
+    }
     if ! chmod 600 -- "$tmp_file" || ! mv -f -- "$tmp_file" "$ULPM_CONFIG_FILE"; then
         rm -f -- "$tmp_file"
         error 'Could not update config file.'
@@ -298,9 +377,13 @@ fetch_github_api() {
     endpoint="${endpoint#https://api.github.com/}"
     endpoint="${endpoint#/}"
     if [[ -z "$endpoint" || "$endpoint" == *'..'* || "$endpoint" == *$'\n'* || "$endpoint" == *$'\r'* || "$endpoint" == *' '* || "$endpoint" == *"://"* || "$endpoint" == /* ]]; then
-        error 'Invalid GitHub API endpoint.'; return 2
+        error 'Invalid GitHub API endpoint.'
+        return 2
     fi
-    [[ "$ttl" =~ ^[0-9]+$ ]] || { error "Invalid API cache TTL: $ttl"; return 2; }
+    [[ "$ttl" =~ ^[0-9]+$ ]] || {
+        error "Invalid API cache TTL: $ttl"
+        return 2
+    }
     check_dependencies curl jq sha256sum awk || return 1
     cache_api_dir="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/api"
     mkdir -p -- "$cache_api_dir" || return 1
@@ -309,7 +392,8 @@ fetch_github_api() {
 
     if [[ -f "$cache_file" ]] && jq -e . "$cache_file" >/dev/null 2>&1; then
         if [[ "$ttl" != 0 ]] && ! find "$cache_file" -mmin "+$ttl" -print -quit 2>/dev/null | grep -q .; then
-            cat -- "$cache_file"; return 0
+            cat -- "$cache_file"
+            return 0
         fi
     fi
 
@@ -324,18 +408,27 @@ fetch_github_api() {
     response="$(cat -- "$tmp_file" 2>/dev/null || true)"
     if [[ "$http_code" =~ ^2[0-9][0-9]$ ]] && [[ -n "$response" ]] && jq -e . >/dev/null 2>&1 <<< "$response"; then
         chmod 600 -- "$tmp_file" 2>/dev/null || true
-        mv -f -- "$tmp_file" "$cache_file" || { rm -f -- "$tmp_file"; return 1; }
-        printf '%s\n' "$response"; return 0
+        mv -f -- "$tmp_file" "$cache_file" || {
+            rm -f -- "$tmp_file"
+            return 1
+        }
+        printf '%s\n' "$response"
+        return 0
     fi
     rm -f -- "$tmp_file"
     if [[ -f "$cache_file" ]] && jq -e . "$cache_file" >/dev/null 2>&1; then
         warn "GitHub API returned HTTP ${http_code}; using cached response."
-        cat -- "$cache_file"; return 0
+        cat -- "$cache_file"
+        return 0
     fi
     [[ -n "$response" ]] && printf '%s\n' "$response"
     error "GitHub API request failed (HTTP ${http_code})."
     return 1
 }
+
+# ==============================================================================
+# System Diagnostic & Self-Update Engine
+# ==============================================================================
 
 cmd_doctor() {
     info 'Running ULPM environmental and kernel capability diagnostic...'
@@ -404,21 +497,41 @@ cmd_doctor() {
 
 cmd_self_update() {
     local repo_target="${1:-${ULPM_GITHUB_REPO:-}}"
-    [[ -n "$repo_target" ]] || { error 'No update repository configured. Usage: ulpm self-update <owner/repo>'; return 1; }
-    [[ "$repo_target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { error 'Invalid repository name. Expected owner/repo.'; return 1; }
-    [[ -n "${ULPM_LIB_DIR:-}" && -d "$ULPM_LIB_DIR" ]] || { error 'ULPM_LIB_DIR is not configured or missing; refusing to update.'; return 1; }
+    [[ -n "$repo_target" ]] || {
+        error 'No update repository configured. Usage: ulpm self-update <owner/repo>'
+        return 1
+    }
+    [[ "$repo_target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+        error 'Invalid repository name. Expected owner/repo.'
+        return 1
+    }
+    [[ -n "${ULPM_LIB_DIR:-}" && -d "$ULPM_LIB_DIR" ]] || {
+        error 'ULPM_LIB_DIR is not configured or missing; refusing to update.'
+        return 1
+    }
 
     info "Checking for ULPM core engine updates from '$repo_target'..."
     local rel_data latest_tag tarball_url
-    rel_data="$(fetch_github_api "repos/${repo_target}/releases/latest" 5)" || { error 'Failed to contact update server.'; return 1; }
+    rel_data="$(fetch_github_api "repos/${repo_target}/releases/latest" 5)" || {
+        error 'Failed to contact update server.'
+        return 1
+    }
     latest_tag="$(jq -r '.tag_name // empty' <<< "$rel_data")"
     tarball_url="$(jq -r '.tarball_url // empty' <<< "$rel_data")"
-    [[ -n "$latest_tag" && -n "$tarball_url" ]] || { error 'No release archive found on remote repository.'; return 1; }
-    [[ "$tarball_url" == https://api.github.com/repos/*/tarball/* || "$tarball_url" == https://codeload.github.com/*/tar.gz/* ]] || { error 'Unexpected release archive URL; refusing to download it.'; return 1; }
+    [[ -n "$latest_tag" && -n "$tarball_url" ]] || {
+        error 'No release archive found on remote repository.'
+        return 1
+    }
+    [[ "$tarball_url" == https://api.github.com/repos/*/tarball/* || "$tarball_url" == https://codeload.github.com/*/tar.gz/* ]] || {
+        error 'Unexpected release archive URL; refusing to download it.'
+        return 1
+    }
     if [[ "$latest_tag" == "v${ULPM_VERSION:-}" || "$latest_tag" == "${ULPM_VERSION:-}" ]]; then
-        info "ULPM is already at the latest release ($latest_tag)."; return 0
+        info "ULPM is already at the latest release ($latest_tag)."
+        return 0
     fi
-    printf ' %b➜%b Engine update available: %bv%s%b ➔ %b%s%b\n' "$C_GREEN" "$C_RESET" "$C_RED" "${ULPM_VERSION:-unknown}" "$C_RESET" "$C_GREEN" "$latest_tag" "$C_RESET"
+    printf '%b➜%b Engine update available: %bv%s%b ➔ %b%s%b\n' \
+        "$C_GREEN" "$C_RESET" "$C_RED" "${ULPM_VERSION:-unknown}" "$C_RESET" "$C_GREEN" "$latest_tag" "$C_RESET"
 
     local cache_root="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}" tmp_dir ulpm_root bin_path backup_dir
     mkdir -p -- "$cache_root" || return 1
@@ -426,7 +539,10 @@ cmd_self_update() {
     ulpm_root="${ULPM_ROOT_DIR:-${ULPM_LIB_DIR%/lib/ulpm}}"
     bin_path="${ULPM_BIN:-$ulpm_root/bin/ulpm}"
     backup_dir="$tmp_dir/backup"
-    mkdir -p -- "$tmp_dir/extracted" "$backup_dir" || { rm -rf -- "$tmp_dir"; return 1; }
+    mkdir -p -- "$tmp_dir/extracted" "$backup_dir" || {
+        rm -rf -- "$tmp_dir"
+        return 1
+    }
 
     local auth_header=() token
     if token="$(get_github_token)"; then
@@ -434,20 +550,34 @@ cmd_self_update() {
     fi
     log "Downloading engine payload ($latest_tag)..."
     if ! curl -fLsS --connect-timeout 10 --max-time 180 --retry 2 "${auth_header[@]}" "$tarball_url" -o "$tmp_dir/update.tar.gz"; then
-        error 'Download failed.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Download failed.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
-    tar -tzf "$tmp_dir/update.tar.gz" > "$tmp_dir/archive.list" || { error 'Corrupted archive payload.'; rm -rf -- "$tmp_dir"; return 1; }
+    tar -tzf "$tmp_dir/update.tar.gz" > "$tmp_dir/archive.list" || {
+        error 'Corrupted archive payload.'
+        rm -rf -- "$tmp_dir"
+        return 1
+    }
     if grep -Eq '(^/|(^|/)\.\.(/|$))' "$tmp_dir/archive.list"; then
-        error 'Archive contains unsafe paths; update cancelled.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Archive contains unsafe paths; update cancelled.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
     if ! tar -tvzf "$tmp_dir/update.tar.gz" > "$tmp_dir/archive.verbose"; then
-        error 'Could not inspect update archive entries.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Could not inspect update archive entries.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
     if awk 'substr($0,1,1) !~ /^[d-]$/ { bad=1 } END { exit bad ? 0 : 1 }' "$tmp_dir/archive.verbose"; then
-        error 'Archive contains links or special files; update cancelled.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Archive contains links or special files; update cancelled.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
     if ! tar -xzf "$tmp_dir/update.tar.gz" -C "$tmp_dir/extracted" --strip-components=1 --no-same-owner --no-same-permissions; then
-        error 'Could not safely extract update archive.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Could not safely extract update archive.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
     local update_lib_dir=''
     if [[ -d "$tmp_dir/extracted/lib/ulpm" && -f "$tmp_dir/extracted/lib/ulpm/utils.sh" ]]; then
@@ -455,13 +585,25 @@ cmd_self_update() {
     elif [[ -d "$tmp_dir/extracted/lib" && -f "$tmp_dir/extracted/lib/utils.sh" ]]; then
         update_lib_dir="$tmp_dir/extracted/lib"
     else
-        error 'Archive must contain lib/ulpm/utils.sh or lib/utils.sh, plus bin/ulpm.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Archive must contain lib/ulpm/utils.sh or lib/utils.sh, plus bin/ulpm.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
-    [[ -f "$tmp_dir/extracted/bin/ulpm" ]] || { error 'Archive does not contain bin/ulpm.'; rm -rf -- "$tmp_dir"; return 1; }
-    [[ -d "$ULPM_LIB_DIR" && ! -L "$ULPM_LIB_DIR" && -f "$bin_path" && ! -L "$bin_path" ]] || { error 'Current ULPM installation is incomplete or uses unsafe symbolic links; refusing to update.'; rm -rf -- "$tmp_dir"; return 1; }
+    [[ -f "$tmp_dir/extracted/bin/ulpm" ]] || {
+        error 'Archive does not contain bin/ulpm.'
+        rm -rf -- "$tmp_dir"
+        return 1
+    }
+    [[ -d "$ULPM_LIB_DIR" && ! -L "$ULPM_LIB_DIR" && -f "$bin_path" && ! -L "$bin_path" ]] || {
+        error 'Current ULPM installation is incomplete or uses unsafe symbolic links; refusing to update.'
+        rm -rf -- "$tmp_dir"
+        return 1
+    }
 
     if ! cp -a -- "$ULPM_LIB_DIR" "$backup_dir/lib" || ! cp -a -- "$bin_path" "$backup_dir/ulpm"; then
-        error 'Could not back up current installation; update cancelled.'; rm -rf -- "$tmp_dir"; return 1
+        error 'Could not back up current installation; update cancelled.'
+        rm -rf -- "$tmp_dir"
+        return 1
     fi
     log 'Applying update payload...'
     if ! cp -a -- "$update_lib_dir/." "$ULPM_LIB_DIR/" || ! install -m 755 -- "$tmp_dir/extracted/bin/ulpm" "$bin_path"; then
