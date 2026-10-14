@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/manage.sh - Application Lifecycle & Desktop Integration Engine
+# lib/manage.sh -Application Lifecycle & Desktop Integration Engine
 # ULPM v5.0.0 Declarative Engine (Permissions, Overrides, Runtimes & DB)
 # ==============================================================================
 
@@ -20,7 +20,7 @@ refresh_desktop_environment() {
 _desktop_escape_value() {
     local value="$1"
     value=${value//\\/\\\\}
-    value=${value//$'\n'/ }
+    value=${value//$'\n'/}
     value=${value//$'\r'/ }
     value=${value//\;/\\;}
     value=${value//\#/\\#}
@@ -144,7 +144,7 @@ cmd_permissions() {
     fi
 
     [[ -n "$target" ]] || {
-        error "Usage: ulpm permissions [reset] <app_name|app_id>"
+        error "Usage: ulpm permissions[reset] <app_name|app_id>"
         return 1
     }
 
@@ -157,7 +157,7 @@ cmd_permissions() {
     local manifest_raw
     manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || \
     manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || {
-        error "Could not read manifest from $lpk_file"
+        error "Couldnot read manifest from $lpk_file"
         return 1
     }
 
@@ -208,13 +208,13 @@ cmd_permissions() {
     printf '  %-24s : %b\n' 'Direct GPU / DRI' "$(_fmt_bool "$gpu")"
     printf '  %-24s : %b\n' 'Audio (Pulse/PipeWire)' "$(_fmt_bool "$audio")"
     printf '  %-24s : %b\n' 'Display (GUI/Wayland/X11)' "$(_fmt_bool "$gui")"
-    printf '  %-24s : \033[1m%s\033[0m\n' 'Filesystem Home' "$home"
+    printf '  %-24s :\033[1m%s\033[0m\n' 'Filesystem Home' "$home"
     printf '  %-24s : \033[1m%s\033[0m\n' 'Host Downloads' "$dl"
-    printf '  %-24s : DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
+    printf '  %-24s :DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
         'Hardware Devices' "$(_fmt_bool "$dri")" "$(_fmt_bool "$input")" "$(_fmt_bool "$hidraw")" "$(_fmt_bool "$usb")" "$(_fmt_bool "$kvm")"
 
     local custom_paths
-    custom_paths="$(jq -r '.permissions.filesystem.custom[]? | "     - \(.path) (\(.mode))"' <<< "$effective_json" 2>/dev/null || true)"
+    custom_paths="$(jq -r '.permissions.filesystem.custom[]? | "- \(.path) (\(.mode))"' <<< "$effective_json" 2>/dev/null || true)"
     if [[ -n "$custom_paths" ]]; then
         printf '  %-24s:\n%s\n' 'Custom Bind Paths' "$custom_paths"
     fi
@@ -235,7 +235,7 @@ cmd_override() {
         error "Usage: ulpm override <app_name|app_id> <options|key=val...>"
         printf '%s\n' "Examples:"
         printf '%s\n' "  ulpm override firefox --no-net"
-        printf '%s\n' "  ulpm override blender --share-home"
+        printf '%s\n' "  ulpm overrideblender --share-home"
         printf '%s\n' "  ulpm override retroarch --gaming"
         printf '%s\n' "  ulpm override myapp permissions.devices.kvm=true"
         return 1
@@ -297,7 +297,7 @@ cmd_override() {
                 manifest_set_override "$app_id" "$k" "$v"
                 ;;
             *)
-                error "Unrecognized override instruction: $1"
+                error "Unrecognizedoverride instruction: $1"
                 return 1
                 ;;
         esac
@@ -345,12 +345,12 @@ cmd_runtime() {
             if [[ -f "$r_src" ]]; then
                 squashfuse "$r_src" "$tmp_m" || { rm -rf "$tmp_m"; error "Failed to mount runtime SquashFS"; return 1; }
                 local r_id
-                r_id="$(jq -r '.id // empty' "$tmp_m/meta/manifest.json" 2>/dev/null || basename "$r_src" .lpk)"
+                r_id="$(jq -r '.id// empty' "$tmp_m/meta/manifest.json" 2>/dev/null || basename "$r_src" .lpk)"
                 mkdir -p "$runtimes_dir/$r_id"
                 cp -a -- "$tmp_m/." "$runtimes_dir/$r_id/"
                 safe_unmount "$tmp_m"
                 rm -rf "$tmp_m"
-                info "Runtime [$r_id] successfully installed."
+                info "Runtime[$r_id] successfully installed."
             fi
             ;;
         *)
@@ -388,7 +388,7 @@ cmd_install() (
         if [[ -t 2 ]]; then curl_opts+=(--progress-bar); else curl_opts+=(-sS); fi
         curl "${curl_opts[@]}" "$source" -o "$tmp_lpk" || { error "Download failed: $source"; return 1; }
     else
-        error "Source package not found: $source"
+        error "Sourcepackage not found: $source"
         return 1
     fi
     [[ -s "$tmp_lpk" ]] || { error "Downloaded package is empty."; return 1; }
@@ -419,7 +419,7 @@ cmd_install() (
     check_dependencies squashfuse jq mountpoint || return 1
     mnt_tmp="$(mktemp -d "$cache_home/mnt_chk_XXXXXX")" || return 1
     if ! squashfuse "$tmp_lpk" "$mnt_tmp"; then
-        error "Failed to inspect package archive (SquashFS mount failed)."
+        error "Failed to inspectpackage archive (SquashFS mount failed)."
         return 1
     fi
 
@@ -468,7 +468,7 @@ cmd_install() (
         sleep 0.05
     done
     if mountpoint -q -- "$mnt_tmp" 2>/dev/null; then
-        error "Could not unmount package inspection directory; refusing to continue."
+        error "Could not unmount package inspection directory; refusingto continue."
         return 1
     fi
     rm -rf -- "$mnt_tmp" || { error "Could not remove temporary inspection directory."; return 1; }
@@ -476,21 +476,21 @@ cmd_install() (
 
     local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
     local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
-    _safe_managed_dir "$apps_dir" || { error "Refusing unsafe application directory: $apps_dir"; return 1; }
+    _safe_managed_dir "$apps_dir" || { error "Refusing unsafe application directory:$apps_dir"; return 1; }
     mkdir -p "$apps_dir" "$(dirname -- "$db_file")" || return 1
     local dest_dir="$apps_dir/$app_name"
-    [[ ! -L "$dest_dir" ]] || { error "Refusing to install through a symlinked application directory: $dest_dir"; return 1; }
+    [[ ! -L "$dest_dir" ]] || { error "Refusing to install through a symlinkedapplication directory: $dest_dir"; return 1; }
     mkdir -p "$dest_dir" || return 1
     mv -f -- "$tmp_lpk" "$dest_dir/$app_name.lpk" || { error "Could not place package in application directory."; return 1; }
     tmp_lpk=""
 
     if ! write_desktop_launcher "$app_id" "$app_name"; then
-        warn "Package installed, but desktop launcher creation failed."
+        warn "Package installed, butdesktop launcher creation failed."
     fi
 
     local source_origin="${INSTALL_ORIGIN:-$raw_target}"
     if [[ "$source_origin" == *$'\n'* || "$source_origin" == *$'\r'* || \
-          "$source_origin" == *$'\t'* || "$source_origin" == *'|'* || "$source_origin" == *[[:cntrl:]]* ]]; then
+        "$source_origin" == *$'\t'* || "$source_origin" == *'|'* || "$source_origin" == *[[:cntrl:]]* ]]; then
         source_origin="local"
     fi
 
@@ -508,7 +508,7 @@ cmd_install() (
     printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_version" "$(date +%s)" "$source_origin" >> "$db_file"
 
     refresh_desktop_environment
-    info "Successfully installed '$app_name' ($app_id v$app_version)."
+    info "Successfully installed '$app_name' ($app_idv$app_version)."
 )
 
 cmd_integrate() {
@@ -519,13 +519,13 @@ cmd_integrate() {
     cat > "$mime_dir/packages/ulpm-lpk.xml" <<'EOF_MIME'
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
-    <mime-type type="application/x-lpk">
-        <comment>ULPM Package Bundle</comment>
-        <comment xml:lang="fr">Paquet d'application ULPM</comment>
-        <icon name="package-x-generic"/>
-        <glob pattern="*.lpk"/>
-        <glob pattern="*.LPK"/>
-    </mime-type>
+<mime-type type="application/x-lpk">
+<comment>ULPM Package Bundle</comment>
+<comment xml:lang="fr">Paquet d'application ULPM</comment>
+<icon name="package-x-generic"/>
+<glob pattern="*.lpk"/>
+<glob pattern="*.LPK"/>
+</mime-type>
 </mime-info>
 EOF_MIME
 
@@ -537,7 +537,7 @@ EOF_MIME
 [Desktop Entry]
 Type=Application
 Name=ULPM Package Runner
-Name[fr]=Exécuteur de paquets ULPM
+Name[fr]=Exécuteurde paquets ULPM
 GenericName=Package Runner
 Comment=Run sandboxed .lpk applications directly
 Comment[fr]=Exécuter des paquets autonomes LPK
@@ -590,7 +590,15 @@ cmd_remove() (
             --purge) purge=true; shift ;;
             --) shift; break ;;
             -*) error "Unknown remove option: $1"; return 1 ;;
-            *) [[ -z "$target" ]] && target="$1" || { error "Only one application may be removed at a time."; return 1; }; shift ;;
+            *)
+                if [[ -z "$target" ]]; then
+                    target="$1"
+                else
+                    error "Only one application may be removed at a time."
+                    return 1
+                fi
+                shift
+                ;;
         esac
     done
     [[ -n "$target" ]] || { error "Usage: ulpm remove [--purge] <app_name|app_id>"; return 1; }
@@ -600,9 +608,9 @@ cmd_remove() (
     local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
     local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
     _safe_managed_dir "$apps_dir" || { error "Refusing unsafe application directory: $apps_dir"; return 1; }
-    local resolved_id='' resolved_name='' id name ver origin
+    local resolved_id='' resolved_name='' id name _rest
     if [[ -s "$db_file" ]]; then
-        while IFS='|' read -r id name ver _ installed origin; do
+        while IFS='|' read -r id name _rest; do
             if [[ "$id" == "$target" || "$name" == "$target" ]]; then
                 resolved_id="$id"; resolved_name="$name"; break
             fi
@@ -628,7 +636,7 @@ cmd_remove() (
 
     # Purge persistent overrides and sandboxed home state
     if [[ "$purge" == true ]]; then
-        log "Purging persistent user sandbox state & overrides..."
+        log "Purging persistent user sandbox state& overrides..."
         rm -rf -- "$HOME/.var/app/$app_name"
         [[ "$app_id" != "$app_name" ]] && rm -rf -- "$HOME/.var/app/$app_id"
         rm -f -- "${ULPM_OVERRIDES_DIR:-$HOME/.config/ulpm/overrides}/${app_id}.json"
@@ -641,7 +649,7 @@ cmd_remove() (
 cmd_clean() {
     local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
     _safe_managed_dir "$cache_home" || { error "Refusing unsafe cache path: $cache_home"; return 1; }
-    command -v mountpoint >/dev/null 2>&1 || { error "The mountpoint command is required for safe cleanup."; return 1; }
+    command -v mountpoint >/dev/null 2>&1 || { error "The mountpointcommand is required for safe cleanup."; return 1; }
     log "Unmounting orphaned sessions & purging temporary storage..."
     if [[ -d "$cache_home" ]]; then
         while IFS= read -r -d '' pt; do
@@ -650,7 +658,7 @@ cmd_clean() {
         for pattern in "$cache_home"/mnt_* "$cache_home"/tmp/* "$cache_home"/build_* "$cache_home"/wrap_ai_*; do
             [[ -e "$pattern" || -L "$pattern" ]] || continue
             if mountpoint -q -- "$pattern" 2>/dev/null; then
-                warn "Skipping active mount point: $pattern"
+                warn "Skippingactive mount point: $pattern"
                 continue
             fi
             rm -rf -- "$pattern"
@@ -679,7 +687,7 @@ cmd_search() {
     esac
     info "Searching for '$query' across GitHub Releases and Local Repositories..."
 
-    # shellcheck disable=SC2034
+    # shellcheckdisable=SC2034
     local -a global_targets=() global_types=() global_assets=() global_labels=()
     local display_idx=1 gh_query raw_results raw_count
     gh_query="$(printf '%s' "$query" | sed 's/ /+/g')"
@@ -708,7 +716,7 @@ cmd_search() {
             for priority in lpk appimage deb; do
                 [[ "$priority" != deb || "$is_debian_like" == true ]] || continue
                 local j
-                for ((j=0; j<${#compat_names[@]}; j++)); do
+                for (( j=0; j<${#compat_names[@]}; j++ )); do
                     if [[ "${compat_names[j],,}" == *".$priority" ]]; then
                         selected_filename="${compat_names[j]}"; selected_url="${compat_urls[j]}"
                         case "$priority" in
@@ -733,8 +741,8 @@ cmd_search() {
 
             printf " \033[1;33m[%d]\033[0m %b \033[1m%-25s\033[0m \033[1;33m★ %-5s\033[0m\n     \033[0;90mAsset: %s\033[0m\n     \033[0;90m%s\033[0m\n" \
                 "$display_idx" "$badge" "$repo" "$stars" "$selected_filename" "${desc:0:70}"
-            ((display_idx++))
-        done < <(jq -r '.items[]? | [.full_name, (.stargazers_count|tostring), (.description // "No description")] | @tsv' <<< "$raw_results" 2>/dev/null)
+            (( display_idx++ ))
+        done < <(jq -r '.items[]? |[.full_name, (.stargazers_count|tostring), (.description // "No description")] | @tsv' <<< "$raw_results" 2>/dev/null)
     fi
 
     if [[ "$is_debian_like" == true ]] && command -v apt-cache >/dev/null 2>&1; then
@@ -750,17 +758,17 @@ cmd_search() {
                 global_targets[display_idx]="$apt_pkg"; global_types[display_idx]=APT; global_assets[display_idx]=''
                 printf " \033[1;33m[%d]\033[0m \033[0;35m[4. APT]\033[0m \033[1m%-25s\033[0m\n     \033[0;90m%s\033[0m\n" \
                     "$display_idx" "$apt_pkg" "${apt_desc:0:70}"
-                ((display_idx++))
+                (( display_idx++ ))
             done <<< "$apt_results"
         else
             printf '  No direct APT packages matching query.\n'
         fi
     fi
 
-    local total_options=$((display_idx - 1))
+    local total_options=$(( display_idx - 1 ))
     printf '%s\n' '--------------------------------------------------------------------------------'
-    (( total_options > 0 )) || { warn "No package candidates found for '$query'."; return 0; }
-    [[ -r /dev/tty ]] || { error 'Interactive selection requires a terminal.'; return 1; }
+    (( total_options > 0 )) || { warn "No package candidates found for'$query'."; return 0; }
+    [[ -r /dev/tty ]] || { error 'Interactiveselection requires a terminal.'; return 1; }
     printf '\033[1;36mSelect package(s) to install (e.g. 1, 1 2, 1-3) [default: cancel]: \033[0m'
     local raw_input
     IFS= read -r raw_input </dev/tty || return 1
@@ -773,7 +781,7 @@ cmd_search() {
         if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
             start="${BASH_REMATCH[1]}"; end="${BASH_REMATCH[2]}"
             if (( start > 0 && end <= total_options && start <= end && end - start <= 100 )); then
-                for ((i=start; i<=end; i++)); do selected+=("$i"); done
+                for (( i=start; i<=end; i++ )); do selected+=("$i"); done
             fi
         elif [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total_options )); then
             selected+=("$token")
@@ -818,7 +826,7 @@ cmd_search() {
                 fi
                 ;;
             APT)
-                info 'Packaging APT package to LPK...'
+                info 'Packaging APT packageto LPK...'
                 local out_lpk="${target}.lpk"
                 if cmd_deb_pack "$target" "$target" "$out_lpk"; then
                     INSTALL_ORIGIN="apt:$target" cmd_install "$out_lpk" || warn "Installation failed for $target."
@@ -855,9 +863,10 @@ cmd_inspect() {
     app_fv="$(jq -r '.format_version // 1' <<< "$manifest_raw")"
 
     app_net="$(jq -r 'if has("permissions") then .permissions.network else (.network // false) end' <<< "$manifest_raw")"
+    fsize="$(du -sh -- "$lpk_file" 2>/dev/null | cut -f1)"
 
     crypto_status="\033[0;31m✖ Unsigned / unverified\033[0m"
-    if verify_package "$lpk_file" >/dev/null 2>&1; then
+    if declare -F verify_package >/dev/null 2>&1 && verify_package "$lpk_file" >/dev/null 2>&1; then
         crypto_status="\033[0;32m✔ Verified (trusted key)\033[0m"
     else
         code=$?
@@ -865,5 +874,19 @@ cmd_inspect() {
             2) crypto_status="\033[0;31m✖ Unsigned (missing signature)\033[0m" ;;
             3) crypto_status="\033[1;33m⚠ Signed (untrusted authority)\033[0m" ;;
             *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\033[0m" ;;
-            esac
-            fi
+        esac
+    fi
+
+    printf '%s\n' '================================================================================'
+    printf '\033[1mPackage Inspection: %s\033[0m\n' "$app_name"
+    printf '%s\n' '--------------------------------------------------------------------------------'
+    printf '%-20s : %s\n' 'Application ID' "$app_id"
+    printf '%-20s : %s\n' 'Version' "$app_ver"
+    printf '%-20s : %s\n' 'Architecture' "$app_arch"
+    printf '%-20s : %s\n' 'Format Spec' "v$app_fv"
+    printf '%-20s : %s\n' 'Payload Size' "$fsize"
+    printf '%-20s : %s\n' 'Exec Entrypoint' "$app_exec"
+    printf '%-20s : %s\n' 'Network Allowed' "$app_net"
+    printf '%-20s : %b\n' 'Signature Trust' "$crypto_status"
+    printf '%s\n' '================================================================================'
+}
