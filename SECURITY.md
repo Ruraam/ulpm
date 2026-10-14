@@ -26,7 +26,7 @@ Only the latest major/minor release receives security fixes.
 ULPM runs applications inside unprivileged Bubblewrap namespaces and verifies streaming
 Ed25519 signatures on `.lpk` packages. What that does and does not give you:
 
-###Protects against
+### Protects against
 - **Arbitrary host filesystem access by default.** Sandboxed apps only see their dedicated state
 under`~/.var/app/<id>` and `~/Downloads` (read-write by default), unless explicitly overridden.
 - **Process table spying and capability exploits.** Apps run in private PID/UTS namespaces,
