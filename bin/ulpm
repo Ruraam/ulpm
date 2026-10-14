@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# ULPM - Universal Linux Package Manager
-# Main CLI entry point | rootless by default | no resident daemon
+# ULPM - Universal Linux Package Manager (v4.1.0 Unified Engine)
+# Main CLI entry point | rootless by default| no resident daemon
 # ============================================================================
 set -Eeuo pipefail
 
@@ -9,18 +9,27 @@ export ULPM_VERSION="4.1.0"
 export ULPM_FORMAT_VERSION="4"
 
 if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
-    RED=$'\033[0;31m'; YELLOW=$'\033[0;33m'; NC=$'\033[0m'
+    RED=$'\033[0;31m'
+    YELLOW=$'\033[0;33m'
+    NC=$'\033[0m'
 else
-    RED=''; YELLOW=''; NC=''
+    RED=''
+    YELLOW=''
+    NC=''
 fi
 
-_die() { printf '%s[-] %s%s\n' "$RED" "$*" "$NC" >&2; exit 1; }
-_warn() { printf '%s[!] %s%s\n' "$YELLOW" "$*" "$NC" >&2; }
+_die() {
+    printf '%s[-] %s%s\n' "$RED" "$*" "$NC" >&2
+    exit 1
+}
+_warn() {
+    printf '%s[!] %s%s\n' "$YELLOW" "$*" "$NC" >&2
+}
 
 # Resolve HOME before expanding any user paths (set -u safe).
 [[ -n "${HOME:-}" && -d "$HOME" ]] || _die 'HOME is unset or is not an existing directory.'
 
-# Resolve this entry point.
+# Resolve this entry point safely.
 ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
     ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
@@ -28,9 +37,11 @@ fi
 [[ -n "$ULPM_BIN" && -f "$ULPM_BIN" ]] || _die 'Cannot resolve the ULPM executable path.'
 ULPM_BIN_DIR="$(cd -- "$(dirname -- "$ULPM_BIN")" && pwd -P)"
 
-# Find the module directory in common source-tree and installed layouts.
+# Find the module directory across common source trees and installed layouts.
 _ulpm_lib_candidates=()
-if [[ -n "${ULPM_LIB_DIR:-}" ]]; then _ulpm_lib_candidates+=("$ULPM_LIB_DIR"); fi
+if [[ -n "${ULPM_LIB_DIR:-}" ]]; then
+    _ulpm_lib_candidates+=("$ULPM_LIB_DIR")
+fi
 _ulpm_lib_candidates+=(
     "$ULPM_BIN_DIR/lib/ulpm"
     "$ULPM_BIN_DIR/lib"
@@ -51,18 +62,28 @@ done
 [[ -n "$ULPM_LIB_DIR" ]] || _die 'ULPM library directory not found (utils.sh is missing).'
 
 case "$ULPM_LIB_DIR" in
-    "$ULPM_BIN_DIR") ULPM_ROOT_DIR="$ULPM_BIN_DIR" ;;
-    */lib/ulpm)      ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}" ;;
-    */lib)           ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}" ;;
-    *)               ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")" ;;
+    "$ULPM_BIN_DIR")
+        ULPM_ROOT_DIR="$ULPM_BIN_DIR"
+        ;;
+    */lib/ulpm)
+        ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}"
+        ;;
+    */lib)
+        ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}"
+        ;;
+    *)
+        ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")"
+        ;;
 esac
 export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR ULPM_LIB_DIR
 
-# Help GUI-launched apps find ULPM and user-installed commands too.
+# Help GUI-launched apps find ULPM and user-installed binaries.
 _path_add() {
     local dir="${1:-}"
     [[ -n "$dir" && -d "$dir" ]] || return 0
-    case ":${PATH:-}:" in *":$dir:"*) return 0 ;; esac
+    case ":${PATH:-}:" in
+        *":$dir:"*) return 0 ;;
+    esac
     PATH="$dir${PATH:+:$PATH}"
     return 0
 }
@@ -70,7 +91,7 @@ _path_add "$ULPM_BIN_DIR"
 _path_add "$HOME/.local/bin"
 export PATH
 
-# Standard XDG paths; do not require root privileges.
+# Standard XDG paths; rootless by design.
 export ULPM_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
 export ULPM_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
 export ULPM_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
@@ -79,11 +100,11 @@ export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
 export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 
-# Atomic directory creation with strict umask on keys
+# Atomic directory creation with strict privacy on keychains.
 mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" || _die 'Unable to create ULPM directories.'
 ( umask 077 && mkdir -p -- "$ULPM_KEYS_DIR" ) || _die 'Unable to create secure keys directory.'
 
-# Load modules in dependency order.
+# Load modules in strict dependency order.
 for mod in utils crypto sandbox pack deb run stream manage; do
     module="$ULPM_LIB_DIR/$mod.sh"
     [[ -r "$module" ]] || _die "Required module '$mod.sh' is missing or unreadable in $ULPM_LIB_DIR."
@@ -92,6 +113,7 @@ for mod in utils crypto sandbox pack deb run stream manage; do
 done
 unset mod module _candidate _ulpm_lib_candidates
 
+# Initialize runtime environment if declared.
 if declare -F init_environment >/dev/null 2>&1; then
     init_environment
 fi
@@ -119,42 +141,43 @@ Usage: ulpm <command> [options] [arguments]
 
 Execution:
   run [flags] <target> [-- args...]        Run an application in a Bubblewrap sandbox
-  stream <url|repo> [flags] [-- args...]    Run ephemerally, using temporary storage
+  stream <url|repo> [flags] [-- args...]   Run ephemerally, using temporary storage
 
 Packaging:
-  pack [flags] <src> [name] [out.lpk] [ver] Create an LPK bundle
-      --no-scan, --fast                     Bypass ELF dynamic dependency bundling
-  deb-pack <pkg|file.deb> [name]            Build an LPK from a Debian package
+  pack [flags] <src> [name] [out.lpk] [ver]  Create an LPK bundle
+    --no-scan, --fast                      Bypass ELF dynamic dependency bundling
+  deb-pack <pkg|file.deb> [name]           Build an LPK from a Debian package
 
 Application management:
-  install, -i <source> [name]                Install an application
-  upgrade, -u                                Upgrade tracked applications
-  remove, -r [--purge] <app_name>            Uninstall an application
-  list, -l                                   List installed applications
-  search, -s <query>                         Search available applications
-  inspect <package.lpk>                      Inspect package metadata and signature
-  clean                                      Clean ULPM cache and dangling sessions
-  integrate                                  Register desktop and MIME integration
+  install, -i <source> [name]              Install an application
+  upgrade, -u                               Upgrade tracked applications
+  remove, -r [--purge] <app_name>          Uninstall an application
+  list, -l                                  List installed applications
+  search, -s <query>                        Search available applications
+  inspect <package.lpk>                     Inspect package metadata and signature
+  clean                                     Clean ULPM cache and dangling sessions
+  integrate                                 Register desktop and MIME integration
 
 Security and maintenance:
-  keygen [name]                              Generate an Ed25519 keypair
-  sign <file.lpk> [priv_key]                 Sign an LPK package
-  trust <public_key.pub>                     Trust a public key
-  token [PAT]                                Configure a GitHub access token
-  doctor                                     Diagnose runtime and sandbox support
-  self-update [repo]                         Update ULPM from a release source
-  completion                                 Print shell completion configuration
+  keygen [name]                             Generate an Ed25519 keypair
+  sign <file.lpk> [priv_key]                Sign an LPK package
+  trust <public_key.pub>                    Trust a public key
+  token [PAT]                               Configure a GitHub access token
+  doctor                                    Diagnose runtime and sandbox support
+  self-update [repo]                        Update ULPM from a release source
+  completion                                Print shell completion configuration
 
 Runtime flags (run/stream):
-  --offline, --no-net                        Disable network access
-  --no-gpu                                   Disable GPU device access
-  --no-audio                                 Disable audio server access
-  --no-gui                                   Disable graphical display access
-  --bind <host>:<dest>                       Bind a host path into the sandbox
+  --offline, --no-net                       Disable network access
+  --no-gpu                                  Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
+  --no-audio                                Disable audio server access (PulseAudio/PipeWire)
+  --no-gui                                  Disable graphical display access (X11 & Wayland)
+  --no-input                                Disable gamepad & host input devices
+  --bind <host>:<dest>                      Bind a host path into the sandbox
 
 Global:
-  -h, --help                                 Show this help
-  -v, --version                              Show version
+  -h, --help                                Show this help
+  -v, --version                             Show version
 EOF_HELP
 }
 
@@ -169,17 +192,30 @@ _dispatch() {
 }
 
 main() {
-    if (($# == 0)); then show_help; return 0; fi
+    if (($# == 0)); then
+        show_help
+        exit 0
+    fi
     case "$1" in
-        -h|--help|help)        show_help; return 0 ;;
-        -v|--version|version)  printf 'ulpm v%s (LPK format %s)\n' "$ULPM_VERSION" "$ULPM_FORMAT_VERSION"; return 0 ;;
+        -h|--help|help)
+            show_help
+            exit 0
+            ;;
+        -v|--version|version)
+            printf 'ulpm v%s (LPK format %s)\n' "$ULPM_VERSION" "$ULPM_FORMAT_VERSION"
+            exit 0
+            ;;
     esac
 
     local cmd="$1"
     shift
     case "$cmd" in
-        run)                 _dispatch cmd_run run "$@" ;;
-        stream)              _dispatch cmd_stream stream "$@" ;;
+        run)
+            _dispatch cmd_run run "$@"
+            ;;
+        stream)
+            _dispatch cmd_stream stream "$@"
+            ;;
         pack)
             local pack_args=()
             local no_scan=0
@@ -194,37 +230,69 @@ main() {
                 esac
             done
 
-            if (( no_scan == 1 )) || [[ "${ULPM_NO_SCAN:-0}" == 1 ]]; then
+            if ((no_scan == 1)) || [[ "${ULPM_NO_SCAN:-0}" == 1 ]]; then
                 export ULPM_NO_SCAN=1
                 _dispatch cmd_pack pack --no-scan "${pack_args[@]}"
             else
                 _dispatch cmd_pack pack "${pack_args[@]}"
             fi
             ;;
-        deb-pack|deb_pack)   _dispatch cmd_deb_pack deb-pack "$@" ;;
-        install|-i|add|-a)   _dispatch cmd_install install "$@" ;;
-        upgrade|-u)          _dispatch cmd_upgrade upgrade "$@" ;;
-        remove|-r|rm)        _dispatch cmd_remove remove "$@" ;;
-        search|-s)           _dispatch cmd_search search "$@" ;;
-        list|-l|ls)          _dispatch cmd_list list "$@" ;;
-        inspect|info)        _dispatch cmd_inspect inspect "$@" ;;
-        clean)               _dispatch cmd_clean clean "$@" ;;
-        integrate)           _dispatch cmd_integrate integrate "$@" ;;
-        keygen)              _dispatch cmd_keygen keygen "$@" ;;
-        sign)                _dispatch cmd_sign sign "$@" ;;
-        trust)               _dispatch cmd_trust trust "$@" ;;
-        token|auth)          _dispatch cmd_token token "$@" ;;
-        doctor|check)        _dispatch cmd_doctor doctor "$@" ;;
-        self-update)         _dispatch cmd_self_update self-update "$@" ;;
-        completion)          _dispatch cmd_completion completion "$@" ;;
+        deb-pack|deb_pack)
+            _dispatch cmd_deb_pack deb-pack "$@"
+            ;;
+        install|-i|add|-a)
+            _dispatch cmd_install install "$@"
+            ;;
+        upgrade|-u)
+            _dispatch cmd_upgrade upgrade "$@"
+            ;;
+        remove|-r|rm)
+            _dispatch cmd_remove remove "$@"
+            ;;
+        search|-s)
+            _dispatch cmd_search search "$@"
+            ;;
+        list|-l|ls)
+            _dispatch cmd_list list "$@"
+            ;;
+        inspect|info)
+            _dispatch cmd_inspect inspect "$@"
+            ;;
+        clean)
+            _dispatch cmd_clean clean "$@"
+            ;;
+        integrate)
+            _dispatch cmd_integrate integrate "$@"
+            ;;
+        keygen)
+            _dispatch cmd_keygen keygen "$@"
+            ;;
+        sign)
+            _dispatch cmd_sign sign "$@"
+            ;;
+        trust)
+            _dispatch cmd_trust trust "$@"
+            ;;
+        token|auth)
+            _dispatch cmd_token token "$@"
+            ;;
+        doctor|check)
+            _dispatch cmd_doctor doctor "$@"
+            ;;
+        self-update)
+            _dispatch cmd_self_update self-update "$@"
+            ;;
+        completion)
+            _dispatch cmd_completion completion "$@"
+            ;;
         *)
             if declare -F error >/dev/null 2>&1; then
                 error "Unknown command: $cmd"
             else
-                _warn "Unknown command: $cmd"
+                _die "Unknown command: $cmd"
             fi
             show_help
-            return 2
+            exit 1
             ;;
     esac
 }
