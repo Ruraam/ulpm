@@ -4,7 +4,7 @@ All notable changes to ULPM are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-##[5.0.0] - 2025-05-18
+## [5.0.0] - 2025-05-18
 
 ### Added
 - **Manifest Schema v5 & Declarative Permissions**:
