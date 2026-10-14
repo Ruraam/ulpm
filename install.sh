@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ULPM Official Universal Installer & Lifecycle Manager (v4.1.0 Unified)
+# ULPM Official Universal Installer & Lifecycle Manager (v5.0.0 Declarative)
 # Supports: Rootless (~/.local/bin) & System-wide (/usr/local/bin)
 #
 # Usage:
@@ -47,16 +47,17 @@ print_banner() {
     term_cols=$(tput cols 2>/dev/null || echo 80)
 
     if [[ -n "${NO_COLOR:-}" || ! -t 1 || "$term_cols" -lt 80 ]]; then
-        echo -e "\n=== ULPM (Universal Linux Package Manager Engine) ===\n"
+        echo -e "\n=== ULPM (Universal Linux Package Manager Engine v5.0) ===\n"
         return 0
     fi
 
     clear
     echo -e ".             \033[0;97m▐\033[0;96m██\033[0;97m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
     echo -e "               \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
-    echo -e "               \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
+    echo -e ".              \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
     echo -e "              \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
     echo -e "              \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+    echo -e "               \033[1;30mDeclarative Sandbox & Universal Package Engine v5.0\033[0m\n"
 }
 
 # ------------------------------------------------------------
@@ -113,11 +114,11 @@ clean_path_file() {
     local tmp
     tmp="$(mktemp)"
     awk '
-        /# Added by ULPM installer/ { skip=1; next }
-        /# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
-        skip && /^[[:space:]]*export PATH=/ { skip=0; next }
-        skip { skip=0 }
-        { print }
+    /# Added by ULPM installer/ { skip=1; next }
+    /# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
+    skip && /^[[:space:]]*export PATH=/ { skip=0; next }
+    skip { skip=0 }
+    { print }
     ' "$cfg" > "$tmp"
     cat "$tmp" > "$cfg"
     rm -f "$tmp"
@@ -196,7 +197,7 @@ while [ $# -gt 0 ]; do
             echo
             echo "Options:"
             echo "  --apt           Install via official signed APT repository (Debian/Ubuntu)"
-            echo "  --user          Install in user home directory (~/.local)"
+            echo "  --user          Install in user home directory (~/.local/bin)"
             echo "  --system        Install system-wide (/usr/local, requires root)"
             echo "  --bin-dir DIR   Custom binary directory"
             echo "  --ref REF       GitHub branch/tag to download from (default: main)"
@@ -232,7 +233,7 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
         command -v apt-get >/dev/null 2>&1 && HAS_APT=true
 
         echo
-        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine${NC}"
+        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine (v5.0)${NC}"
         echo "  1) Rootless installation (User: ~/.local/bin)"
         echo "  2) System-wide installation (Root: /usr/local/bin)"
         if [ "$HAS_APT" = true ]; then
@@ -300,7 +301,7 @@ uninstall_ulpm() {
     done
 
     echo
-    echo -e "${YELLOW}This operation will remove ULPM, its libraries, installed apps and keys.${NC}"
+    echo -e "${YELLOW}This operation will remove ULPM, its libraries, installed apps, runtimes and overrides.${NC}"
     echo "Sandbox app storage in ~/.var/app will be preserved."
     echo
 
@@ -349,7 +350,7 @@ uninstall_ulpm() {
     done
     rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
 
-    # Nettoyage rigoureux des fichiers MIME et handlers (anciens et récents)
+    # Nettoyage rigoureux des fichiers MIME et handlers
     rm -f "$data_home/applications/ulpm-open.desktop" \
           "$data_home/applications/ulpm-handler.desktop" \
           "$data_home/mime/packages/ulpm-lpk.xml" \
@@ -370,9 +371,9 @@ uninstall_ulpm() {
 
     local sys_path
     for sys_path in /usr/local/share/applications/ulpm-open.desktop \
-                     /usr/local/share/applications/ulpm-handler.desktop \
-                     /usr/local/share/mime/packages/ulpm-lpk.xml \
-                     /usr/local/share/mime/packages/application-x-lpk.xml; do
+                    /usr/local/share/applications/ulpm-handler.desktop \
+                    /usr/local/share/mime/packages/ulpm-lpk.xml \
+                    /usr/local/share/mime/packages/application-x-lpk.xml; do
         if [ -e "$sys_path" ]; then
             if [ -w "$(dirname "$sys_path")" ]; then
                 rm -f -- "$sys_path"
@@ -402,7 +403,7 @@ uninstall_ulpm() {
     done
 
     if [ -d "$config_home/ulpm" ]; then
-        if confirm "Back up your ULPM config and signing keys to \$HOME before removal? [y/N]: " "n"; then
+        if confirm "Back up your ULPM config, keys, and overrides to \$HOME before removal? [y/N]: " "n"; then
             local key_backup
             key_backup="$HOME/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
             if mkdir -p "$key_backup" && chmod 700 "$key_backup" && cp -a "$config_home/ulpm/." "$key_backup/"; then
@@ -786,7 +787,7 @@ if [ "$MODE" = "user" ]; then
 fi
 
 # ------------------------------------------------------------
-# Shell Auto-Completion
+# Shell Auto-Completion (Updated v5.0 Commands & Profiles)
 # ------------------------------------------------------------
 
 setup_shell_completion() {
@@ -802,7 +803,7 @@ setup_shell_completion() {
     local comp_file="$TMP_DIR/ulpm_completion.bash"
     cat <<'EOF' > "$comp_file"
 # ==============================================================================
-# ULPM Bash/Zsh Completion Engine
+# ULPM Bash/Zsh Completion Engine (v5.0.0 Declarative)
 # ==============================================================================
 
 _ulpm_completions() {
@@ -812,7 +813,9 @@ _ulpm_completions() {
         prev="${COMP_WORDS[COMP_CWORD-1]}"
     }
 
-    local commands="run stream pack deb-pack install remove search list inspect doctor keygen verify sign trust token self-update upgrade clean integrate completion help version"
+    local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trust token self-update upgrade clean integrate completion help version"
+    local runtime_sub="list install"
+    local run_flags="--gaming --strict --desktop --offline --no-net --no-gpu --no-audio --no-gui --no-input --bind"
 
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -820,25 +823,39 @@ _ulpm_completions() {
     fi
 
     case "$prev" in
-        run|remove|rm|inspect|info)
+        runtime)
+            COMPREPLY=($(compgen -W "$runtime_sub" -- "$cur"))
+            return 0
+            ;;
+        run|remove|rm|inspect|info|override|permissions|perms)
             local db_file="${ULPM_DB:-$HOME/.local/share/ulpm/installed.db}"
             local installed_apps=""
             if [[ -s "$db_file" ]]; then
                 installed_apps="$(awk -F'|' '{print $2}' "$db_file" 2>/dev/null)"
             fi
-            COMPREPLY=($(compgen -W "$installed_apps" -- "$cur"))
+            COMPREPLY=($(compgen -W "$installed_apps" -- "$cur") $(compgen -f -X '!*.lpk' -- "$cur"))
             ;;
-        install|verify|sign)
+        install|sign)
             COMPREPLY=($(compgen -f -X '!*.lpk' -- "$cur") $(compgen -d -- "$cur"))
+            ;;
+        trust)
+            COMPREPLY=($(compgen -f -X '!*.pub' -- "$cur") $(compgen -d -- "$cur"))
             ;;
         deb-pack)
             COMPREPLY=($(compgen -f -X '!*.deb' -- "$cur") $(compgen -d -- "$cur"))
             ;;
-        doctor|keygen|clean|list|self-update|upgrade|integrate|completion)
+        pack)
+            COMPREPLY=($(compgen -W "--no-scan --fast --shared --runtime" -- "$cur") $(compgen -d -- "$cur"))
+            ;;
+        doctor|keygen|clean|list|self-update|upgrade|integrate|completion|version)
             COMPREPLY=()
             ;;
         *)
-            COMPREPLY=($(compgen -f -- "$cur"))
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$run_flags" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -f -- "$cur"))
+            fi
             ;;
     esac
 }
@@ -882,7 +899,6 @@ setup_desktop_integration() {
         mkdir -p "$mime_dir" "$apps_dir"
     fi
 
-    # Fichier XML conforme FreeDesktop
     local mime_file="$TMP_DIR/ulpm-lpk.xml"
     cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -897,7 +913,6 @@ setup_desktop_integration() {
 </mime-info>
 EOF
 
-    # Entrée de bureau Desktop Handler
     local desktop_file="$TMP_DIR/ulpm-handler.desktop"
     cat <<EOF > "$desktop_file"
 [Desktop Entry]
@@ -924,7 +939,6 @@ EOF
         install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
     fi
 
-    # Association par défaut dans mimeapps.list
     local mimeapps_list="$target_config/mimeapps.list"
     if [ "$NEED_PRIV" = true ]; then
         priv mkdir -p "$target_config"
@@ -952,7 +966,6 @@ EOF
         fi
     fi
 
-    # Rafraîchissement des bases de données FreeDesktop
     if command -v update-mime-database >/dev/null 2>&1; then
         if [ "$NEED_PRIV" = true ]; then
             priv update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
@@ -969,13 +982,11 @@ EOF
         fi
     fi
 
-    # Rafraîchissement des gestionnaires de fichiers actifs
     nautilus -q 2>/dev/null || true
     thunar -q 2>/dev/null || true
     kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
 }
 
-# Décision d'activation de l'intégration
 if [ "$INTEGRATE" = "auto" ]; then
     if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
         setup_desktop_integration
@@ -987,32 +998,32 @@ elif [ "$INTEGRATE" = true ]; then
 fi
 
 # ------------------------------------------------------------
-# Crypto Key Provisioning (Ed25519 - ULPM v4.1.0 Standard)
+# Crypto Key Provisioning (Ed25519 - ULPM v5 Standard)
 # ------------------------------------------------------------
 
 provision_default_keys() {
     local config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
     local keys_dir="$config_dir/keys"
     local trusted_dir="$config_dir/trusted_keys"
+    local overrides_dir="$config_dir/overrides"
     local priv_key="$keys_dir/default.priv"
     local pub_key="$keys_dir/default.pub"
     local trusted_pub="$trusted_dir/default.pub"
 
-    if [ ! -f "$priv_key" ] || [ ! -f "$pub_key" ]; then
-        info "Initializing local Ed25519 cryptographic authority..."
-        ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
-        if command -v openssl >/dev/null 2>&1; then
-            if [ ! -f "$priv_key" ]; then
-                ( umask 077; openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
-                    || warn "Failed to generate Ed25519 private key ($priv_key)."
-            fi
-            chmod 600 "$priv_key" 2>/dev/null || true
-            if [ -f "$priv_key" ]; then
-                openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
-                    || warn "Failed to derive public key ($pub_key)."
-                chmod 644 "$pub_key" 2>/dev/null || true
-                cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
-            fi
+    info "Initializing ULPM v5 storage structures & Ed25519 authority..."
+    mkdir -p "$overrides_dir"
+    ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
+    if command -v openssl >/dev/null 2>&1; then
+        if [ ! -f "$priv_key" ]; then
+            ( umask 077; openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
+                || warn "Failed to generate Ed25519 private key ($priv_key)."
+        fi
+        chmod 600 "$priv_key" 2>/dev/null || true
+        if [ -f "$priv_key" ]; then
+            openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
+                || warn "Failed to derive public key ($pub_key)."
+            chmod 644 "$pub_key" 2>/dev/null || true
+            cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
         fi
     fi
 }
@@ -1024,7 +1035,7 @@ provision_default_keys
 # ------------------------------------------------------------
 
 echo
-echo -e "${GREEN}✔ ULPM engine successfully installed!${NC}"
+echo -e "${GREEN}✔ ULPM engine v5.0 successfully installed!${NC}"
 echo -e "  Binary: ${BOLD}$BIN_DIR/ulpm${NC}"
 echo -e "  Libraries: ${GRAY}$LIB_DIR${NC}"
 
