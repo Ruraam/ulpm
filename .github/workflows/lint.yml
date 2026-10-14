@@ -1,0 +1,26 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax (bash -n)
+        run: make syntax
+
+      - name: Whitespace-damage guard
+        run: make whitespace
+
+      - name: ShellCheck (warnings and above)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -x -S warning bin/ulpm install.sh lib/*.sh
