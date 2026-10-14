@@ -13,11 +13,11 @@ make test       # bats suites in tests/ (requires bats)
 | Path | Role |
 |------|------|
 | `bin/ulpm` | CLI entry point, versioning, and top-level command dispatch |
-|`lib/utils.sh` | Logging, locking, path validation, declarative overrides engine, doctor |
+| `lib/utils.sh` | Logging, locking, path validation, declarative overrides engine, doctor |
 | `lib/crypto.sh` | Ed25519 streaming keys, package signing, verification, trust management |
 | `lib/pack.sh`, `lib/deb.sh` | `.lpk` v5 bundle builder (directories, archives, offset-safe AppImage, `.deb`) |
 | `lib/sandbox.sh`, `lib/run.sh`, `lib/stream.sh` | Bubblewrap sandbox engine (App & RootFS), execution profiles (`--gaming`, `--strict`, `--desktop`), ephemeral RAM streaming |
-| `lib/manage.sh` | Lifecycle (`install`, `remove`, `list`, `search`, `upgrade`, `inspect`), declarative permissions,overrides management, shared runtimes |
+| `lib/manage.sh` | Lifecycle (`install`, `remove`, `list`, `search`, `upgrade`, `inspect`), declarative permissions, overrides management, shared runtimes |
 | `install.sh` | Universal dependency-aware installer, desktop/MIME integrator, and uninstaller |
 
 ## Rules
@@ -26,10 +26,10 @@ make test       # bats suites in tests/ (requires bats)
 2. **Treat package contents as hostile.** Anything read from a manifest or archive (id,name,
 paths, exec, D-Bus namespaces) must be validated (`is_safe_app_id`, `is_safe_app_name`, `_ulpm_valid_bind_dest`) before it reaches a path,
 the install database, or a command line. Never build shell code or `sed` scripts dynamically from it.
-3. **Bashrobustness**: Scripts run under `set -euo pipefail`. Beware of `(( i++ ))` (fails when `i` is 0; use `(( i += 1 ))` or `i=$(( i + 1 ))`) and unguarded `shift`.
+3. **Bash robustness**: Scripts run under `set -euo pipefail`. Beware of `(( i++ ))` (fails when `i` is 0; use `(( i += 1 ))` or `i=$(( i + 1 ))`) and unguarded `shift`.
 4. **Code style**: Quote everything; keep functions small and single-purpose; prefer `local`. Indent with 4 spaces (see `.editorconfig`).
 5. **Traceability**: Security-relevant behavior changes, permission updates, or schema adjustments require anentry in `SECURITY.md` or `CHANGELOG.md`.
 6. **Testing**: Add or update abats test in `tests/` for every bug fix or new feature.
 
 ## Pull requests
-Keep them focused,adhere to the POSIX/Bash core utils without adding heavy external dependencies, and ensure `make check` is completely green before submitting.
+Keep them focused, adhere to the POSIX/Bash core utils without adding heavy external dependencies, and ensure `make check` is completely green before submitting.
