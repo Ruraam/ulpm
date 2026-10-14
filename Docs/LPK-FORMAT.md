@@ -1,48 +1,36 @@
-# `.lpk` format, version 4
+# `.lpk` format, version 5
 
 An `.lpk` is a **SquashFS image** (zstd-compressed) optionally followed by a **104-byte signature
-trailer**. It is mounted read-only with `squashfuse`; nothing is extracted to disk at run time.
+trailer**. It is mounted read-only via `squashfuse`; nothing is extracted to disk at run time.
 
 ## Image layout
 ```
-meta/manifest.json      required, see below
-meta/...                optional metadata (icon, desktop entry data)
+meta/manifest.json      required, see schema below
+meta/icon.png           optional application icon (standard 256x256or 512x512)
+meta/...                optional metadata (desktop entries, translation strings)
 root/                   application payload, mounted at /app inside the sandbox
 ```
-A package whose `root/` contains `etc/`, `usr/` and `bin/` is treated as a **RootFS** and is run
-as the sandbox root instead of being mounted under `/app`.
+A package whose `root/` contains `etc/`,`usr/`, and `bin/` (or package `type: "rootfs"`) is treated as a **RootFS** and is run as the sandbox root (`/`) instead of being isolated under `/app`.
+
+---
 
 ## Manifest (`meta/manifest.json`)
+
+### Core Metadata Fields
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `format_version` | number | no (defaults to 1) | must be between 1 and the engine's supported version (4) |
-| `id` | string | **yes** | reverse-DNS style, `[A-Za-z0-9_][A-Za-z0-9._-]*`, no `..` |
-| `name` | string | **yes** | no `/`, `\|`, control characters, leading `-`, nor `.`/`..` |
-| `exec` | string | **yes** | path relative to `root/` |
-| `version` | string | no | free text, `\|` and newlines are replaced |
-| `arch` | string | no | e.g. `amd64`, `arm64` |
-| `network` | boolean | no | `false` starts the app without network (default `true`) |
+| `format_version` | integer | no (default: 1) | Engine support sversions 1 through **5**. |
+| `id` | string | **yes** | Reverse-DNS identifier: `^[A-Za-z0-9][A-Za-z0-9._-]*$`, no`..`. |
+| `name` | string | **yes** | Binary/Application slug: alphanumeric, dots, underscores, hyphens. |
+| `exec` | string | **yes** | Entrypoint path relative to `root/` (e.g. `bin/main`, `AppRun`). |
+| `version` | string | no | Freeform semantic version string (default: `"1.0.0"`). |
+| `arch` | string | no | Target CPU architecture (`x86_64`, `aarch64`, `armhf`, `all`). |
+| `runtime` | string | no | Optional shared runtime identifier (e.g. `org.freedesktop.Platform//23.08`). |
+| `shared` | boolean | no | If `true`, indicates this package acts as a reusable shared runtime base. |
+| `network` | boolean | no | **v1-v4 legacy compatibility**. Overridden by `permissions.network` in v5. |
 
-`id` and `name` are validated by the engine before any path, database or D-Bus use.
-Packages with an invalid `id`/`name` are refused.
+---
 
-## Signature trailer (104 bytes, at end of file)
-```
-offset (from start of trailer)   size   content
-0                                8      magic "ULPM_SIG"
-8                                32     Ed25519 public key (raw)
-40                               64     Ed25519 signature
-```
-- The signature covers **every byte before the trailer** (the SquashFS image).
-- The embedded public key is compared with the keys in `~/.config/ulpm/keys/*.pub` and
-  `~/.config/ulpm/trusted_keys/*.pub`.
-- Verification outcomes: `trusted`, `unsigned`, `signed by unknown key`, `forged/corrupted`.
-  `forged/corrupted` is always refused; the others follow `ULPM_STRICT_SIGNATURES`.
-- Two equivalent signing schemes are accepted for compatibility with different OpenSSL builds:
-  `openssl dgst -sha512 -sign` over the payload, or pure Ed25519 over the binary SHA-512 digest of
-  the payload (`openssl pkeyutl -rawin`).
-- Re-signing (`ulpm sign`) strips any existing trailer first.
+### Declarative Sandbox Permissions (`permissions` block, Schema v5)
 
-## Compatibility rules
-- Readers must ignore unknown manifest fields.
-- A manifest with `format_version` greater than the engine's is rejected.
+Starting with `format_version: 5`, permissions are declared in astructured `permissions` object:
