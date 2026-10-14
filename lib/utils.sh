@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # lib/utils.sh - Core utilities, binary helpers and environment setup
-# ULPM v4.1.0 Unified
+# ULPM v5.0.0 Declarative Engine
 # ============================================================================
 
 # Strict color configuration (supports NO_COLOR standard & terminal detection)
@@ -69,7 +69,9 @@ init_environment() {
     local config_home="${ULPM_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ulpm}"
     local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
     local apps_dir="${ULPM_APPS_DIR:-$data_home/apps}"
+    local runtimes_dir="${ULPM_RUNTIMES_DIR:-$data_home/runtimes}"
     local keys_dir="${ULPM_KEYS_DIR:-$config_home/keys}"
+    local overrides_dir="${ULPM_OVERRIDES_DIR:-$config_home/overrides}"
     local trusted_dir="${config_home}/trusted_keys"
     local db_file="${ULPM_DB:-$data_home/installed.db}"
 
@@ -77,7 +79,7 @@ init_environment() {
         error 'HOME is unset or is not an existing directory.'
         return 1
     }
-    mkdir -p -- "$data_home" "$config_home" "$cache_home/tmp" "$apps_dir" || {
+    mkdir -p -- "$data_home" "$config_home" "$cache_home/tmp" "$apps_dir" "$runtimes_dir" "$overrides_dir" || {
         error 'Could not create ULPM data directories.'
         return 1
     }
@@ -98,23 +100,103 @@ init_environment() {
 }
 
 # ------------------------------------------------------------------------------
-# Identifier validation (Manifest-controlled values are untrusted input)
+# Security, Path & Identifier Validation
 # ------------------------------------------------------------------------------
 
-# Application ID: used in paths (~/.var/app/<id>), D-Bus names and the install DB
 is_safe_app_id() {
     local v="${1:-}"
     [[ -n "$v" && "$v" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && "$v" != *..* ]]
 }
 
-# Application name: used in paths (apps/<name>) and the install DB
 is_safe_app_name() {
     local v="${1:-}"
     [[ -n "$v" && "$v" != "." && "$v" != ".." && "$v" != */* && "$v" != *'|'* \
         && "$v" != -* && "$v" != *$'\n'* && "$v" != *$'\r'* && "$v" != *$'\t'* ]]
 }
 
-# Remove an entry from the install DB without interpreting id/name as code
+_ulpm_valid_bind_dest() {
+    local dest="$1"
+    [[ "$dest" == /* && "$dest" != / ]] || return 1
+    case "$dest" in
+        /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*)
+            return 1
+            ;;
+    esac
+    [[ "$dest" != *$'\n'* && "$dest" != *$'\r'* ]] || return 1
+    [[ ! "/$dest/" =~ /\.\.?/ ]] || return 1
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Manifest v5 Resolution & Persistent Overrides
+# ------------------------------------------------------------------------------
+
+manifest_resolve_effective() {
+    local manifest_file="$1"
+    local app_id="$2"
+    local override_file="${ULPM_OVERRIDES_DIR:-${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm/overrides}/${app_id}.json"
+
+    if [[ ! -f "$manifest_file" ]]; then
+        printf '{}\n'
+        return 1
+    fi
+
+    if [[ ! -f "$override_file" ]]; then
+        cat "$manifest_file"
+        return 0
+    fi
+
+    # Deep-merge : l'override utilisateur supplante le manifest du paquet
+    jq -s '.[0] * .[1]' "$manifest_file" "$override_file" 2>/dev/null || cat "$manifest_file"
+}
+
+manifest_get() {
+    local json="$1" query="$2" default_val="${3:-}" res
+    res=$(jq -r "$query // empty" <<< "$json" 2>/dev/null || true)
+    if [[ -z "$res" ]]; then
+        printf '%s\n' "$default_val"
+    else
+        printf '%s\n' "$res"
+    fi
+}
+
+manifest_set_override() {
+    local app_id="$1" jq_path="$2" val="$3"
+    local overrides_dir="${ULPM_OVERRIDES_DIR:-${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm/overrides}"
+    mkdir -p "$overrides_dir"
+    local override_file="$overrides_dir/${app_id}.json"
+    local current="{}"
+
+    [[ -f "$override_file" ]] && current="$(cat "$override_file")"
+    local tmp_file
+    tmp_file="$(mktemp "${override_file}.tmp.XXXXXX")" || return 1
+
+    if jq "$jq_path = $val" <<< "$current" > "$tmp_file" 2>/dev/null; then
+        mv -f "$tmp_file" "$override_file"
+        info "Override persistent set for [$app_id]: $jq_path = $val"
+        return 0
+    else
+        rm -f "$tmp_file"
+        error "Failed to set override on $jq_path"
+        return 1
+    fi
+}
+
+manifest_reset_overrides() {
+    local app_id="$1"
+    local override_file="${ULPM_OVERRIDES_DIR:-${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm/overrides}/${app_id}.json"
+    if [[ -f "$override_file" ]]; then
+        rm -f "$override_file"
+        info "Overrides successfully reset for [$app_id]"
+    else
+        info "No overrides found for [$app_id]"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Database & Locking Mechanisms
+# ------------------------------------------------------------------------------
+
 db_remove_entry() {
     local id="$1" name="$2" tmp
     local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share}/ulpm/installed.db}"
@@ -136,7 +218,6 @@ check_dependencies() {
     fi
 }
 
-# Concurrency locking mechanism (prevents race conditions on database)
 # shellcheck disable=SC2034
 ULPM_LOCK_FD=200
 ULPM_LOCK_HELD=0
@@ -218,7 +299,7 @@ detect_arch() {
         armv7*|armhf)       echo armhf ;;
         i386|i486|i586|i686) echo i386 ;;
         riscv64)            echo riscv64 ;;
-        *)                  uname -m ;;
+        *) uname -m ;;
     esac
 }
 
@@ -431,49 +512,77 @@ fetch_github_api() {
 # ==============================================================================
 
 cmd_doctor() {
-    info 'Running ULPM environmental and kernel capability diagnostic...'
+    info 'Running ULPM environmental, hardware and sandbox diagnostic...'
     printf '%s\n' '--------------------------------------------------------------------------------'
     local ok="${C_GREEN}✔ OK${C_RESET}" warn_tag="${C_YELLOW}⚠ WARN${C_RESET}" fail_tag="${C_RED}✖ FAIL${C_RESET}"
     local arch kver
     arch="$(detect_arch)"; kver="$(uname -r)"
-    printf '%-32s : %s (%s)\n' 'Host Architecture & Kernel' "$arch" "$kver"
+    printf '%-34s : %s (%s)\n' 'Host Architecture & Kernel' "$arch" "$kver"
 
+    # 1. Bubblewrap engine
     if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / true >/dev/null 2>&1; then
-        printf '%-32s : %b (Unprivileged namespaces)\n' 'Bubblewrap Sandbox Engine' "$ok"
+        printf '%-34s : %b (Unprivileged namespaces)\n' 'Bubblewrap Sandbox Engine' "$ok"
     elif [[ ${EUID:-1} -eq 0 ]] && command -v bwrap >/dev/null 2>&1 && bwrap --dev-bind / / true >/dev/null 2>&1; then
-        printf '%-32s : %b (Privileged/root mode)\n' 'Bubblewrap Sandbox Engine' "$warn_tag"
+        printf '%-34s : %b (Privileged/root mode)\n' 'Bubblewrap Sandbox Engine' "$warn_tag"
     else
-        printf '%-32s : %b (Cannot create user namespace)\n' 'Bubblewrap Sandbox Engine' "$fail_tag"
+        printf '%-34s : %b (Cannot create user namespace)\n' 'Bubblewrap Sandbox Engine' "$fail_tag"
     fi
 
+    # 2. Mount engines
     if command -v squashfuse >/dev/null 2>&1; then
-        printf '%-32s : %b\n' 'Squashfuse (Mount Engine)' "$ok"
+        printf '%-34s : %b\n' 'Squashfuse (Mount Engine)' "$ok"
     else
-        printf '%-32s : %b (Mounts may fall back to unsquashfs)\n' 'Squashfuse' "$warn_tag"
+        printf '%-34s : %b (Mounts will fall back to slow extract)\n' 'Squashfuse' "$warn_tag"
     fi
     if command -v fuse-overlayfs >/dev/null 2>&1; then
-        printf '%-32s : %b\n' 'fuse-overlayfs (COW Storage)' "$ok"
+        printf '%-34s : %b\n' 'fuse-overlayfs (COW Engine)' "$ok"
     else
-        printf '%-32s : %b (Persistent-layer performance may be reduced)\n' 'fuse-overlayfs' "$warn_tag"
+        printf '%-34s : %b (Persistent overlay performance reduced)\n' 'fuse-overlayfs' "$warn_tag"
     fi
 
+    # 3. Portals & D-Bus Proxy
+    if command -v xdg-dbus-proxy >/dev/null 2>&1; then
+        printf '%-34s : %b (Dynamic session filtering)\n' 'xdg-dbus-proxy' "$ok"
+    else
+        printf '%-34s : %b (D-Bus sandboxing unavailable)\n' 'xdg-dbus-proxy' "$warn_tag"
+    fi
+
+    local portal_status="$fail_tag"
+    if pgrep -f "xdg-desktop-portal" >/dev/null 2>&1; then
+        portal_status="$ok"
+    fi
+    printf '%-34s : %b\n' 'XDG Desktop Portal' "$portal_status"
+
+    # 4. GPU & Direct Rendering
+    local dri_status="$fail_tag"
+    if [[ -d "/dev/dri" && -r "/dev/dri" ]]; then
+        dri_status="$ok"
+        shopt -s nullglob
+        local nv_devs=(/dev/nvidia*)
+        shopt -u nullglob
+        ((${#nv_devs[@]} > 0)) && dri_status="$ok (NVIDIA Direct)"
+    fi
+    printf '%-34s : %b\n' 'GPU & Direct Rendering (/dev/dri)' "$dri_status"
+
+    # 5. Core dependencies
     local missing_tools=() bin
     for bin in mksquashfs unsquashfs jq curl openssl tar zstd; do
         command -v "$bin" >/dev/null 2>&1 || missing_tools+=("$bin")
     done
     if ((${#missing_tools[@]} == 0)); then
-        printf '%-32s : %b (All critical tools present)\n' 'Core CLI Dependencies' "$ok"
+        printf '%-34s : %b (All critical tools present)\n' 'Core CLI Dependencies' "$ok"
     else
-        printf '%-32s : %b (Missing: %s)\n' 'Core CLI Dependencies' "$fail_tag" "${missing_tools[*]}"
+        printf '%-34s : %b (Missing: %s)\n' 'Core CLI Dependencies' "$fail_tag" "${missing_tools[*]}"
     fi
 
+    # 6. Keys & Keychain
     local keys_dir="${ULPM_KEYS_DIR:-${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm}/keys"
     local trusted_dir="${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm/trusted_keys"
     local default_priv="$keys_dir/default.priv"
     if [[ -f "$default_priv" ]]; then
-        printf '%-32s : %b (Default private key present)\n' 'Cryptographic Keypair' "$ok"
+        printf '%-34s : %b (Default private key present)\n' 'Cryptographic Keypair' "$ok"
     else
-        printf '%-32s : %b (No default keypair generated)\n' 'Cryptographic Keypair' "$warn_tag"
+        printf '%-34s : %b (No default keypair generated)\n' 'Cryptographic Keypair' "$warn_tag"
     fi
 
     local trust_count=0
@@ -481,16 +590,17 @@ cmd_doctor() {
     local trusted_files=("$trusted_dir"/*.pub "$keys_dir"/*.pub)
     shopt -u nullglob
     trust_count="${#trusted_files[@]}"
-    printf '%-32s : %s key(s) registered\n' 'Trust Keychain' "$trust_count"
+    printf '%-34s : %s key(s) registered\n' 'Trust Keychain' "$trust_count"
 
+    # 7. GitHub API token
     local token
     if token="$(get_github_token)"; then
         local gh_rate
         gh_rate="$(fetch_github_api rate_limit 0 2>/dev/null | jq -r '.resources.core.remaining // "Unknown"' 2>/dev/null || true)"
         [[ -n "$gh_rate" ]] || gh_rate='Unknown'
-        printf '%-32s : %b (Remaining requests: %s)\n' 'GitHub API Authentication' "$ok" "$gh_rate"
+        printf '%-34s : %b (Remaining requests: %s)\n' 'GitHub API Authentication' "$ok" "$gh_rate"
     else
-        printf '%-32s : %b (Unauthenticated API rate limit applies)\n' 'GitHub API Authentication' "$warn_tag"
+        printf '%-34s : %b (Unauthenticated API rate limit applies)\n' 'GitHub API Authentication' "$warn_tag"
     fi
     printf '%s\n' '--------------------------------------------------------------------------------'
 }

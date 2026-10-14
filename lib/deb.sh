@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/deb.sh - Debian Package Downloader & Converter Engine
-# ULPM v4.1.0 Unified Architecture
+# ULPM v5.0.0 Declarative Architecture (v5 Manifest Integration & Pre-scans)
 # ==============================================================================
 
 # Extract a .deb archive using dpkg-deb or fallback to ar+tar
@@ -143,11 +143,11 @@ _deb_download_direct_lib_deps() {
     local -a deps=()
     mapfile -t deps < <(
         apt-cache depends --no-recommends --no-suggests "$package_name" 2>/dev/null \
-            | awk '/^[[:space:]]*Depends:[[:space:]]+lib/ {print $2}' \
-            | sed -E 's/^<([^>]+)>$/\1/' \
-            | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
-            | grep -vE '^<.*>$' \
-            | sort -u
+        | awk '/^[[:space:]]*Depends:[[:space:]]+lib/ {print $2}' \
+        | sed -E 's/^<([^>]+)>$/\1/' \
+        | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
+        | grep -vE '^<.*>$' \
+        | sort -u
     )
 
     if ((${#deps[@]} > 0)); then
@@ -157,6 +157,28 @@ _deb_download_direct_lib_deps() {
 }
 
 cmd_deb_pack() {
+    local -a pack_passthrough=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-scan|--fast|--shared)
+                pack_passthrough+=("$1")
+                shift
+                ;;
+            --runtime)
+                if [[ -n "${2:-}" ]]; then
+                    pack_passthrough+=("$1" "$2")
+                    shift 2
+                else
+                    error "--runtime requires an argument."
+                    return 1
+                fi
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     local pkg_input="${1:-}"
     local app_name_hint="${2:-}"
     local out_pkg="${3:-}"
@@ -164,7 +186,7 @@ cmd_deb_pack() {
     local build_dir
 
     [[ -n "$pkg_input" ]] || {
-        error "Usage: ulpm deb-pack <pkg|file.deb|github_repo> [name] [out.lpk] [version]"
+        error "Usage: ulpm deb-pack [flags] <pkg|file.deb|github_repo> [name] [out.lpk] [version]"
         return 1
     }
 
@@ -178,7 +200,7 @@ cmd_deb_pack() {
         return 1
     }
 
-    _cmd_deb_pack_work "$pkg_input" "$app_name_hint" "$out_pkg" "$pkg_ver" "$build_dir"
+    _cmd_deb_pack_work "$pkg_input" "$app_name_hint" "$out_pkg" "$pkg_ver" "$build_dir" "${pack_passthrough[@]}"
 }
 
 _cmd_deb_pack_work() (
@@ -187,6 +209,9 @@ _cmd_deb_pack_work() (
     local out_pkg="${3:-}"
     local pkg_ver="${4:-}"
     local build_dir="${5:-}"
+    shift 5 2>/dev/null || shift $#
+    local -a extra_pack_flags=("$@")
+
     local deb_dir="$build_dir/debs"
     local root_dir="$build_dir/root"
     local app_name="$app_name_hint"
@@ -276,7 +301,7 @@ _cmd_deb_pack_work() (
         return 1
     fi
 
-    # If version wasn't specified or resolved yet, look at the primary downloaded deb
+    # If version wasn't specified or resolved yet, inspect the downloaded deb
     if [[ -z "$pkg_ver" ]]; then
         for deb_file in "${downloaded_debs[@]}"; do
             local cur_pkg
@@ -288,7 +313,6 @@ _cmd_deb_pack_work() (
         done
         [[ -n "$pkg_ver" ]] || pkg_ver="$(_deb_read_control_field "${downloaded_debs[0]}" Version)"
     fi
-    # Sanitize version string for manifest compliance
     pkg_ver="$(printf '%s' "${pkg_ver:-1.0.0}" | tr -cd 'A-Za-z0-9.+_-')"
 
     log "Extracting ${#downloaded_debs[@]} package archive(s)..."
@@ -320,7 +344,7 @@ _cmd_deb_pack_work() (
         fi
     done
 
-    # Fallback entrypoint if the binary name does not match $app_name exactly
+    # Fallback entrypoint search
     if (( entry_found == 0 )); then
         while IFS= read -r -d '' cand_bin; do
             if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
@@ -345,5 +369,5 @@ _cmd_deb_pack_work() (
         \) -delete 2>/dev/null || true
 
     log "Handing over payload to bundler (Version: $pkg_ver)..."
-    cmd_pack "$root_dir" "$app_name" "$out_pkg" "$pkg_ver"
+    cmd_pack "${extra_pack_flags[@]}" "$root_dir" "$app_name" "$out_pkg" "$pkg_ver"
 )

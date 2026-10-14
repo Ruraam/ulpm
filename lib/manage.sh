@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/manage.sh - Application Lifecycle & Desktop Integration Engine
-# ULPM v4.1.0 Unified Architecture
+# ULPM v5.0.0 Declarative Engine (Permissions, Overrides, Runtimes & DB)
 # ==============================================================================
 
 refresh_desktop_environment() {
@@ -45,6 +45,43 @@ _version_gt() {
     else
         [[ "$v1" != "$v2" ]] && [[ "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V 2>/dev/null | tail -n 1)" == "$v1" ]]
     fi
+}
+
+_manage_resolve_installed_lpk() {
+    local target="${1:-}"
+    local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
+    local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
+
+    if [[ -f "$target" ]]; then
+        printf '%s\n' "$target"
+        return 0
+    fi
+    if [[ -f "$apps_dir/$target/$target.lpk" ]]; then
+        printf '%s\n' "$apps_dir/$target/$target.lpk"
+        return 0
+    elif [[ -f "$apps_dir/$target.lpk" ]]; then
+        printf '%s\n' "$apps_dir/$target.lpk"
+        return 0
+    elif [[ -f "$apps_dir/io.lpk.${target,,}.lpk" ]]; then
+        printf '%s\n' "$apps_dir/io.lpk.${target,,}.lpk"
+        return 0
+    fi
+
+    if [[ -f "$db_file" ]]; then
+        local id name _rest
+        while IFS='|' read -r id name _rest; do
+            if [[ "$id" == "$target" || "$name" == "$target" ]]; then
+                if [[ -f "$apps_dir/$name/$name.lpk" ]]; then
+                    printf '%s\n' "$apps_dir/$name/$name.lpk"
+                    return 0
+                elif [[ -f "$apps_dir/$name.lpk" ]]; then
+                    printf '%s\n' "$apps_dir/$name.lpk"
+                    return 0
+                fi
+            fi
+        done < "$db_file"
+    fi
+    return 1
 }
 
 write_desktop_launcher() {
@@ -92,6 +129,240 @@ _manage_cleanup_install() {
     [[ -n "$tmp_lpk" ]] && rm -f -- "$tmp_lpk"
     release_lock >/dev/null 2>&1 || true
 }
+
+# ==============================================================================
+# Declarative Permissions & Overrides Inspector / Modifier
+# ==============================================================================
+
+cmd_permissions() {
+    local action="show" target=""
+    if [[ "${1:-}" == "reset" ]]; then
+        action="reset"
+        target="${2:-}"
+    else
+        target="${1:-}"
+    fi
+
+    [[ -n "$target" ]] || {
+        error "Usage: ulpm permissions [reset] <app_name|app_id>"
+        return 1
+    }
+
+    local lpk_file
+    lpk_file="$(_manage_resolve_installed_lpk "$target")" || {
+        error "Application package not found for target: $target"
+        return 1
+    }
+
+    local manifest_raw
+    manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || \
+    manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || {
+        error "Could not read manifest from $lpk_file"
+        return 1
+    }
+
+    local app_id
+    app_id="$(jq -r '.id // .name' <<< "$manifest_raw")"
+
+    if [[ "$action" == "reset" ]]; then
+        manifest_reset_overrides "$app_id"
+        return 0
+    fi
+
+    local effective_json
+    effective_json="$(manifest_resolve_effective <(printf '%s' "$manifest_raw") "$app_id")"
+    local override_file="${ULPM_OVERRIDES_DIR:-$HOME/.config/ulpm/overrides}/${app_id}.json"
+
+    printf '%s\n' '================================================================================'
+    printf ' \033[1mEffective Sandbox Permissions for [%s]\033[0m\n' "$app_id"
+    if [[ -f "$override_file" ]]; then
+        printf ' \033[1;33m[!] User Overrides Active (%s)\033[0m\n' "$override_file"
+    else
+        printf ' \033[0;90m[i] Default package permissions (No local overrides)\033[0m\n'
+    fi
+    printf '%s\n' '--------------------------------------------------------------------------------'
+
+    local net gpu audio gui home dl dri input hidraw usb kvm
+    net="$(jq -r 'if has("permissions") then .permissions.network else (.network // true) end' <<< "$effective_json")"
+    gpu="$(jq -r '.permissions.gpu // true' <<< "$effective_json")"
+    audio="$(jq -r '.permissions.audio // true' <<< "$effective_json")"
+    gui="$(jq -r '.permissions.gui // true' <<< "$effective_json")"
+    home="$(jq -r '.permissions.filesystem.home // "isolated"' <<< "$effective_json")"
+    dl="$(jq -r '.permissions.filesystem.downloads // "read-write"' <<< "$effective_json")"
+
+    dri="$(jq -r '.permissions.devices.dri // true' <<< "$effective_json")"
+    input="$(jq -r '.permissions.devices.input // true' <<< "$effective_json")"
+    hidraw="$(jq -r '.permissions.devices.hidraw // false' <<< "$effective_json")"
+    usb="$(jq -r '.permissions.devices.usb // false' <<< "$effective_json")"
+    kvm="$(jq -r '.permissions.devices.kvm // false' <<< "$effective_json")"
+
+    _fmt_bool() {
+        if [[ "$1" == "true" ]]; then
+            printf '\033[0;32mAllowed\033[0m'
+        else
+            printf '\033[0;31mBlocked\033[0m'
+        fi
+    }
+
+    printf '  %-24s : %b\n' 'Network Access' "$(_fmt_bool "$net")"
+    printf '  %-24s : %b\n' 'Direct GPU / DRI' "$(_fmt_bool "$gpu")"
+    printf '  %-24s : %b\n' 'Audio (Pulse/PipeWire)' "$(_fmt_bool "$audio")"
+    printf '  %-24s : %b\n' 'Display (GUI/Wayland/X11)' "$(_fmt_bool "$gui")"
+    printf '  %-24s : \033[1m%s\033[0m\n' 'Filesystem Home' "$home"
+    printf '  %-24s : \033[1m%s\033[0m\n' 'Host Downloads' "$dl"
+    printf '  %-24s : DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
+        'Hardware Devices' "$(_fmt_bool "$dri")" "$(_fmt_bool "$input")" "$(_fmt_bool "$hidraw")" "$(_fmt_bool "$usb")" "$(_fmt_bool "$kvm")"
+
+    local custom_paths
+    custom_paths="$(jq -r '.permissions.filesystem.custom[]? | "     - \(.path) (\(.mode))"' <<< "$effective_json" 2>/dev/null || true)"
+    if [[ -n "$custom_paths" ]]; then
+        printf '  %-24s:\n%s\n' 'Custom Bind Paths' "$custom_paths"
+    fi
+
+    local dbus_talk
+    dbus_talk="$(jq -r '.permissions.dbus.session.talk[]? | "     - \(@text)"' <<< "$effective_json" 2>/dev/null || true)"
+    if [[ -n "$dbus_talk" ]]; then
+        printf '  %-24s :\n%s\n' 'D-Bus Filter Rules' "$dbus_talk"
+    fi
+    printf '%s\n' '================================================================================'
+}
+
+cmd_override() {
+    local target="${1:-}"
+    shift || true
+
+    [[ -n "$target" && $# -gt 0 ]] || {
+        error "Usage: ulpm override <app_name|app_id> <options|key=val...>"
+        printf '%s\n' "Examples:"
+        printf '%s\n' "  ulpm override firefox --no-net"
+        printf '%s\n' "  ulpm override blender --share-home"
+        printf '%s\n' "  ulpm override retroarch --gaming"
+        printf '%s\n' "  ulpm override myapp permissions.devices.kvm=true"
+        return 1
+    }
+
+    local lpk_file
+    lpk_file="$(_manage_resolve_installed_lpk "$target")" || {
+        error "Application package not found: $target"
+        return 1
+    }
+
+    local app_id
+    app_id="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null | jq -r '.id // .name' || true)"
+    [[ -n "$app_id" ]] || app_id="$target"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-net|--offline)
+                manifest_set_override "$app_id" '.permissions.network' "false"
+                ;;
+            --net)
+                manifest_set_override "$app_id" '.permissions.network' "true"
+                ;;
+            --no-gpu)
+                manifest_set_override "$app_id" '.permissions.gpu' "false"
+                manifest_set_override "$app_id" '.permissions.devices.dri' "false"
+                ;;
+            --gpu)
+                manifest_set_override "$app_id" '.permissions.gpu' "true"
+                manifest_set_override "$app_id" '.permissions.devices.dri' "true"
+                ;;
+            --isolate-home)
+                manifest_set_override "$app_id" '.permissions.filesystem.home' '"isolated"'
+                ;;
+            --share-home|--share-home-rw)
+                manifest_set_override "$app_id" '.permissions.filesystem.home' '"read-write"'
+                ;;
+            --share-home-ro)
+                manifest_set_override "$app_id" '.permissions.filesystem.home' '"read"'
+                ;;
+            --gaming)
+                manifest_set_override "$app_id" '.permissions.gpu' "true"
+                manifest_set_override "$app_id" '.permissions.audio' "true"
+                manifest_set_override "$app_id" '.permissions.devices.dri' "true"
+                manifest_set_override "$app_id" '.permissions.devices.input' "true"
+                manifest_set_override "$app_id" '.permissions.devices.hidraw' "true"
+                manifest_set_override "$app_id" '.permissions.devices.usb' "true"
+                ;;
+            --strict)
+                manifest_set_override "$app_id" '.permissions.network' "false"
+                manifest_set_override "$app_id" '.permissions.gpu' "false"
+                manifest_set_override "$app_id" '.permissions.devices.dri' "false"
+                manifest_set_override "$app_id" '.permissions.filesystem.home' '"isolated"'
+                manifest_set_override "$app_id" '.permissions.filesystem.downloads' '"none"'
+                ;;
+            *=*)
+                local k="${1%%=*}" v="${1#*=}"
+                [[ "$k" =~ ^\. ]] || k=".$k"
+                manifest_set_override "$app_id" "$k" "$v"
+                ;;
+            *)
+                error "Unrecognized override instruction: $1"
+                return 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# ==============================================================================
+# Shared Hybrid Runtimes Management
+# ==============================================================================
+
+cmd_runtime() {
+    local subcmd="${1:-list}"
+    local runtimes_dir="${ULPM_RUNTIMES_DIR:-$HOME/.local/share/ulpm/runtimes}"
+    mkdir -p "$runtimes_dir"
+
+    case "$subcmd" in
+        list)
+            info "Available Shared Runtimes:"
+            printf '%s\n' '--------------------------------------------------------------------------------'
+            printf '%-40s %-12s %-15s\n' "RUNTIME ID" "SIZE" "PATH"
+            printf '%s\n' '--------------------------------------------------------------------------------'
+            shopt -s nullglob
+            local r_dirs=("$runtimes_dir"/*)
+            shopt -u nullglob
+            if (( ${#r_dirs[@]} == 0 )); then
+                printf '  No shared runtimes installed.\n'
+            else
+                for rd in "${r_dirs[@]}"; do
+                    [[ -d "$rd" ]] || continue
+                    local r_id sz
+                    r_id="$(basename "$rd")"
+                    sz="$(du -sh -- "$rd" 2>/dev/null | cut -f1)"
+                    printf '%-40.40s %-12s %-15s\n' "$r_id" "$sz" "$rd"
+                done
+            fi
+            printf '%s\n' '--------------------------------------------------------------------------------'
+            ;;
+        install)
+            local r_src="${2:-}"
+            [[ -n "$r_src" ]] || { error "Usage: ulpm runtime install <lpk_file|dir>"; return 1; }
+            log "Installing shared runtime payload from $r_src..."
+            local tmp_m
+            tmp_m="$(mktemp -d)"
+            if [[ -f "$r_src" ]]; then
+                squashfuse "$r_src" "$tmp_m" || { rm -rf "$tmp_m"; error "Failed to mount runtime SquashFS"; return 1; }
+                local r_id
+                r_id="$(jq -r '.id // empty' "$tmp_m/meta/manifest.json" 2>/dev/null || basename "$r_src" .lpk)"
+                mkdir -p "$runtimes_dir/$r_id"
+                cp -a -- "$tmp_m/." "$runtimes_dir/$r_id/"
+                safe_unmount "$tmp_m"
+                rm -rf "$tmp_m"
+                info "Runtime [$r_id] successfully installed."
+            fi
+            ;;
+        *)
+            error "Unknown runtime sub-command: $subcmd (supported: list, install)"
+            return 1
+            ;;
+    esac
+}
+
+# ==============================================================================
+# Core Application Management
+# ==============================================================================
 
 cmd_install() (
     local source="${1:-}"
@@ -262,7 +533,6 @@ EOF_MIME
     handler_bin=${handler_bin//\\/\\\\}
     handler_bin=${handler_bin//\"/\\\"}
 
-    # Exec invokes 'run' directly to satisfy double-click expectations
     cat > "$desk_dir/ulpm-handler.desktop" <<EOF_HANDLER
 [Desktop Entry]
 Type=Application
@@ -284,7 +554,6 @@ EOF_HANDLER
     command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null 2>&1 || true
     refresh_desktop_environment
 
-    # Notify active file managers
     nautilus -q 2>/dev/null || true
     thunar -q 2>/dev/null || true
     kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
@@ -304,7 +573,7 @@ cmd_list() {
             [[ -n "$name" ]] || continue
             local sz='-'
             if [[ -f "$apps_dir/$name/$name.lpk" ]]; then
-                sz="$(du -sh -- "$apps_dir/$name/$name.lpk" 2>/dev/null | cut -f1)"
+                sz="$(du -sh -- "$apps_dir/$name.lpk" 2>/dev/null | cut -f1)"
             elif [[ -f "$apps_dir/$name.lpk" ]]; then
                 sz="$(du -sh -- "$apps_dir/$name.lpk" 2>/dev/null | cut -f1)"
             fi
@@ -333,7 +602,7 @@ cmd_remove() (
     _safe_managed_dir "$apps_dir" || { error "Refusing unsafe application directory: $apps_dir"; return 1; }
     local resolved_id='' resolved_name='' id name ver origin
     if [[ -s "$db_file" ]]; then
-        while IFS='|' read -r id name ver _installed origin; do
+        while IFS='|' read -r id name ver _ installed origin; do
             if [[ "$id" == "$target" || "$name" == "$target" ]]; then
                 resolved_id="$id"; resolved_name="$name"; break
             fi
@@ -357,11 +626,12 @@ cmd_remove() (
         mv -f -- "$db_tmp" "$db_file" || { rm -f "$db_tmp"; return 1; }
     fi
 
-    # Correct purge of isolated sandbox directories in ~/.var/app
+    # Purge persistent overrides and sandboxed home state
     if [[ "$purge" == true ]]; then
-        log "Purging persistent user sandbox state..."
+        log "Purging persistent user sandbox state & overrides..."
         rm -rf -- "$HOME/.var/app/$app_name"
         [[ "$app_id" != "$app_name" ]] && rm -rf -- "$HOME/.var/app/$app_id"
+        rm -f -- "${ULPM_OVERRIDES_DIR:-$HOME/.config/ulpm/overrides}/${app_id}.json"
     fi
 
     refresh_desktop_environment
@@ -403,7 +673,7 @@ cmd_search() {
     arch="$(detect_arch)"
     case "$arch" in
         arm64|aarch64) arch_regex='arm64|aarch64|arm-64|armv8|arm64v8|all' ;;
-        x86_64|amd64)  arch_regex='amd64|x86_64|x86-64|x64|all' ;;
+        x86_64|amd64) arch_regex='amd64|x86_64|x86-64|x64|all' ;;
         armv7l|armhf)  arch_regex='armv7|armhf|armv7l|all' ;;
         *)             arch_regex="$arch|all" ;;
     esac
@@ -414,7 +684,7 @@ cmd_search() {
     local display_idx=1 gh_query raw_results raw_count
     gh_query="$(printf '%s' "$query" | sed 's/ /+/g')"
     raw_results="$(fetch_github_api "search/repositories?q=${gh_query}+in:name&sort=stars&order=desc&per_page=10" 15)" || raw_results=''
-    raw_count="$(jq -r '.items | length // 0' <<< "$raw_results" 2>/dev/null || printf '0')"
+    raw_count="$(jq -r '.items| length // 0' <<< "$raw_results" 2>/dev/null || printf '0')"
 
     if [[ "$raw_count" =~ ^[0-9]+$ ]] && (( raw_count > 0 )); then
         printf '\n\033[1;32m[ GitHub Upstream Releases ]\033[0m\n%s\n' '--------------------------------------------------------------------------------'
@@ -456,7 +726,7 @@ cmd_search() {
 
             local badge=""
             case "$selected_type" in
-                LPK)       badge="\033[1;32m[1. Native LPK]\033[0m" ;;
+                LPK) badge="\033[1;32m[1. Native LPK]\033[0m" ;;
                 APPIMAGE)  badge="\033[1;34m[2. AppImage]\033[0m" ;;
                 DEB)       badge="\033[1;33m[3. Debian .deb]\033[0m" ;;
             esac
@@ -503,7 +773,7 @@ cmd_search() {
         if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
             start="${BASH_REMATCH[1]}"; end="${BASH_REMATCH[2]}"
             if (( start > 0 && end <= total_options && start <= end && end - start <= 100 )); then
-                for ((i=start;i<=end; i++)); do selected+=("$i"); done
+                for ((i=start; i<=end; i++)); do selected+=("$i"); done
             fi
         elif [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total_options )); then
             selected+=("$token")
@@ -532,7 +802,7 @@ cmd_search() {
                 chmod +x "$tmp_ai" || { rm -f -- "$tmp_ai"; continue; }
                 wrap_root="$(mktemp -d "$cache_home/wrap_ai_XXXXXX")" || { rm -f -- "$tmp_ai"; continue; }
                 mkdir -p "$wrap_root/bin" || { rm -rf -- "$wrap_root"; rm -f -- "$tmp_ai"; continue; }
-                mv -- "$tmp_ai" "$wrap_root/bin/$app_bin" || { rm -rf -- "$wrap_root" "$tmp_ai"; continue; }
+                mv -- "$tmp_ai" "$wrap_root/bin/$app_bin" || { rm -rf -- "$wrap_root"; continue; }
                 ln -sf -- "bin/$app_bin" "$wrap_root/AppRun" 2>/dev/null || true
                 out_lpk="${app_bin}.lpk"
                 if cmd_pack "$wrap_root" "$app_bin" "$out_lpk"; then
@@ -562,23 +832,18 @@ cmd_inspect() {
     local target="${1:-}"
     [[ -n "$target" ]] || { error "Usage: ulpm inspect <package.lpk|app_name>"; return 1; }
     check_dependencies unsquashfs jq stat || return 1
-    local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}" lpk_file=''
-    if [[ -f "$target" ]]; then
-        lpk_file="$target"
-    elif [[ -f "$apps_dir/$target/$target.lpk" ]]; then
-        lpk_file="$apps_dir/$target/$target.lpk"
-    elif [[ -f "$apps_dir/$target.lpk" ]]; then
-        lpk_file="$apps_dir/$target.lpk"
-    elif [[ -f "$apps_dir/io.lpk.${target,,}.lpk" ]]; then
-        lpk_file="$apps_dir/io.lpk.${target,,}.lpk"
-    else
-        error "Target LPK archive or installed application not found: $target"; return 1
-    fi
+    local lpk_file
+    lpk_file="$(_manage_resolve_installed_lpk "$target")" || {
+        error "Target LPK archive or installed application not found: $target"
+        return 1
+    }
 
     local manifest_raw
-    manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || manifest_raw=''
-    [[ -n "$manifest_raw" ]] || manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || manifest_raw=''
-    [[ -n "$manifest_raw" ]] || { error 'Archive does not contain a readable ULPM manifest.'; return 1; }
+    manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || \
+    manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || {
+        error 'Archive does not contain a readable ULPM manifest.'
+        return 1
+    }
     jq -e 'type == "object"' <<< "$manifest_raw" >/dev/null 2>&1 || { error 'Manifest JSON is invalid.'; return 1; }
 
     local app_id app_name app_ver app_arch app_exec app_net app_fv crypto_status code fsize
@@ -587,8 +852,10 @@ cmd_inspect() {
     app_ver="$(jq -r '.version // "1.0.0"' <<< "$manifest_raw")"
     app_arch="$(jq -r '.arch // "unknown"' <<< "$manifest_raw")"
     app_exec="$(jq -r '.exec // "unknown"' <<< "$manifest_raw")"
-    app_net="$(jq -r '.network // false' <<< "$manifest_raw")"
     app_fv="$(jq -r '.format_version // 1' <<< "$manifest_raw")"
+
+    app_net="$(jq -r 'if has("permissions") then .permissions.network else (.network // false) end' <<< "$manifest_raw")"
+
     crypto_status="\033[0;31m✖ Unsigned / unverified\033[0m"
     if verify_package "$lpk_file" >/dev/null 2>&1; then
         crypto_status="\033[0;32m✔ Verified (trusted key)\033[0m"
@@ -597,97 +864,4 @@ cmd_inspect() {
         case "$code" in
             2) crypto_status="\033[0;31m✖ Unsigned (missing signature)\033[0m" ;;
             3) crypto_status="\033[1;33m⚠ Signed (untrusted authority)\033[0m" ;;
-            *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\033[0m" ;;
-        esac
-    fi
-    fsize="$(du -sh -- "$lpk_file" 2>/dev/null | cut -f1)"
-    printf '%s\n' '================================================================================'
-    printf ' \033[1;36m%-16s\033[0m : %s\n' Application "$app_name"
-    printf ' \033[1;36m%-16s\033[0m : %s\n' Identifier "$app_id"
-    printf ' \033[1;36m%-16s\033[0m : \033[1;32mv%s\033[0m (%s)\n' Version "$app_ver" "$app_arch"
-    printf ' \033[1;36m%-16s\033[0m : LPK v%s (Archive: %s)\n' Format "$app_fv" "$fsize"
-    printf '%s\n' '--------------------------------------------------------------------------------'
-    printf ' \033[1;34m%-16s\033[0m : %s\n' Entrypoint "$app_exec"
-    printf ' \033[1;34m%-16s\033[0m : %b\n' 'Network Access' "$([[ "$app_net" == true ]] && printf '\033[0;32mEnabled\033[0m' || printf '\033[1;33mIsolated\033[0m')"
-    printf ' \033[1;34m%-16s\033[0m : %b\n' 'Security Seal' "$crypto_status"
-    printf '%s\n' '================================================================================'
-}
-
-cmd_upgrade() {
-    local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
-    [[ -s "$db_file" ]] || { info 'No ULPM applications installed.'; return 0; }
-    check_dependencies jq || return 1
-    info 'Checking for application updates...'
-    local updates_found=0
-    local app_id app_name cur_ver origin
-
-    while IFS='|' read -r app_id app_name cur_ver _ origin; do
-        [[ -n "$app_name" && -n "$origin" ]] || continue
-
-        # CASE 1: GitHub Origin
-        if [[ "$origin" =~ ^https?://github\.com/ || "$origin" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+ ]]; then
-            local repo_path rel_data latest_tag clean_latest clean_cur needs_update=false
-            repo_path="$(printf '%s' "$origin" | sed -E 's#^https?://github\.com/##; s#/$##; s#\.git$##')"
-            repo_path="$(cut -d/ -f1-2 <<< "$repo_path")"
-
-            log "Checking upstream release for '$app_name' ($repo_path)..."
-            rel_data="$(fetch_github_api "repos/${repo_path}/releases/latest" 10)" || continue
-            latest_tag="$(jq -r '.tag_name // empty' <<< "$rel_data" 2>/dev/null)"
-            [[ -n "$latest_tag" ]] || continue
-            clean_latest="${latest_tag#v}"; clean_cur="${cur_ver#v}"
-
-            if _version_gt "$clean_latest" "$clean_cur"; then
-                needs_update=true
-            fi
-
-            if [[ "$needs_update" == true ]]; then
-                ((updates_found+=1))
-                printf ' \033[1;32m➜\033[0m Update available for \033[1m%s\033[0m: \033[1;31m%s\033[0m ➔ \033[1;32m%s\033[0m\n' "$app_name" "$cur_ver" "$latest_tag"
-
-                if [[ "$origin" =~ \.lpk$ ]]; then
-                    local new_url arch
-                    arch="$(detect_arch)"
-                    new_url="$(jq -r --arg arch "$arch" '
-                        .assets[]? | select(.name | endswith(".lpk")) |
-                        select(.name | contains($arch)) | .browser_download_url
-                    ' <<< "$rel_data" 2>/dev/null | head -n 1)"
-                    [[ -n "$new_url" ]] || new_url="$(jq -r '.assets[]? | select(.name | endswith(".lpk")) | .browser_download_url' <<< "$rel_data" 2>/dev/null | head -n 1)"
-
-                    if [[ -n "$new_url" ]] && INSTALL_ORIGIN="$new_url" cmd_install "$new_url"; then
-                        info "Updated '$app_name' successfully to $latest_tag."
-                    else
-                        error "Failed to upgrade $app_name."
-                    fi
-                else
-                    local out_lpk="${app_name}.lpk"
-                    if cmd_deb_pack "$repo_path" "$app_name" "$out_lpk" "$clean_latest"; then
-                        INSTALL_ORIGIN="$origin" cmd_install "$out_lpk"
-                        info "Updated '$app_name' successfully to $latest_tag."
-                    else
-                        error "Failed to upgrade $app_name."
-                    fi
-                fi
-            fi
-
-        # CASE 2: APT Repository Origin
-        elif [[ "$origin" == apt:* ]]; then
-            local apt_pkg="${origin#apt:}" candidate_ver
-            command -v apt-cache >/dev/null 2>&1 || continue
-            candidate_ver="$(apt-cache policy "$apt_pkg" 2>/dev/null | awk '/Candidate:/{print $2}')"
-            if [[ -n "$candidate_ver" && "$candidate_ver" != '(none)' && "$candidate_ver" != "$cur_ver" ]]; then
-                ((updates_found+=1))
-                printf '\033[1;32m➜\033[0m APT update available for \033[1m%s\033[0m: \033[1;31m%s\033[0m ➔ \033[1;32m%s\033[0m\n' "$app_name" "$cur_ver" "$candidate_ver"
-                local out_lpk="${app_name}.lpk"
-                if cmd_deb_pack "$apt_pkg" "$app_name" "$out_lpk" "$candidate_ver"; then
-                    INSTALL_ORIGIN="$origin" cmd_install "$out_lpk" || error "Failed to install update for $app_name."
-                fi
-            fi
-        fi
-    done < "$db_file"
-
-    if (( updates_found == 0 )); then
-        info 'All ULPM applications are up to date.'
-    else
-        info "Upgrade process finished. $updates_found application(s) updated."
-    fi
-}
+            *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\0

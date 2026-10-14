@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/pack.sh - Standalone LPK Packaging & Dynamic ELF Library Bundler
-# ULPM v4.1.0 Unified Architecture (Pre-Structured, RootFS & Offset-Safe AppImage)
+# ULPM v5.0.0 Declarative Engine (Schema v5, Runtimes & Offset-Safe AppImage)
 # ==============================================================================
 
 validate_manifest() {
     local manifest="${1:-}"
-    local max_version="${ULPM_FORMAT_VERSION:-4}"
+    local max_version="${ULPM_FORMAT_VERSION:-5}"
 
     if [[ -z "$manifest" || ! -f "$manifest" ]]; then
         error "Manifest file does not exist: ${manifest:-<empty>}"
@@ -17,13 +17,13 @@ validate_manifest() {
         return 1
     fi
 
-    # Supports standard and extended formats (rootfs / recalbox / os / distro)
+    # Validate schema compliance (v1 to v5)
     if ! jq -e --argjson max_version "$max_version" '
         type == "object" and
         ((.format_version // 1) | type == "number" and . >= 1 and . <= $max_version and floor == .) and
         ((.name // .id) | type == "string" and length > 0)
     ' "$manifest" >/dev/null 2>&1; then
-        error "Manifest validation failed."
+        error "Manifest validation failed for: $manifest"
         return 1
     fi
     return 0
@@ -79,15 +79,15 @@ bundle_elf_libraries() {
             done < <(
                 "$loader" --list "$bin" 2>/dev/null |
                 awk '
-                    {
-                        for (i = 1; i <= NF; i++) {
-                            token = $i
-                            if (token ~ /^\//) {
-                                sub(/[),;]+$/, "", token)
-                                print token
-                            }
+                {
+                    for (i = 1; i <= NF; i++) {
+                        token = $i
+                        if (token ~ /^\//) {
+                            sub(/[),;]+$/, "", token)
+                            print token
                         }
                     }
+                }
                 ' | sort -u
             )
         done < <(find "$root_dir" -xdev -type f \( -perm -0100 -o -name '*.so' -o -name '*.so.*' \) -print0 2>/dev/null)
@@ -238,15 +238,34 @@ extract_any_payload() {
 
 cmd_pack() (
     local no_scan=false
+    local shared_runtime=false
+    local runtime_ref=""
     [[ "${ULPM_NO_SCAN:-0}" == "1" ]] && no_scan=true
 
-    # Consume any leading flags
+    # Consume packaging flags
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-scan|--fast)
                 no_scan=true
                 export ULPM_NO_SCAN=1
                 shift
+                ;;
+            --shared)
+                shared_runtime=true
+                shift
+                ;;
+            --runtime)
+                if [[ -n "${2:-}" ]]; then
+                    runtime_ref="$2"
+                    shift 2
+                else
+                    error "--runtime requires a runtime identifier."
+                    return 1
+                fi
+                ;;
+            --)
+                shift
+                break
                 ;;
             *)
                 break
@@ -260,7 +279,7 @@ cmd_pack() (
     local ver="${4:-1.0.0}"
 
     [[ -n "$src" ]] || {
-        error "Usage: ulpm pack [--no-scan|--fast] <source> [name] [out.lpk] [version]"
+        error "Usage: ulpm pack [--no-scan|--fast] [--shared] [--runtime <id>] <source> [name] [out.lpk] [version]"
         return 1
     }
     [[ -e "$src" ]] || {
@@ -294,12 +313,10 @@ cmd_pack() (
         validate_manifest "$manifest_path" || return 1
 
         local app_name pkg_type
-        # Strict priority to .name over .id
         app_name="$(jq -r '.name // .id // empty' "$manifest_path" 2>/dev/null || true)"
         pkg_type="$(jq -r '.type // .kind // empty' "$manifest_path" 2>/dev/null || true)"
         app_name="${raw_name:-${app_name:-$(basename "$src")}}"
 
-        # Strip namespace prefixes if present
         app_name="${app_name#io.lpk.}"
         app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
 
@@ -310,7 +327,7 @@ cmd_pack() (
         mkdir -p -- "$out_parent" || return 1
         out_lpk="$(realpath -m -- "$out_lpk")" || return 1
 
-        # Check if scan is required or skipped (RootFS / Recalbox / options / env var)
+        # Check if RootFS / Recalbox
         local is_system_rootfs=false
         if [[ "$pkg_type" =~ ^(rootfs|os|distro)$ ]] || \
            [[ -d "$src/recalbox" || -d "$src/root/recalbox" || -d "$src/root/etc" || ( -d "$src/etc" && -d "$src/usr" ) ]]; then
@@ -357,7 +374,7 @@ cmd_pack() (
     fi
 
     # ======================================================================
-    # CASE 2: RAW DIRECTORY OR ARCHIVE (Standard automatic assembly mode)
+    # CASE 2: RAW DIRECTORY OR ARCHIVE (Standard automatic assembly mode v5)
     # ======================================================================
     local base app_name app_id
     base="$(basename -- "$src")"
@@ -434,12 +451,13 @@ cmd_pack() (
         info "Skipping ELF library scan (--no-scan)."
     fi
 
-    local format_version="${ULPM_FORMAT_VERSION:-4}"
+    local format_version="${ULPM_FORMAT_VERSION:-5}"
     if ! [[ "$format_version" =~ ^[0-9]+$ ]] || (( format_version < 1 )); then
         error "ULPM_FORMAT_VERSION must be a positive integer."
         return 1
     fi
 
+    # Declarative Schema v5 generation
     jq -n \
         --argjson fv "$format_version" \
         --arg id "$app_id" \
@@ -447,11 +465,45 @@ cmd_pack() (
         --arg ver "$ver" \
         --arg arch "$arch" \
         --arg exec "$detected_exec" \
-        '{format_version: $fv, id: $id, name: $name, version: $ver, arch: $arch, exec: $exec, network: true}' \
-        > "$build_dir/meta/manifest.json" || {
-            error "Failed to generate manifest."
-            return 1
-        }
+        --arg runtime "$runtime_ref" \
+        --argjson shared "$shared_runtime" \
+        '{
+            format_version: $fv,
+            id: $id,
+            name: $name,
+            version: $ver,
+            arch: $arch,
+            exec: $exec,
+            runtime: (if $runtime != "" then $runtime else null end),
+            shared: $shared,
+            permissions: {
+                network: true,
+                audio: true,
+                gui: true,
+                gpu: true,
+                filesystem: {
+                    home: "isolated",
+                    downloads: "read-write",
+                    custom: []
+                },
+                devices: {
+                    dri: true,
+                    input: true,
+                    hidraw: false,
+                    usb: false,
+                    kvm: false
+                },
+                dbus: {
+                    session: {
+                        talk: [],
+                        own: []
+                    }
+                }
+            }
+        }' > "$build_dir/meta/manifest.json" || {
+        error "Failed to generate Schema v5 manifest."
+        return 1
+    }
 
     validate_manifest "$build_dir/meta/manifest.json" || return 1
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
-# ULPM v4.1.0 Unified Architecture
+# ULPM v5.0.0 Declarative Architecture (Manifest v5 & Profiles Support)
 # ==============================================================================
 
 # Whitelist of environment variables forwarded into the sandbox
@@ -82,21 +82,8 @@ session_bus_socket() {
 }
 
 # ------------------------------------------------------------------------------
-# Security & Bind Validation
+# Security & Cryptographic Validation
 # ------------------------------------------------------------------------------
-
-_ulpm_valid_bind_dest() {
-    local dest="$1"
-    [[ "$dest" == /* && "$dest" != / ]] || return 1
-    case "$dest" in
-        /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*)
-            return 1
-            ;;
-    esac
-    [[ "$dest" != *$'\n'* && "$dest" != *$'\r'* ]] || return 1
-    [[ ! "/$dest/" =~ /\.\.?/ ]] || return 1
-    return 0
-}
 
 _ulpm_check_signature() {
     local pkg_path="$1" rc=0
@@ -370,34 +357,48 @@ lpk_run_rootfs() {
 # ------------------------------------------------------------------------------
 
 lpk_run_isolated() {
-    local force_offline=false
-    local disable_gpu=false
-    local disable_audio=false
-    local disable_gui=false
-    local disable_input=false
+    # Sandbox Runtime Overrides / Flags
+    local cli_force_offline=false
+    local cli_no_gpu=false
+    local cli_no_audio=false
+    local cli_no_gui=false
+    local cli_no_input=false
+    local cli_profile=""
     local custom_binds=()
 
-    # Parse Sandbox Runtime Flags
+    # Parse Sandbox Runtime Flags & Profiles
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --gaming)
+                cli_profile="gaming"
+                shift
+                ;;
+            --strict)
+                cli_profile="strict"
+                shift
+                ;;
+            --desktop)
+                cli_profile="desktop"
+                shift
+                ;;
             --offline|--no-net)
-                force_offline=true
+                cli_force_offline=true
                 shift
                 ;;
             --no-gpu)
-                disable_gpu=true
+                cli_no_gpu=true
                 shift
                 ;;
             --no-audio)
-                disable_audio=true
+                cli_no_audio=true
                 shift
                 ;;
             --no-gui)
-                disable_gui=true
+                cli_no_gui=true
                 shift
                 ;;
             --no-input)
-                disable_input=true
+                cli_no_input=true
                 shift
                 ;;
             --bind)
@@ -486,20 +487,16 @@ lpk_run_isolated() {
         return 1
     fi
 
-    local manifest="$mnt_dir/meta/manifest.json"
-    [[ ! -f "$manifest" ]] && manifest="$mnt_dir/lpk.json"
+    local manifest_file="$mnt_dir/meta/manifest.json"
+    [[ ! -f "$manifest_file" ]] && manifest_file="$mnt_dir/lpk.json"
 
-    # Correct SC2155: separate declaration and assignment
     local app_id
     app_id="app_$(basename -- "$target" .lpk)"
 
-    local exec_bin="bin/main"
-    local is_chromium=false
-    local allow_net=true
-
-    if [[ -f "$manifest" ]]; then
-        local raw_id raw_exec
-        raw_id=$(jq -r '.id // .name // empty' "$manifest" 2>/dev/null || true)
+    # Identify preliminary ID to resolve user overrides
+    if [[ -f "$manifest_file" ]]; then
+        local raw_id
+        raw_id=$(jq -r '.id // .name // empty' "$manifest_file" 2>/dev/null || true)
         if [[ -n "$raw_id" ]]; then
             if ! is_safe_app_id "$raw_id"; then
                 error "Refusing to run: unsafe application id in manifest: '$raw_id'"
@@ -508,22 +505,82 @@ lpk_run_isolated() {
             fi
             app_id="$raw_id"
         fi
-
-        raw_exec=$(jq -r '.exec // empty' "$manifest" 2>/dev/null || true)
-        [[ -n "$raw_exec" ]] && exec_bin="$raw_exec"
-
-        is_chromium=$(jq -r '.chromium // false' "$manifest" 2>/dev/null || echo "false")
-        allow_net=$(jq -r 'if has("network") then .network else true end' "$manifest" 2>/dev/null || echo "true")
     fi
 
-    # ROOTFS ROUTING
-    if lpk_is_rootfs "$mnt_dir" "$manifest"; then
+    # ROOTFS ROUTING CHECK
+    if lpk_is_rootfs "$mnt_dir" "$manifest_file"; then
+        local exec_bin="bin/main"
+        [[ -f "$manifest_file" ]] && exec_bin="$(jq -r '.exec // "bin/main"' "$manifest_file" 2>/dev/null || echo "bin/main")"
         local rootfs_rc=0
-        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$force_offline" "$allow_net" \
-            "$disable_gpu" "$disable_audio" "$disable_gui" "$disable_input" custom_binds "$@" || rootfs_rc=$?
+        lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true" \
+            "$cli_no_gpu" "$cli_no_audio" "$cli_no_gui" "$cli_no_input" custom_binds "$@" || rootfs_rc=$?
         _cleanup_sandbox_instance
         return "$rootfs_rc"
     fi
+
+    # -------------------------------------------------------------------------
+    # Manifest v5 Resolution & User Overrides Merge
+    # -------------------------------------------------------------------------
+    local effective_json="{}"
+    if declare -F manifest_resolve_effective >/dev/null 2>&1; then
+        effective_json="$(manifest_resolve_effective "$manifest_file" "$app_id")"
+    elif [[ -f "$manifest_file" ]]; then
+        effective_json="$(cat "$manifest_file")"
+    fi
+
+    local exec_bin is_chromium allow_net allow_gpu allow_audio allow_gui
+    local dev_dri dev_input dev_hidraw dev_usb dev_kvm home_mode dl_mode
+
+    exec_bin="$(manifest_get "$effective_json" '.exec' "bin/main")"
+    is_chromium="$(manifest_get "$effective_json" '.chromium' "false")"
+
+    # Meta-permissions (Backward compatible with v4 root-level flags)
+    allow_net="$(jq -r 'if has("permissions") then (.permissions.network // false) else (if has("network") then .network else true end) end' <<< "$effective_json")"
+    allow_gpu="$(jq -r 'if has("permissions") then (.permissions.gpu // true) else true end' <<< "$effective_json")"
+    allow_audio="$(jq -r 'if has("permissions") then (.permissions.audio // true) else true end' <<< "$effective_json")"
+    allow_gui="$(jq -r 'if has("permissions") then (.permissions.gui // true) else true end' <<< "$effective_json")"
+
+    # Filesystem policy
+    home_mode="$(manifest_get "$effective_json" '.permissions.filesystem.home' "isolated")"
+    dl_mode="$(manifest_get "$effective_json" '.permissions.filesystem.downloads' "read-write")"
+
+    # Devices
+    dev_dri="$(jq -r '.permissions.devices.dri // true' <<< "$effective_json")"
+    dev_input="$(jq -r '.permissions.devices.input // true' <<< "$effective_json")"
+    dev_hidraw="$(jq -r '.permissions.devices.hidraw // false' <<< "$effective_json")"
+    dev_usb="$(jq -r '.permissions.devices.usb // false' <<< "$effective_json")"
+    dev_kvm="$(jq -r '.permissions.devices.kvm // false' <<< "$effective_json")"
+
+    # Apply Built-in Execution Profiles
+    case "$cli_profile" in
+        gaming)
+            allow_gpu=true
+            allow_audio=true
+            dev_dri=true
+            dev_input=true
+            dev_hidraw=true
+            dev_usb=true
+            ;;
+        strict)
+            allow_net=false
+            allow_gpu=false
+            dev_dri=false
+            home_mode="isolated"
+            dl_mode="none"
+            ;;
+        desktop)
+            allow_gpu=true
+            allow_audio=true
+            allow_gui=true
+            ;;
+    esac
+
+    # Runtime CLI flags take ultimate precedence
+    [[ "$cli_force_offline" == "true" ]] && allow_net=false
+    [[ "$cli_no_gpu" == "true" ]]        && { allow_gpu=false; dev_dri=false; }
+    [[ "$cli_no_audio" == "true" ]]      && allow_audio=false
+    [[ "$cli_no_gui" == "true" ]]        && allow_gui=false
+    [[ "$cli_no_input" == "true" ]]      && dev_input=false
 
     # STANDARD APP SANDBOX SETUP
     local app_data_dir="$HOME/.var/app/$app_id"
@@ -551,7 +608,7 @@ lpk_run_isolated() {
             --disable-dev-shm-usage
             --log-level=3
         )
-        if [[ -n "${WAYLAND_DISPLAY:-}" && "$disable_gui" != "true" ]]; then
+        if [[ -n "${WAYLAND_DISPLAY:-}" && "$allow_gui" == "true" ]]; then
             extra_app_flags+=(--ozone-platform-hint=auto)
         fi
     fi
@@ -602,21 +659,56 @@ EOF
         --tmpfs /tmp
         --tmpfs /run
         --tmpfs /var/tmp
-        --bind "$app_data_dir/home" "$HOME"
-        --bind "$dl_host_dir" "$dl_host_dir"
     )
-
-    if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
-        bwrap_args+=(--unshare-ipc)
-    fi
 
     # Multiarch library symlinks support
     for dir in /lib /lib64 /lib32 /bin /sbin; do
         [[ -d "$dir" ]] && bwrap_args+=(--ro-bind "$dir" "$dir")
     done
 
+    # Filesystem: $HOME strategy
+    case "$home_mode" in
+        isolated)
+            bwrap_args+=(--bind "$app_data_dir/home" "$HOME")
+            ;;
+        read|ro)
+            bwrap_args+=(--ro-bind "$HOME" "$HOME")
+            ;;
+        read-write|rw)
+            bwrap_args+=(--bind "$HOME" "$HOME")
+            ;;
+        *)
+            bwrap_args+=(--bind "$app_data_dir/home" "$HOME")
+            ;;
+    esac
+
+    # Filesystem: Downloads folder
+    case "$dl_mode" in
+        read-write|rw)
+            bwrap_args+=(--bind "$dl_host_dir" "$dl_host_dir")
+            ;;
+        read|ro)
+            bwrap_args+=(--ro-bind "$dl_host_dir" "$dl_host_dir")
+            ;;
+    esac
+
+    # Filesystem: Custom paths defined in Manifest v5
+    while IFS=$'\t' read -r c_path c_mode; do
+        if [[ -n "$c_path" && -e "$c_path" ]] && _ulpm_valid_bind_dest "$c_path"; then
+            if [[ "$c_mode" == "ro" || "$c_mode" == "read" ]]; then
+                bwrap_args+=(--ro-bind "$c_path" "$c_path")
+            else
+                bwrap_args+=(--bind "$c_path" "$c_path")
+            fi
+        fi
+    done < <(jq -r '.permissions.filesystem.custom[]? | "\(.path)\t\(.mode)"' <<< "$effective_json" 2>/dev/null || true)
+
+    if [[ "$allow_gui" != "true" || -z "${DISPLAY:-}" ]]; then
+        bwrap_args+=(--unshare-ipc)
+    fi
+
     # Network & Certificates
-    if [[ "$force_offline" == "true" || "$allow_net" == "false" ]]; then
+    if [[ "$allow_net" != "true" ]]; then
         bwrap_args+=(--unshare-net)
     else
         bwrap_args+=(--share-net)
@@ -644,8 +736,8 @@ EOF
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
 
-    # Hardware & Gamepad bindings
-    if [[ "$disable_input" != "true" ]]; then
+    # Input & Gamepads
+    if [[ "$dev_input" == "true" ]]; then
         bwrap_args+=(
             --dev-bind-try /dev/input /dev/input
             --dev-bind-try /dev/uinput /dev/uinput
@@ -654,6 +746,26 @@ EOF
             [[ -e "$js" ]] && bwrap_args+=(--dev-bind-try "$js" "$js")
         done
     fi
+
+    # Raw HID & Steering wheels / Pro controllers
+    if [[ "$dev_hidraw" == "true" ]]; then
+        shopt -s nullglob
+        for hr in /dev/hidraw*; do
+            [[ -e "$hr" ]] && bwrap_args+=(--dev-bind-try "$hr" "$hr")
+        done
+        shopt -u nullglob
+    fi
+
+    # Direct USB controller access
+    if [[ "$dev_usb" == "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/bus/usb /dev/bus/usb)
+    fi
+
+    # Hardware KVM Passthrough
+    if [[ "$dev_kvm" == "true" ]]; then
+        bwrap_args+=(--dev-bind-try /dev/kvm /dev/kvm)
+    fi
+
     bwrap_args+=(
         --dev-bind-try /dev/fb0 /dev/fb0
         --ro-bind-try /run/udev /run/udev
@@ -667,8 +779,8 @@ EOF
         --ro-bind "$app_payload_dir" /app
     )
 
-    # GPU
-    if [[ "$disable_gpu" != "true" ]]; then
+    # GPU & 3D Acceleration
+    if [[ "$allow_gpu" == "true" && "$dev_dri" == "true" ]]; then
         bwrap_args+=(
             --dev-bind-try /dev/dri /dev/dri
             --ro-bind-try /usr/share/vulkan /usr/share/vulkan
@@ -682,7 +794,7 @@ EOF
     fi
 
     # Audio
-    if [[ "$disable_audio" != "true" ]]; then
+    if [[ "$allow_audio" == "true" ]]; then
         bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
         local pulse_sock="$run_user_dir/pulse/native"
         if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]]; then
@@ -697,8 +809,8 @@ EOF
     [[ -f "$HOME/.config/user-dirs.dirs" ]] && bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
     [[ -d "/recalbox/share" ]] && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
 
-    # Display Protocols (Wayland & X11)
-    if [[ "$disable_gui" != "true" ]]; then
+    # GUI (X11 & Wayland)
+    if [[ "$allow_gui" == "true" ]]; then
         if [[ -n "${DISPLAY:-}" ]]; then
             local x_sock
             if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
@@ -723,36 +835,50 @@ EOF
     fi
 
     # D-Bus Isolation Proxy
-    if [[ "$disable_gui" != "true" ]]; then
+    if [[ "$allow_gui" == "true" ]]; then
         if command -v xdg-dbus-proxy &>/dev/null; then
             local real_sock
             if real_sock=$(session_bus_socket "$run_user_dir"); then
                 dbus_proxy_dir="$(mktemp -d "$run_user_dir/ulpm_dbus_${instance_id}.XXXXXX" 2>/dev/null || true)"
                 if [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]]; then
-                    local dbus_extra=()
-                    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-                        # shellcheck disable=SC2206
-                        dbus_extra=($ULPM_DBUS_EXTRA)
-                    fi
+                    local -a dbus_filter_args=()
 
-                    local dbus_own=()
+                    # System namespace collision guard
                     case "$app_id" in
                         org.freedesktop*|org.gnome*|org.kde*|org.mpris*|com.canonical*)
-                            warn "App id '$app_id' collides with system D-Bus namespace: no --own granted."
+                            warn "App id '$app_id' collides with system D-Bus namespace: automatic --own omitted."
                             ;;
-                        *) dbus_own=(--own="${app_id}.*") ;;
+                        *) dbus_filter_args+=(--own="${app_id}.*") ;;
                     esac
 
+                    # Declarative session talk rules from manifest v5
+                    while IFS= read -r rule; do
+                        [[ -n "$rule" ]] && dbus_filter_args+=(--talk="$rule")
+                    done < <(jq -r '.permissions.dbus.session.talk[]?' <<< "$effective_json" 2>/dev/null || true)
+
+                    # Declarative session own rules from manifest v5
+                    while IFS= read -r rule; do
+                        [[ -n "$rule" ]] && dbus_filter_args+=(--own="$rule")
+                    done < <(jq -r '.permissions.dbus.session.own[]?' <<< "$effective_json" 2>/dev/null || true)
+
+                    # Standard Freedesktop & XDG Portals baseline
+                    dbus_filter_args+=(
+                        --own='org.mpris.MediaPlayer2.*'
+                        --talk=org.freedesktop.Notifications
+                        --talk=org.freedesktop.ScreenSaver
+                        --talk=org.freedesktop.PowerManagement.Inhibit
+                        --talk=org.freedesktop.portal.Desktop
+                        --talk=org.freedesktop.portal.Documents
+                        --talk=org.kde.StatusNotifierWatcher
+                    )
+
+                    if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                        # shellcheck disable=SC2206
+                        dbus_filter_args+=($ULPM_DBUS_EXTRA)
+                    fi
+
                     xdg-dbus-proxy "unix:path=$real_sock" "$dbus_proxy_dir/bus" --filter \
-                        ${dbus_own[@]+"${dbus_own[@]}"} \
-                        --own='org.mpris.MediaPlayer2.*' \
-                        --talk=org.freedesktop.Notifications \
-                        --talk=org.freedesktop.ScreenSaver \
-                        --talk=org.freedesktop.PowerManagement.Inhibit \
-                        --talk=org.freedesktop.portal.Desktop \
-                        --talk=org.freedesktop.portal.Documents \
-                        --talk=org.kde.StatusNotifierWatcher \
-                        ${dbus_extra[@]+"${dbus_extra[@]}"} &
+                        "${dbus_filter_args[@]}" &
                     dbus_pid=$!
 
                     for _ in {1..30}; do
@@ -787,7 +913,7 @@ EOF
     done
 
     for env_var in "${ENV_WHITELIST[@]}"; do
-        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+        if [[ "$allow_gui" != "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
             continue
         fi
         if [[ -n "${!env_var:-}" ]]; then

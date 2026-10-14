@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ==============================================================================
+#==============================================================================
 # lib/stream.sh - Ephemeral RAM Streaming Engine
-# ULPM v4.1.0 Unified Architecture
+# ULPM v5.0.0 Declarative Engine (RAM Streamer & Sandbox Profiles Passthrough)
 # ==============================================================================
 
 resolve_stream_url() {
@@ -107,7 +107,7 @@ resolve_stream_url() {
         ' <<< "$release_json" 2>/dev/null)" || download_url=""
 
         if [[ -z "$download_url" ]]; then
-            error "No .lpk release asset found in ${owner}/${repo}."
+            error "No .lpk release asset found in ${owner}/${repo} for architecture '${arch}'."
             return 1
         fi
 
@@ -128,7 +128,7 @@ resolve_stream_url() {
 cmd_stream() (
     local source_input="${1:-}"
     if [[ -z "$source_input" ]]; then
-        error "Usage: ulpm stream <url|local.lpk|owner/repo[@tag]> [sandbox_flags] [-- app_args...]"
+        error "Usage: ulpm stream <url|local.lpk|owner/repo[@tag]> [flags] [-- app_args...]"
         return 1
     fi
     shift
@@ -203,5 +203,6 @@ cmd_stream() (
         return 1
     fi
 
+    # Forward to cmd_run preserving sandbox flags, profiles, and app args
     cmd_run "$tmp_lpk" "$@"
 )

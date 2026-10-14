@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/run.sh - Direct Sandbox Execution Dispatcher
-# ULPM v4.1.0 Unified Architecture
+# ULPM v5.0.0 Declarative Engine (Profiles & Schema v5 Dispatcher)
 # ==============================================================================
 
 _run_resolve_target() {
@@ -81,6 +81,12 @@ cmd_run() {
                 parsing_app_args=1
                 shift
                 ;;
+            # Execution Profiles
+            --gaming|--strict|--desktop)
+                sandbox_opts+=("$arg")
+                shift
+                ;;
+            # Isolation & Hardware Flags
             --offline|--no-net)
                 sandbox_opts+=("--offline")
                 shift
@@ -127,7 +133,7 @@ cmd_run() {
     done
 
     if [[ -z "$target" ]]; then
-        error "Usage: ulpm run <package.lpk|app_id> [sandbox_flags] [-- app_args...]"
+        error "Usage: ulpm run [flags] <package.lpk|app_id> [-- app_args...]"
         return 2
     fi
 
