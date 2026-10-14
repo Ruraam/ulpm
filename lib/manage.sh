@@ -864,4 +864,6 @@ cmd_inspect() {
         case "$code" in
             2) crypto_status="\033[0;31m✖ Unsigned (missing signature)\033[0m" ;;
             3) crypto_status="\033[1;33m⚠ Signed (untrusted authority)\033[0m" ;;
-            *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\0
+            *) crypto_status="\033[0;31m✖ INVALID / CORRUPTED SIGNATURE\033[0m" ;;
+            esac
+            fi
