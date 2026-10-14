@@ -16,46 +16,46 @@
 ---
 
 >[!NOTE]
-> ### 🚀 Release Status: v4.1.0 Production Engine
+> ### 🚀 Release Status: v5.0.0 Declarative Engine
 >
->**ULPM Engine v4.1.0** powers the autonomous **`.lpk` Format v4** specificationn with a hardened, modular architecture.
+> **ULPM Engine v5.0.0** powers the autonomous **`.lpk` Format v5** specification with a hardened, declarative sandboxing architecture.
 >
-> * **Security:** Hardened Bubblewrap namespaces with isolated session D-Bus proxy (`xdg-dbus-proxy`), granular runtime kill-switches (`--no-gpu`,`--no-audio`, `--no-gui`), strict permission gating, and Ed25519 TOFU cryptographic key pinning.
-> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, atomic installations with zero background resource footprint.
-> * **RootFS & Distro Engine:** Run entire unprivileged Linux distributions (Debian XFCE, Arch, Alpine, Recalbox) directly inside unshared namespaces without KVM or Docker.
->* **Compatibility:** Validated on standard Linux distributions across minimal and enterprise hardware (amd64, arm64, armhf, i386, riscv64).
-
+> * **Declarative Permissions & Overrides:** Fine-grained sandbox controls declared in JSON manifests (`meta/manifest.json`), customizable at runtime with user-defined overrides stored in `~/.config/ulpm/overrides/`.
+> * **Execution Profiles:** Native profiles (`--gaming`, `--strict`, `--desktop`) for instant zero-configuration isolation or high-performance hardware passthrough (Vulkan, DRI, HID, USB, KVM).
+> * **Shared Hybrid Runtimes:** Reusable shared application runtime bases (`ulpm runtime`) to minimize disk footprint while preserving total container isolation.
+> * **HardenedSecurity:** Bubblewrap user namespaces, granular session D-Bus proxy filtering (`xdg-dbus-proxy`), embedded Ed25519 payload signatures, and TOFU cryptographic key pinning.
+> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, and atomic package management without system overhead.
 ---
 
 ## ⚡ Overview
 
-**ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
+**ULPM** isa minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
 
-It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero system overhead**.
+It packages applications into **`.lpk`**(*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero system overhead**.
 
-### Why ULPM ?
+### Why ULPM?
 
 - 🚫 **Zero Daemon:** No background services consuming memory or disk I/O.
 
-- 👤 **100% Rootless:**Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`).No `sudo` required.
+- 👤**100% Rootless:** Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`). No `sudo` required.
 
-- 🛡️ **Hardened Sandbox:** Isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), MIT-SHM support for X11, separate XDG directories (`~/.var/app/<app_id>`), and strict permission gates (`--cap-drop ALL`).
+- 🛡️ **Declarative Hardened Sandbox:** Fine-grained permission model (Manifest v5), isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), separate XDG directories (`~/.var/app/<app_id>`), and strict capability dropping (`--cap-drop ALL`).
 
-- 🎛️ **Granular Kill-Switches:** Dynamically sever network, GPU access, audio servers, or graphical display at launch via runtime CLI flags.
+- 🎛️ **Granular Overrides & Profiles:** Audit and adjust application permissions anytime (`ulpm permissions`,`ulpm override`) or switch sandbox execution modes on the fly (`--gaming`, `--strict`, `--desktop`).
 
-- 🔑 **Cryptographically Signed & Pinned:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
+- 🔑**Cryptographically Signed & Pinned:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
 
-- 🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), joysticks/gamepads (`/dev/input`, `/dev/js*`), Wayland, X11, PipeWire, and PulseAudio.
+- 🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), gamepads (`/dev/input`), raw HID devices (`/dev/hidraw*`), USB subsystems (`/dev/bus/usb`), Wayland, X11, PipeWire, and PulseAudio.
 
 - ⚡ **Instant Streaming & Demo:** Stream apps directly into volatile RAM/tmpfs to test software on the fly with zero footprint upon exit.
 
 - 🧠 **Smart Cache:** Intelligent HTTP header(`ETag` / `If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
 
-- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe ELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` fat-bundleson the fly.
+- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe non-executing ELF/SquashFSparsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` bundleson the fly.
 
 - 🧬 **Seamless Host Graphics Bridge:** Prevents ABI divergence and crashes on proprietary drivers (NVIDIA / Mesa) inside containers by dynamically mounting and binding host display stacks, DRI, and GLVND loaders straight into guest runtimes.
 
-- 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope,Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
+- 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope, Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
 
 - 🐙 **Native GitHub CI/CD & OTA Updates:** Install and seamlessly track software straight from `owner/repo` releases with embedded cryptographic key pinning on upgrades.
 
@@ -64,19 +64,20 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 ## 📊 Comparison
 
 | Feature | Snap | Flatpak | AppImage | **ULPM (.lpk)** |
-| :--- | :---: | :---: | :---: |:---: |
-| **Daemonless** | ❌ (snapd required) | ✔️ | ✔️| ✔️ **Yes** |
-| **Rootless Install** | ❌ (requires root) | ⚠️(partial) | ✔️ | ✔️ **Full user-space** |
+| :--- | :---: | :---:| :---: | :---: |
+| **Daemonless** | ❌ (snapd required) |✔️ | ✔️ | ✔️ **Yes** |
+| **Rootless Install** | ❌ (requires root) | ⚠️ (partial) | ✔️ | ✔️ **Full user-space** |
 | **Runtime Overhead** |⚠️ Heavy startup | ⚠️ Runtimes required | ✔️ Low | 🚀 **Near-zero** |
-| **Sandbox Built-in**| AppArmor (Host root) | Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
-| **Dynamic Kill-Switches** | ❌ None | ⚠️ Manual overrides | ❌ None |🎛️ **`--no-gpu`, `--offline`, etc.** |
-| **Distro/RootFS Execution** |❌ No | ❌ No | ❌ No | 🐧 **Full RootFS support** |
-| **RAM Stream Apps (Zero-Disk)** | ❌ No | ❌ No | ❌ No | ⚡ **Direct volatile stream**|
-| **Instant Distro Preview** | ❌ No | ❌ No | ❌ No | 🪟 **Live RootFS test without install** |
-| **Mandatory Signatures** |Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning**|
+| **Declarative Permissions** | ❌ AppArmor profiles | ✔️ Manifest permissions | ❌ None | 🛡️ **Schema v5 + User Overrides** |
+| **Sandbox Built-in** | AppArmor (Host root) |Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
+| **Dynamic Kill-Switches** | ❌ None | ⚠️ Manual overrides | ❌ None | 🎛️ **`--no-gpu`, `--offline`, `--strict`** |
+| **Distro/RootFS Execution** | ❌ No | ❌ No |❌ No | 🐧 **Full RootFS support** |
+| **RAM Stream Apps (Zero-Disk)** | ❌ No | ❌ No| ❌ No | ⚡ **Direct volatile stream** |
+| **Instant Distro Preview** | ❌ No | ❌ No |❌ No | 🪟 **Live RootFS test without install** |
+| **Mandatory Signatures** | Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning** |
 | **Multi-format Builder** | Complex recipe | Complex JSON/YAML | Manual recipes | 🪄 **Auto from .appimage/.deb/.rpm/tar** |
-| **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common | ⚡ **Nativehost passthrough** |
-| **Micro-Compositor (Gamescope)** | ❌ Difficult | ⚠️ Heavy tweaking| ❌ Fragile | 🎮 **Native nested session** |
+| **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common | ⚡ **Native host passthrough** |
+| **Micro-Compositor (Gamescope)** | ❌ Difficult | ⚠️ Heavy tweaking | ❌ Fragile | 🎮 **Native nested session** |
 | **Zero-Config GitHub OTA** | ❌ Complex (Action + Store) | ⚠️ Flathub PR pipeline | ❌ Manual re-download | 🐙 **Native `owner/repo` tracking** |
 
 ---
@@ -88,22 +89,22 @@ It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomou
 ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested, standard Linux utilities:
 
 | Component | Utility | Description |
-| :--- | :--- | :--- |
-| **Sandboxing** | `bubblewrap` (`bwrap`) |Lightweight unprivileged user-namespace isolation |
+| :---| :--- | :--- |
+| **Sandboxing** | `bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
 | **D-Bus Filtering** | `xdg-dbus-proxy` | *(Optional but recommended)* Restricts and filters session D-Bus access |
-| **Filesystem**| `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
-| **Bundle Creation** | `squashfs-tools` (`mksquashfs`, `unsquashfs`)| Generates and safely extracts optimized $zstd$-compressed `.lpk` images |
+| **Filesystem** |`squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
+| **Bundle Creation** | `squashfs-tools` (`mksquashfs`, `unsquashfs`) | Generates and safely extracts optimized $zstd$-compressed `.lpk` images |
 | **Cryptography** |`openssl` (>= 3.0) & `coreutils` | Autonomous Ed25519 trailer signature verification & raw I/O |
-| **Binary Inspection** | `od`, `cmp`, `file` | Secure non-executing ELF header parsing and binary key matching |
-| **Metadata Parsing** | `jq` | Fast JSON manifest validation |
-| **Transport** | `curl` | Smart conditional caching and remote repository sync|
+| **Binary Inspection** | `od`, `cmp`, `file`, `readelf` | Secure non-executing ELF header parsing and binary offset matching |
+| **Metadata Parsing** | `jq` | FastJSON manifest validation and declarative overrides merging |
+| **Transport** | `curl` | Smart conditional caching and remote repository sync |
 | **Process Locking** | `util-linux` (`flock`) | Safe multi-process concurrency and database locking |
 
 ---
 
 ### Quick Install (Automated)
 
-The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`, `xbps`), and sets up either a **rootless** or **system-wide** installation.
+The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`, `xbps`), andsets up either a **rootless** or **system-wide** installation.
 
 #### Run Installation Dashboard
 ```bash
@@ -174,7 +175,7 @@ ulpm stream owner/repo
 ```
 *When the application exits, the ephemeral runtime and all cached binaries are automatically destroyed.*
 
-### 2. Running Applications & Sandboxing Flags(`run`)
+### 2. Running Applications & Sandboxing Flags (`run`)
 Launch any local `.lpk`, an installed package ID, or an entire containerized RootFS with fine-grained security controls:
 
 **Run a local bundle or installed package**
@@ -184,7 +185,19 @@ ulpm run ./brave_amd64.lpk
 ```bash
 ulpm run io.lpk.brave
 ```
-**Runtime Kill-Switches (Workswith both Apps & RootFS distros):**
+
+**Execution Profiles (v5 Declarative):**
+
+Launch with high-performance gaming passthrough (DRI, Input, HID, USB)
+```bash
+ulpm run --gaming io.lpk.retroarch
+```
+Launch in strict lockdown (Offline, no GPU, no downloads, isolated home)
+```bash
+ulpm run --strict io.lpk.untrusted-tool
+```
+
+**Runtime Kill-Switches & Storage Controls:**
 
 Disable all networking
 ```bash
@@ -202,11 +215,34 @@ Run in pure CLI / headless mode (severs X11 and Wayland sockets)
 ```bash
 ulpm run --no-gui io.lpk.distro-rootfs
 ```
+Expose real host `$HOME` read-write or read-only
+```bash
+ulpm run --share-home io.lpk.editor
+```
 Mount a custom host directory into the sandbox
 ```bash
 ulpm run --bind /data/projects:/workspace io.lpk.ide
 ```
-### 3. Installing Packages
+### 3. Declarative Permissions & Overrides (`permissions` & `override`)
+Audit effective permissions and customize security boundaries without modifying package bundles:
+
+**Inspect effective application permissions**
+```bash
+ulpm permissionsio.lpk.firefox
+```
+**Apply persistent local overrides**
+```bash
+ulpm override io.lpk.firefox--no-net
+ulpm override io.lpk.blender --share-home
+ulpm override io.lpk.game--gaming
+ulpm override io.lpk.custom permissions.devices.kvm=true
+```
+**Reset local overrides back to package defaults**
+```bash
+ulpm permissions reset io.lpk.firefox
+```
+
+### 4. Installing Packages
 Install directly from local files, archives, or remote GitHub releases:
 
 **Install a pre-built .lpk bundle**
@@ -217,8 +253,9 @@ ulpm install ./app_amd64.lpk
 ```bash
 ulpm install owner/repo
 ```
-### 4. Packaging & Fat-Bundling (`pack` & `deb-pack`)
-ULPM can automatically resolve dependencies using `ldd` and fat-bundle required shared libraries:
+
+### 5. Packaging & Fat-Bundling (`pack` & `deb-pack`)
+ULPM can automatically resolve dependencies using `ldd` andfat-bundle required shared libraries with Schema v5 manifests:
 
 **Package a folder, archive or AppImage into an autonomous .lpk**
 ```bash
@@ -234,7 +271,20 @@ ulpm pack ./app.tar.gz my-custom-app
 ```bash
 ulpm deb-pack firefox-esr
 ```
-### 5. Updating & Managing Packages
+
+### 6. Shared Runtimes (`runtime`)
+Inspect and manage reusable shared foundation layers:
+
+**List available runtimes**
+```bash
+ulpm runtime list
+```
+**Install a shared base runtime layer**
+```bash
+ulpm runtime install ./runtime-base_amd64.lpk
+```
+
+### 7. Updating & Managing Packages
 **List all installed packages**
 ```bash
 ulpm list
@@ -258,17 +308,17 @@ ulpm clean
 
 ---
 
-## 🔐 Cryptography & Trust (Autonomous Ed25519)
+## 🔐 Cryptography &Trust (Autonomous Ed25519)
 
-Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or runningany package without relying on detached `.sig` files:
+Security is not an afterthought. **ULPM enforces autonomous signature verification** before installing or running any package without relying on detached `.sig` files:
 
 - **Self-Contained Footer:** Every signed `.lpk` embeds a fixed 104-byte cryptographic trailer (`[8B magic ULPM_SIG | 32B public key | 64B signature]`) at the end of the file.
 
-- **KeyPinning (TOFU):** On first installation, the SHA-256 fingerprint of the developer's publickey is stored. Upgrades require matching keys, preventing supply-chain takeover.
+- **Key Pinning (TOFU):** On first installation, the SHA-256 fingerprint ofthe developer's public key is stored. Upgrades require matching keys, preventing supply-chain takeover.
 
 - **Payload Integrity:** The SquashFS payload size is computed dynamically without tampering with the compressed data stream.
 
-1. **Automatic Keypair Generation:** Onfirst pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
+1. **Automatic Keypair Generation:** On first pack, ULPM transparently initializes a personal 256-bit Ed25519 keypair in `~/.config/ulpm/` and trusts it locally.
 2. **Manual Key Management:**
 ```bash
 ulpm keygen release_key
@@ -289,23 +339,24 @@ Packages lacking a valid cryptographic signature or signed by an untrusted key a
 
 Every application or RootFS runs within an ephemeral Bubblewrap namespace configured for maximum performance and user privacy:
 
-- **Isolated User Storage:** Instead of cluttering `$HOME`, application data is sandboxed into:
-  - `~/.var/app/<app_id>/config` ➔ Mounted as `$HOME/.config`
-  - `~/.var/app/<app_id>/data` ➔ Mounted as `$HOME/.local/share`
-  - `~/.var/app/<app_id>/cache` ➔ Mounted as `$HOME/.cache`
+- **Isolated User Storage:** Instead of cluttering `$HOME`, application data is sandboxed by default into:
+- `~/.var/app/<app_id>/config` ➔ Mounted as `$HOME/.config`
+- `~/.var/app/<app_id>/data` ➔ Mounted as `$HOME/.local/share`
+- `~/.var/app/<app_id>/cache` ➔ Mounted as `$HOME/.cache`
 
-- **D-Bus Hardening:** Session D-Bus access is guarded via `xdg-dbus-proxy`, exposing only strictly necessary interfaces (Portals, Notifications, Media Player, ScreenSaver) and isolating the rest of the host.
+- **D-Bus Hardening:** Session D-Bus access is guarded via `xdg-dbus-proxy`, exposing only strictly necessary interfaces (Portals, Notifications, MediaPlayer, ScreenSaver) and isolating the rest of the host.
 
-- **Strict Host Views:** Only vital configuration directories under `/etc` are shared. Host `$HOME` is shielded except for a controlled multilingual download gate (`$HOME/Downloads` / `$HOME/Téléchargements`).
+- **Strict Host Views:** Only vital configuration directories under `/etc` are shared. Host `$HOME` is shielded except for a controlled multilingual download gate (`$HOME/Downloads` / `$HOME/Téléchargements`), unless explicitly permitted via declarative manifest or user override.
 
 - **Dynamic Security Gates:** Unshare network (`--offline`), disable IPC (`--no-gui`), strip graphic devices (`--no-gpu`), or mute sound servers (`--no-audio`) via CLI overrides or manifest declarations.
 
 - **Host Integration:**
-  - Native display pass-through: Wayland socket & X11 (with MIT-SHM IPC compatibility).
-  - Native audio: Direct individual sockets for PipeWire and PulseAudio.
-  - Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and `~/.icons` are mounted read-only.
-  - Hardware acceleration: Direct pass-through of `/dev/dri`, `/usr/share/glvnd`, `/usr/share/vulkan`, and seamless host     proprietary `/dev/nvidia*` nodes to completely eradicate kernel-driver version mismatch in RootFS containers.
-  - Dedicated gaming rootfs paths: Automatic discovery and persistence bridges for retro-gaming suites (e.g.  `/recalbox/share` mounts for saves, BIOS, and ROMs).
+- Native display pass-through: Wayland socket & X11 (with MIT-SHM IPC compatibility).
+- Native audio: Direct individual sockets for PipeWire and PulseAudio.
+- Native themes and fonts: `/usr/share/fonts`, `/usr/share/themes`, and `~/.icons` are mounted read-only.
+- Hardware acceleration: Direct pass-through of `/dev/dri`, `/usr/share/glvnd`, `/usr/share/vulkan`, and seamless host proprietary `/dev/nvidia*` nodes to completely eradicate kernel-driver version mismatch in RootFS containers.
+- Dedicated gaming devices: Direct access to game controllers (`/dev/input`), raw HID devices (`/dev/hidraw*`), and USB buses via `--gaming`.
+- Dedicated gaming rootfs paths: Automatic discovery and persistence bridges for retro-gaming suites(e.g. `/recalbox/share` mounts for saves, BIOS, and ROMs).
 
 ---
 
@@ -313,33 +364,33 @@ Every application or RootFS runs within an ephemeral Bubblewrap namespace config
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ### Core Engine Status
-- [x] Autonomous `.lpk` packaging format (v4 with embedded 104-byte `ULPM_SIG` footer).
+- [x] Autonomous `.lpk` packaging format (v5 with Schema v5 declarative permissions & embedded 104-byte `ULPM_SIG` footer).
 - [x] Autonomous Ed25519 cryptographic signing & keyring.
 - [x] Cryptographic key pinning on upgrades (TOFU).
-- [x] Bubblewrap isolation with dynamic XDG remapping & runtime flags (`--offline`, `--no-gpu`, `--no-audio`, `--no-gui`).
+- [x] Bubblewrap isolation with dynamic XDG remapping & execution profiles (`--gaming`,`--strict`, `--desktop`).
+- [x] Declarative permission inspection and user overrides (`ulpm permissions`, `ulpm override`).
+- [x] Reusable shared hybrid runtimes (`ulpm runtime`).
 - [x] Session D-Bus proxy filtering via `xdg-dbus-proxy`.
-- [x] Safe non-executing AppImage ELF/SquashFS parser.
+- [x] Safe non-executing AppImage ELF/SquashFS offset-based extractor.
 - [x] Ephemeral RAM streaming execution (`ulpm stream`).
-- [x] Smart Cache with conditional HTTP verification (`ETag` / `If-Modified-Since`).
+- [x] Smart Cachewith conditional HTTP verification (`ETag` / `If-Modified-Since`).
 - [x] Automatic recursive `.deb` dependency resolution.
-- [x] Containerized unprivileged RootFS execution (Debian XFCE, Arch, Recalbox without KVM or Docker).
+- [x] Containerized unprivileged RootFS execution (Debian XFCE,Arch, Recalbox without KVM or Docker).
 - [x] Host graphic stack zero-mismatch bridge for proprietary NVIDIA drivers.
 - [x] Dedicated persistent bindings for guest retrogaming systems (`/recalbox/share`).
 - [x] Gamescope and unprivileged nested Wayland/Xwayland compositor execution support.
 - [x] Autonomous GitHub repository release tracking & OTA updates (`ulpm upgrade`).
 
 ### Upcoming & Help Wanted
-- [ ] Add support for [your favorite distro] (PRs welcome!)
-- [ ] Dedicated multilib 32-bit library containment for standalone Wine runners.
+- [ ] Add support for[your favorite distro] (PRs welcome!)
+- [ ] Dedicated multilib 32-bit library containmentfor standalone Wine runners.
 - [ ] Nested namespace permission helper (for Steam / Proton `pressure-vessel`).
 - [ ] Fix [open issue]
 
 ---
 
 ## 📄 License
-This project is licensed under the [GPLv3 License](LICENSE).
-
-
+This project is licensed under the[GPLv3 License](LICENSE).
 
 
 
