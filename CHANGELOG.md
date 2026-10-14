@@ -4,39 +4,57 @@ All notable changes to ULPM are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Security
-- Signature policy: forged or corrupted packages are always refused; unsigned or unknown-key
-  packages warn, or are refused with `ULPM_STRICT_SIGNATURES=1`.
-- Manifest `id` / `name` are validated before use in paths, the install database and D-Bus
-  filters (blocks path traversal on `remove --purge` and `sed` command injection).
-- The install database is edited without interpreting package-controlled text as code.
-- `--unshare-pid` in app and RootFS modes; `--cap-drop ALL` in RootFS mode.
-- No D-Bus `--own` grant for ids inside `org.freedesktop`, `org.gnome`, `org.kde`, `org.mpris`.
-- `pack` no longer executes AppImages on the host (ELF header parsing + `unsquashfs -o`).
-  Legacy behaviour: `ULPM_ALLOW_APPIMAGE_EXEC=1`.
-- `ulpm trust` shows the key fingerprint and refuses to overwrite a different key of the same name.
-- `self-update` checks syntax before replacing files and updates them one by one.
-- `install.sh`: `ULPM_REQUIRE_CHECKSUMS=1` makes checksum verification mandatory.
+##[5.0.0] - 2025-05-18
 
 ### Added
-- `--no-input` runtime flag (disables `/dev/input`, `/dev/js*`, `/dev/uinput`).
-- Ed25519 signing fallback for OpenSSL builds where `dgst -sign` does not support Ed25519
-  (existing signatures stay valid).
-- Project tooling: `Makefile`, shellcheck CI, issue/PR templates, `SECURITY.md`,
-  `CONTRIBUTING.md`, `.lpk` format specification, man page.
+- **Manifest Schema v5 & Declarative Permissions**:
+- Granular `permissions` object controlling network, audio, GUI, GPU, devices, custom filesystem binds, and D-Bus namespaces.
+- Full backward compatibility with Schema v1–v4 manifests.
+- **Declarative User Overrides System**:
+- Persistent per-application overrides stored in `~/.config/ulpm/overrides/<app_id>.json`.
+- New `ulpm override <app><flags|key=val...>` command to adjust permissions without modifying or rebuilding packages.
+- New `ulpm permissions <app>` audit tool displaying the combined effective permission matrix.
+- New `ulpm permissions reset <app>` command to instantly restore baseline package permissions.
+- **Execution Profiles**:
+- `--gaming`: Automatic passthrough for DRI, input gamepads, raw HID (`/dev/hidraw*`), and raw USB controllers.
+- `--strict`: Complete lockdown removing network, GPU acceleration, downloads directory, and host device passthrough.
+- `--desktop`: Default balanced desktop profile.
+- **Hardware Passthrough Controls**:
+- Support for raw HID controllers (`--dev-hidraw` / `--no-hidraw`), raw USB subsystems (`--dev-usb` / `--no-usb`), and hardware virtualization acceleration (`--dev-kvm`).
+- **Filesystem Isolation Modes**:
+- Support for configurable `$HOME` isolation: `"isolated"` (`~/.var/app/<id>`), `"read"` (host home read-only), and `"read-write"` (direct host home).
+- CLI flags `--isolate-home`, `--share-home`, and `--share-home-ro`.
+- **Hybrid Shared Runtimes Foundation**:
+- New `ulpm runtime list` and `ulpm runtime install` commands.
+- Support for shared commonbase layers installed in `~/.local/share/ulpm/runtimes/`.
+- Manifest fields`runtime` and `shared` for modular packaging.
+- **Packaging & Unpacking Improvements**:
+- AppImage Type-2 safe unpacking by calculating SquashFS section offsets via `readelf` without executing untrusted binaries.
+- Heuristic hardwareand permission pre-scanning when generating Schema v5 packages in `pack.sh`.
+- Pass-through support for runtime and fast-pack flags (`--no-scan`, `--fast`, `--shared`, `--runtime`).
 
-### Fixed
-- CLI: `search`, `token`, `doctor`, `self-update`, `completion` dropped their first argument.
-- `upgrade` aborted on the first available update (`((n++))` under `set -e`), never recorded the
-  real package version, and could not upgrade packages installed from a native `.lpk`.
-- `--bind` was silently ignored in RootFS mode.
-- `"network": false` in a manifest was ignored.
-- `normalize_target` mangled paths containing backslashes.
+### Security
+- **Deep Purge (`remove --purge`)**:
+- Automatically cleans persistent application sandbox storage (`~/.var/app/<id>`) and user overrides (`~/.config/ulpm/overrides/<id>.json`).
+- **D-Bus Namespace Hardening**:
+- Blocked arbitrary bus ownership grants for system/desktop namespaces (`org.freedesktop.*`, `org.gnome.*`, `org.kde.*`, `org.mpris.*`).
+- **Signature Integrity**:
+- Strict Ed25519 signature validation enforcement via `ULPM_STRICT_SIGNATURES=1`.
+- Safe payload inspection during installation using isolated temporary mounts.
 
-## [4.1.0]
-- `.lpk` format v4: SquashFS (zstd) payload with an embedded 104-byte Ed25519 trailer.
-- Bubblewrap sandbox with `xdg-dbus-proxy`, runtime kill-switches (`--offline`, `--no-gpu`,
-  `--no-audio`, `--no-gui`), per-app XDG directories.
-- RootFS mode, RAM streaming (`stream`), `.deb` dependency resolution (`deb-pack`), smart HTTP cache.
+### Changed
+- `install.sh`: Full supportfor ULPM v5 directories, updated shell completions (Bash/Zsh) with new subcommands and execution profile flags.
+- Default packaging format version bumped to 5 (`ULPM_FORMAT_VERSION=5`).
+- Documentation: Updated `LPK-FORMAT.md`, `SECURITY.md`, and `CONTRIBUTING.md` to reflect Schema v5 and declarative sandboxing.
+
+---
+
+##[4.1.0]
+
+### Added
+- `.lpk` format v4: SquashFS (zstd)payload with an embedded 104-byte Ed25519 trailer.
+- Bubblewrap sandbox with `xdg-dbus-proxy`, runtime kill-switches (`--offline`, `--no-gpu`, `--no-audio`, `--no-gui`), and per-app XDG directories.
+- RootFS container mode for embedded distributions.
+- Ephemeral volatile RAMexecution (`ulpm stream`).
+- Debian `.deb` package and APT dependency resolution and converter (`ulpm deb-pack`).
+- Smart GitHub release resolution and download cache.
