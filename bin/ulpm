@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================================
-# ULPM - Universal Linux Package Manager (v4.1.0 Unified Engine)
-# Main CLI entry point | rootless by default| no resident daemon
+# ULPM - Universal Linux Package Manager (v5.0.0 Declarative Engine)
+# Main CLI entry point | rootless by default | no resident daemon
 # ============================================================================
 set -Eeuo pipefail
 
-export ULPM_VERSION="4.1.0"
-export ULPM_FORMAT_VERSION="4"
+export ULPM_VERSION="5.0.0"
+export ULPM_FORMAT_VERSION="5"
 
 if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
     RED=$'\033[0;31m'
@@ -82,7 +82,7 @@ _path_add() {
     local dir="${1:-}"
     [[ -n "$dir" && -d "$dir" ]] || return 0
     case ":${PATH:-}:" in
-        *":$dir:"*) return 0 ;;
+        *":$dir:"*) return 0;;
     esac
     PATH="$dir${PATH:+:$PATH}"
     return 0
@@ -96,12 +96,14 @@ export ULPM_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
 export ULPM_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
 export ULPM_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
 export ULPM_APPS_DIR="$ULPM_DATA_HOME/apps"
+export ULPM_RUNTIMES_DIR="$ULPM_DATA_HOME/runtimes"
 export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
+export ULPM_OVERRIDES_DIR="$ULPM_CONFIG_HOME/overrides"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
 export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 
 # Atomic directory creation with strict privacy on keychains.
-mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" || _die 'Unable to create ULPM directories.'
+mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_APPS_DIR" "$ULPM_RUNTIMES_DIR" "$ULPM_OVERRIDES_DIR" || _die 'Unable to create ULPM directories.'
 ( umask 077 && mkdir -p -- "$ULPM_KEYS_DIR" ) || _die 'Unable to create secure keys directory.'
 
 # Load modules in strict dependency order.
@@ -139,45 +141,53 @@ ULPM - Universal Linux Package Manager (v${ULPM_VERSION})
 
 Usage: ulpm <command> [options] [arguments]
 
-Execution:
-  run [flags] <target> [-- args...]        Run an application in a Bubblewrap sandbox
-  stream <url|repo> [flags] [-- args...]   Run ephemerally, using temporary storage
+Execution & Sandbox:
+  run [flags] <target> [-- args...]          Run an application in a Bubblewrap sandbox
+  stream <url|repo> [flags] [-- args...]     Run ephemerally, using temporary storage
+
+Sandbox Profiles & Overrides:
+  override <app> [options]                   Configure persistent permission overrides
+  permissions <app> [reset]                  Show or reset effective application permissions
+  runtime <list|install> [runtime_id]        Manage shared runtimes (hybrid runtime engine)
 
 Packaging:
-  pack [flags] <src> [name] [out.lpk] [ver]  Create an LPK bundle
-    --no-scan, --fast                      Bypass ELF dynamic dependency bundling
-  deb-pack <pkg|file.deb> [name]           Build an LPK from a Debian package
+  pack [flags] <src> [name] [out.lpk] [ver]  Create an LPK bundle (v5 schema)
+      --no-scan, --fast                        Bypass ELF dynamic dependency bundling
+      --shared                                 Mark bundle for hybrid runtime consumption
+  deb-pack <pkg|file.deb> [name]             Build an LPK from a Debian package
 
 Application management:
-  install, -i <source> [name]              Install an application
-  upgrade, -u                              Upgrade tracked applications
-  remove, -r [--purge] <app_name>          Uninstall an application
-  list, -l                                 List installed applications
-  search, -s <query>                       Search available applications
-  inspect <package.lpk>                    Inspect package metadata and signature
-  clean                                    Clean ULPM cache and dangling sessions
-  integrate                                Register desktop and MIME integration
+  install, -i <source> [name]                Install an application
+  upgrade, -u                                Upgrade tracked applications
+  remove, -r [--purge] <app_name>            Uninstall an application
+  list, -l                                   List installed applications
+  search, -s <query>                          Search available applications
+  inspect <package.lpk>                      Inspect package manifest and signature
+  clean                                      Clean ULPM cache and dangling sessions
+  integrate                                  Register desktop and MIME integration
 
 Security and maintenance:
-  keygen [name]                            Generate an Ed25519 keypair
-  sign <file.lpk> [priv_key]               Sign an LPK package
-  trust <public_key.pub>                   Trust a public key
-  token [PAT]                              Configure a GitHub access token
-  doctor                                   Diagnose runtime and sandbox support
-  self-update [repo]                       Update ULPM from a release source
-  completion                               Print shell completion configuration
+  keygen [name]                              Generate an Ed25519 keypair
+  sign <file.lpk> [priv_key]                  Sign an LPK package
+  trust <public_key.pub>                     Trust a public key
+  token [PAT]                                Configure a GitHub access token
+  doctor                                     Diagnose runtime, sandbox, portals & GPU
+  self-update [repo]                         Update ULPM from a release source
+  completion                                 Print shell completion configuration
 
-Runtime flags (run/stream):
-  --offline, --no-net                      Disable network access
-  --no-gpu                                 Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
-  --no-audio                               Disable audio server access (PulseAudio/PipeWire)
-  --no-gui                                 Disable graphical display access (X11 & Wayland)
-  --no-input                               Disable gamepad & host input devices
-  --bind <host>:<dest>                     Bind a host path into the sandbox
+Runtime Flags (run/stream/override):
+  --gaming                                   Apply gaming preset (DRI, Low-latency audio, Input, HID)
+  --strict                                   Apply hardened isolation profile (no network, portal only)
+  --offline, --no-net                        Disable network access
+  --no-gpu                                   Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
+  --no-audio                                 Disable audio server access (PulseAudio/PipeWire)
+  --no-gui                                   Disable graphical display access (X11 & Wayland)
+  --no-input                                 Disable gamepad & host input devices
+  --bind <host>:<dest>                       Bind a host path into the sandbox
 
 Global:
-  -h, --help                               Show this help
-  -v, --version                            Show version
+  -h, --help                                  Show this help
+  -v, --version                               Show version
 EOF_HELP
 }
 
@@ -215,6 +225,15 @@ main() {
             ;;
         stream)
             _dispatch cmd_stream stream "$@"
+            ;;
+        override)
+            _dispatch cmd_override override "$@"
+            ;;
+        permissions|perms)
+            _dispatch cmd_permissions permissions "$@"
+            ;;
+        runtime)
+            _dispatch cmd_runtime runtime "$@"
             ;;
         pack)
             local pack_args=()
