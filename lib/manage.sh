@@ -508,7 +508,7 @@ cmd_install() (
     printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_version" "$(date +%s)" "$source_origin" >> "$db_file"
 
     refresh_desktop_environment
-    info "Successfully installed '$app_name' ($app_idv$app_version)."
+    info "Successfully installed '$app_name' ($app_id $app_version)."
 )
 
 cmd_integrate() {
@@ -569,7 +569,7 @@ cmd_list() {
     printf '%-25s %-15s %-12s %-24s\n' NAME VERSION SIZE ID
     printf '%s\n' '--------------------------------------------------------------------------------'
     if [[ -s "$db_file" ]]; then
-        while IFS='|' read -r id name ver _ origin; do
+        while IFS='|' read -r id name ver _origin; do
             [[ -n "$name" ]] || continue
             local sz='-'
             if [[ -f "$apps_dir/$name/$name.lpk" ]]; then
@@ -687,7 +687,6 @@ cmd_search() {
     esac
     info "Searching for '$query' across GitHub Releases and Local Repositories..."
 
-    # shellcheckdisable=SC2034
     local -a global_targets=() global_types=() global_assets=() global_labels=()
     local display_idx=1 gh_query raw_results raw_count
     gh_query="$(printf '%s' "$query" | sed 's/ /+/g')"
