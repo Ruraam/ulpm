@@ -15,7 +15,7 @@ ENV_WHITELIST=(
     XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
     __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD__ VK_LAYER_NV_optimus
     VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
-    # Recalbox / Gaming specific variables
+    # Recalbox/ Gaming specific variables
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
 )
 
@@ -196,6 +196,8 @@ lpk_run_rootfs() {
         --tmpfs /run
         --tmpfs /var/tmp
         --ro-bind "$rootfs_dir" /
+        --tmpfs /home
+        --dir "$HOME"
         --bind "$app_data_dir/home" "$HOME"
         --bind "$app_data_dir/tmp" /tmp
         --bind "$dl_host_dir" "$dl_host_dir"
@@ -451,7 +453,7 @@ lpk_run_isolated() {
     _ulpm_check_signature "$pkg_path" || return 1
 
     local instance_id="$$_${RANDOM}"
-    local mnt_dir dbus_proxy_dir dbus_pid=""
+    local mnt_dir dbus_proxy_dir="" dbus_pid=""
     mnt_dir="$(mktemp -d "${ULPM_CACHE_HOME}/mnt_${instance_id}.XXXXXX")"
 
     # Encapsulated instance cleanup with trap restoration
@@ -459,11 +461,11 @@ lpk_run_isolated() {
     _cleanup_sandbox_instance() {
         (( cleanup_done )) && return 0
         cleanup_done=1
-        if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
+        if [[ -n "${dbus_pid:-}" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
             kill "$dbus_pid" 2>/dev/null || true
             wait "$dbus_pid" 2>/dev/null || true
         fi
-        [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
+        [[ -n "${dbus_proxy_dir:-}" && -d "${dbus_proxy_dir:-}" ]] && rm -rf "$dbus_proxy_dir"
         safe_unmount "$mnt_dir"
         rm -rf "$mnt_dir"
 
@@ -597,9 +599,19 @@ lpk_run_isolated() {
     local app_payload_dir="$mnt_dir"
     [[ -d "$mnt_dir/root" ]] && app_payload_dir="$mnt_dir/root"
 
-    # Chromium / Electron specific flags
+    # Chromium / Electron specific flags (Strict structure-based detection)
     local extra_app_flags=()
-    if [[ "$is_chromium" == "true" ]] || grep -qiE "chromium|electron" "$app_payload_dir/$clean_exec" 2>/dev/null; then
+    local is_electron_app=false
+
+    if [[ "$is_chromium" == "true" ]]; then
+        is_electron_app=true
+    elif [[ -f "$app_payload_dir/resources/app.asar" ]] || [[ -f "$app_payload_dir/electron" ]] || [[ -f "$app_payload_dir/chrome_crashpad_handler" ]]; then
+        is_electron_app=true
+    elif [[ "$(basename -- "$clean_exec")" =~ ^(chrome|chromium|brave|edge)$ ]]; then
+        is_electron_app=true
+    fi
+
+    if [[ "$is_electron_app" == "true" ]]; then
         extra_app_flags=(
             --no-sandbox
             --test-type
@@ -913,7 +925,7 @@ EOF
     done
 
     for env_var in "${ENV_WHITELIST[@]}"; do
-        if [[ "$allow_gui" != "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
             continue
         fi
         if [[ -n "${!env_var:-}" ]]; then
