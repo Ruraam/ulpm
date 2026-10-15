@@ -152,8 +152,8 @@ Sandbox Profiles & Overrides:
 
 Packaging:
   pack [flags] <src> [name] [out.lpk] [ver]  Create an LPK bundle (v5 schema)
-      --no-scan, --fast                        Bypass ELF dynamic dependency bundling
-      --shared                                 Mark bundle for hybrid runtime consumption
+      --no-scan, --fast                      Bypass ELF dynamic dependency bundling
+      --shared                               Mark bundle for hybrid runtime consumption
   deb-pack <pkg|file.deb> [name]             Build an LPK from a Debian package
 
 Application management:
@@ -161,14 +161,14 @@ Application management:
   upgrade, -u                                Upgrade tracked applications
   remove, -r [--purge] <app_name>            Uninstall an application
   list, -l                                   List installed applications
-  search, -s <query>                          Search available applications
+  search, -s <query>                         Search available applications
   inspect <package.lpk>                      Inspect package manifest and signature
   clean                                      Clean ULPM cache and dangling sessions
   integrate                                  Register desktop and MIME integration
 
 Security and maintenance:
   keygen [name]                              Generate an Ed25519 keypair
-  sign <file.lpk> [priv_key]                  Sign an LPK package
+  sign <file.lpk> [priv_key]                 Sign an LPK package
   trust <public_key.pub>                     Trust a public key
   token [PAT]                                Configure a GitHub access token
   doctor                                     Diagnose runtime, sandbox, portals & GPU
@@ -186,8 +186,8 @@ Runtime Flags (run/stream/override):
   --bind <host>:<dest>                       Bind a host path into the sandbox
 
 Global:
-  -h, --help                                  Show this help
-  -v, --version                               Show version
+  -h, --help                                 Show this help
+  -v, --version                              Show version
 EOF_HELP
 }
 
