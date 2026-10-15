@@ -15,7 +15,7 @@ ENV_WHITELIST=(
     XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
     __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD__ VK_LAYER_NV_optimus
     VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
-    # Recalbox/ Gaming specific variables
+    # Recalbox / Gaming specific variables
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
 )
 
@@ -925,7 +925,7 @@ EOF
     done
 
     for env_var in "${ENV_WHITELIST[@]}"; do
-        if [[ "$disable_gui" == "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
+        if [[ "${allow_gui:-true}" != "true" ]] && [[ "$env_var" =~ (DISPLAY|WAYLAND) ]]; then
             continue
         fi
         if [[ -n "${!env_var:-}" ]]; then
