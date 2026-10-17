@@ -52,10 +52,11 @@ bundle_elf_libraries() {
     if ! loader="$(find_host_loader 2>/dev/null)" || [[ -z "$loader" || ! -x "$loader" ]]; then
         warn "Dynamic host linker not detected; skipping DT_NEEDED bundling."
         return 0
+    fi
 
     log "Bundling dependencies via host linker ($loader)..."
     local added=1 iterations=0 max_iterations=10
-    local bin lib_path bname
+    local binlib_path bname
     local -A seen_libs=()
 
     # Transitive loop to resolve dependencies of dependencies
@@ -440,7 +441,7 @@ cmd_pack() {
     # ==========================================================================
     # CASE 1: PRE-STRUCTURED DIRECTORY
     # ==========================================================================
-    if [[ -d "$src" ]] && { [[ -f "$src/meta/manifest.json" ]] || [[ -f "$src/manifest.json" ]]; }; then
+    if [[ -d "$src" ]] && [[ -f "$src/meta/manifest.json" || -f "$src/manifest.json" ]]; then
         info "Pre-structured package directory detected ($src)."
 
         local structured_source="$src" structured_stage="" structured_cache="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
@@ -728,6 +729,6 @@ cmd_inspect() {
         error 'Could not read package manifest.'
         return 1
     }
-    jq -e 'type == "object"' <<< "$manifest" >/dev/null || { error 'Invalid package manifest.'; return 1; }
+    jq -e 'type == "object"' <<<"$manifest" >/dev/null || { error 'Invalid package manifest.'; return 1; }
     printf '%s\n' "$manifest" | jq .
 }
