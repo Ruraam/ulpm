@@ -396,9 +396,9 @@ lpk_run_rootfs() {
     "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------
 # App Mode Execution (Shared Host Base + Isolated Sandbox)
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------
 
 lpk_run_isolated() {
     local cli_force_offline=false
@@ -502,23 +502,24 @@ lpk_run_isolated() {
     mnt_dir="$(mktemp -d "${cache_dir}/mnt_${instance_id}.XXXXXX")"
     local is_extracted=0
 
+    # Variable protégée pour le mode nounset (set -u)
     local cleanup_done=0
     # shellcheck disable=SC2329
     _cleanup_sandbox_instance() {
-        (( cleanup_done )) && return 0
+        (( ${cleanup_done:-0} )) && return 0
         cleanup_done=1
         exec 9<&- 2>/dev/null || true
-        if [[ -n "$dbus_pid" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
+        if [[ -n "${dbus_pid:-}" ]] && kill -0 "$dbus_pid" 2>/dev/null; then
             kill "$dbus_pid" 2>/dev/null || true
             sleep 0.05
             kill -9 "$dbus_pid" 2>/dev/null || true
             wait "$dbus_pid" 2>/dev/null || true
         fi
-        [[ -n "$dbus_proxy_dir" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
-        if (( is_extracted == 0 )); then
+        [[ -n "${dbus_proxy_dir:-}" && -d "$dbus_proxy_dir" ]] && rm -rf "$dbus_proxy_dir"
+        if (( ${is_extracted:-0} == 0 )); then
             safe_unmount "$mnt_dir"
         fi
-        rm -rf "$mnt_dir"
+        [[ -n "${mnt_dir:-}" && -d "$mnt_dir" ]] && rm -rf "$mnt_dir"
     }
 
     trap '_cleanup_sandbox_instance; exit 130' INT
@@ -577,6 +578,8 @@ lpk_run_isolated() {
         local rootfs_rc=0
         lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true" \
             "$cli_no_gpu" "$cli_no_audio" "$cli_no_gui" "$cli_no_input" custom_binds "$@" || rootfs_rc=$?
+        _cleanup_sandbox_instance
+        trap - EXIT
         return "$rootfs_rc"
     fi
 
@@ -743,6 +746,8 @@ EOF
         log "Launching application [$app_id] (Direct execution)..."
         local app_exit_code=0
         "$real_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
+        _cleanup_sandbox_instance
+        trap - EXIT
         return "$app_exit_code"
     fi
 
@@ -794,15 +799,15 @@ EOF
     fi
 
     case "$home_mode" in
-        isolated)      bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
-        read|ro)       bwrap_args+=(--ro-bind "$HOME" "$HOME") ;;
-        read-write|rw) bwrap_args+=(--bind "$HOME" "$HOME") ;;
-        *)             bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
+        isolated)       bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
+        read|ro)        bwrap_args+=(--ro-bind "$HOME" "$HOME") ;;
+        read-write|rw)  bwrap_args+=(--bind "$HOME" "$HOME") ;;
+        *)              bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
     esac
 
     case "$dl_mode" in
-        read-write|rw) bwrap_args+=(--bind "$dl_host_dir" "$dl_host_dir") ;;
-        read|ro)       bwrap_args+=(--ro-bind "$dl_host_dir" "$dl_host_dir") ;;
+        read-write|rw)  bwrap_args+=(--bind "$dl_host_dir" "$dl_host_dir") ;;
+        read|ro)        bwrap_args+=(--ro-bind "$dl_host_dir" "$dl_host_dir") ;;
     esac
 
     local custom_fs_entries
@@ -1047,11 +1052,11 @@ EOF
 
     local host_multiarch=""
     case "$(detect_arch)" in
-        amd64)    host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
-        arm64)    host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
-        armhf)    host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
-        i386)     host_multiarch="/usr/lib/i386-linux-gnu" ;;
-        riscv64)  host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
+        amd64)     host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
+        arm64)     host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
+        armhf)     host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
+        i386)      host_multiarch="/usr/lib/i386-linux-gnu" ;;
+        riscv64)   host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
     esac
 
     local ld_paths="/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64"
@@ -1076,5 +1081,7 @@ EOF
         "${bwrap_args[@]}" "$sandbox_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
     fi
 
+    _cleanup_sandbox_instance
+    trap - EXIT
     return "$app_exit_code"
 }
