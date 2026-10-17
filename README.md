@@ -16,69 +16,78 @@
 ---
 
 >[!NOTE]
-> ### 🚀 Release Status: v5.0.0 Declarative Engine
+> ### 🚀 Release Status: v5.3.0 Enterprise Architecture Engine
 >
-> **ULPM Engine v5.0.0** powers the autonomous **`.lpk` Format v5** specification with a hardened, declarative sandboxing architecture.
+> **ULPM Engine v5.3.0** introduces a hardened multi-package transactional engine and dynamic dependency orchestration over the autonomous **`.lpk` Format v5** specification.
 >
-> * **Declarative Permissions & Overrides:** Fine-grained sandbox controls declared in JSON manifests (`meta/manifest.json`), customizable at runtime with user-defined overrides stored in `~/.config/ulpm/overrides/`.
-> * **Execution Profiles:** Native profiles (`--gaming`, `--strict`, `--desktop`) for instant zero-configuration isolation or high-performance hardware passthrough (Vulkan, DRI, HID, USB, KVM).
-> * **Shared Hybrid Runtimes:** Reusable shared application runtime bases (`ulpm runtime`) to minimize disk footprint while preserving total container isolation.
-> * **HardenedSecurity:** Bubblewrap user namespaces, granular session D-Bus proxy filtering (`xdg-dbus-proxy`), embedded Ed25519 payload signatures, and TOFU cryptographic key pinning.
-> * **Zero-Daemon Architecture:** 100% rootless runtime, instant RAM streaming execution, and atomic package management without system overhead.
+> * **Atomic Multi-Package Transactions & Crash-Resistant WAL:** All installation phases (dependency solving, downloads, SHA-256 and Ed25519 cryptographic checks) are pre-validated before any disk mutation. A persistent Write-Ahead Log (`~/.local/state/ulpm/wal/`) guarantees safe LIFO rollback and full crash recovery even across unexpected reboots or `SIGKILL`.
+> * **StateHistory & Bidirectional Rollback:** Zero-data-loss application snapshots (`ulpm history`, `ulpm rollback <app_id>`) allowing instant rollback to previous versions and atomic rollback-undo swaps.
+> * **DAG Dependency Resolver & SemVer Guard:** Complete Directed Acyclic Graph resolution engine detecting cycles and comparing exact or range versions (`>=`, `<=`, `==`, `>`,`<`) before committing transactions (`ulpm deps resolve <app-id>`).
+> * **Signed Deterministic Repositories:** Remote or local mirror support with pinned Ed25519 repository signatures (`ulpm repo add/update/search`) ensuring index integrity and preventing supply-chain poisoning.
+> * **Declarative Permissions & Overrides:** Fine-grained sandbox controls declared in JSON manifests (`meta/manifest.json`), customizable at runtime with user-defined overrides stored in`~/.config/ulpm/overrides/`.
+> * **Hardened Security:** Bubblewrap user namespaces, granular session D-Bus proxy filtering (`xdg-dbus-proxy`), embedded 104-byte ASN.1DER Ed25519 trailer signatures, and strict TOFU key pinning.
+
 ---
 
 ## ⚡ Overview
 
-**ULPM** isa minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
+**ULPM** is a minimalist, modern package manager designed to bridge the gap between traditional system packages (`.deb`, `.rpm`, `.AppImage`) and massive monolithic runtimes (Flatpak, Snap).
 
-It packages applications into **`.lpk`**(*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero system overhead**.
+It packages applications into **`.lpk`** (*Linux Package Kit*) files—autonomous, read-only SquashFS images compressed with modern **Zstandard (zstd)** and runs them via native Linux user namespaces (**Bubblewrap**) with **zero system overhead**.
 
 ### Why ULPM?
 
 - 🚫 **Zero Daemon:** No background services consuming memory or disk I/O.
 
-- 👤**100% Rootless:** Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`). No `sudo` required.
+- 👤 **100% Rootless:** Install, build, update, and run applications entirely in user-space (`~/.local/share/ulpm`). No `sudo` required.
 
-- 🛡️ **Declarative Hardened Sandbox:** Fine-grained permission model (Manifest v5), isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), separate XDG directories (`~/.var/app/<app_id>`), and strict capability dropping (`--cap-drop ALL`).
+- 🛡️ **Declarative Hardened Sandbox:** Fine-grained permission model (Manifest v5), isolated filesystem, restricted `/etc` view, filtered session D-Bus (`xdg-dbus-proxy`), separate XDG directories (`~/.var/app/<app_id>`), and stric tcapability dropping (`--cap-drop ALL`).
 
-- 🎛️ **Granular Overrides & Profiles:** Audit and adjust application permissions anytime (`ulpm permissions`,`ulpm override`) or switch sandbox execution modes on the fly (`--gaming`, `--strict`, `--desktop`).
+- 🔄 **Atomic Transactions & WAL Engine:** All packages in an operationare resolved, downloaded, and verified before mutating the system. Interrupted transactions auto-recover via a persistent WAL journal.
 
-- 🔑**Cryptographically Signed & Pinned:** Embedded Ed25519 payload signatures verified autonomously before every execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
+- ⏪ **Instant History & Rollback:** Bidirectional application rollback allowing you to instantly revert to historical versions without losing your currentinstall.
 
-- 🎮 **Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), gamepads (`/dev/input`), raw HID devices (`/dev/hidraw*`), USB subsystems (`/dev/bus/usb`), Wayland, X11, PipeWire, and PulseAudio.
+- 🌿 **Deterministic DAG Resolver:** Native SemVer-compliant dependency graph resolution preventing broken states and dependency cycles.
 
-- ⚡ **Instant Streaming & Demo:** Stream apps directly into volatile RAM/tmpfs to test software on the fly with zero footprint upon exit.
+- 🎛️ **Granular Overrides & Profiles:** Audit and adjust application permissions anytime (`ulpm permissions`, `ulpm override`) or switch sandboxexecution modes on the fly (`--gaming`, `--strict`, `--desktop`).
 
-- 🧠 **Smart Cache:** Intelligent HTTP header(`ETag` / `If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
+- 🔑 **Cryptographically Signed & Pinned:** Autonomous 104-byte embedded Ed25519 payload signatures verified autonomously before execution or installation. Cryptographic key pinning prevents supply-chain attacks on upgrade.
 
-- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe non-executing ELF/SquashFSparsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` bundleson the fly.
+- 🌐 **Signed Online Repositories:** Add,mirror, search, and install from public or private repositories signed with pinned Ed25519 keys (`ulpm repo`).
 
-- 🧬 **Seamless Host Graphics Bridge:** Prevents ABI divergence and crashes on proprietary drivers (NVIDIA / Mesa) inside containers by dynamically mounting and binding host display stacks, DRI, and GLVND loaders straight into guest runtimes.
+- 🎮**Hardware & Gaming Native:** Direct zero-friction pass-through for host GPU drivers (Mesa, DRI/VA-API, proprietary Nvidia), gamepads (`/dev/input`), raw HID devices (`/dev/hidraw*`), USB subsystems (`/dev/bus/usb`), Wayland, X11, PipeWire, and PulseAudio.
 
-- 🕹️ **Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope, Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
+- ⚡ **Instant Streaming & Demo:** Stream apps directly into volatile RAM/tmpfs to test software onthe fly with zero footprint upon exit.
 
-- 🐙 **Native GitHub CI/CD & OTA Updates:** Install and seamlessly track software straight from `owner/repo` releases with embedded cryptographic key pinning on upgrades.
+- 🧠 **Smart Cache:** Intelligent HTTP header (`ETag` /`If-Modified-Since`) validation preventing duplicate downloads when running remote URLs.
+
+- 🔄 **Universal Conversion:** Automatically turn raw `.AppImage` (via safe non-executing ELF/SquashFS parsing), `.tar.gz`, `.deb`, `.rpm`, or direct GitHub repositories into self-contained `.lpk` bundles on the fly.
+
+- 🧬 **SeamlessHost Graphics Bridge:** Prevents ABI divergence and crashes on proprietary drivers (NVIDIA / Mesa) inside containers by dynamically mountingand binding host display stacks, DRI, and GLVND loaders straight into guest runtimes.
+
+- 🕹️**Compositor & Micro-Compositor Ready:** Built-in low-latency pipeline ready to host Valve's Gamescope, Xephyr, or nested Wayland compositors directly inside isolated containers for dedicated portable gaming sessions.
 
 ---
 
 ## 📊 Comparison
 
-| Feature | Snap | Flatpak | AppImage | **ULPM (.lpk)** |
-| :--- | :---: | :---:| :---: | :---: |
-| **Daemonless** | ❌ (snapd required) |✔️ | ✔️ | ✔️ **Yes** |
+| Feature | Snap | Flatpak | AppImage | **ULPM (.lpkv5.3)** |
+| :--- | :---: | :---: | :---: | :---: |
+| **Daemonless** | ❌ (snapd required) | ✔️ | ✔️ | ✔️ **Yes** |
 | **Rootless Install** | ❌ (requires root) | ⚠️ (partial) | ✔️ | ✔️ **Full user-space** |
-| **Runtime Overhead** |⚠️ Heavy startup | ⚠️ Runtimes required | ✔️ Low | 🚀 **Near-zero** |
-| **Declarative Permissions** | ❌ AppArmor profiles | ✔️ Manifest permissions | ❌ None | 🛡️ **Schema v5 + User Overrides** |
-| **Sandbox Built-in** | AppArmor (Host root) |Bubblewrap | ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
+| **Runtime Overhead** | ⚠️ Heavy startup | ⚠️ Runtimes required | ✔️ Low | 🚀 **Near-zero** |
+| **Atomic Multi-Package WAL** | ❌ No | ❌No | ❌ No | 🛡️ **Yes (Full LIFO Rollback)** |
+| **State Snapshots & Rollback** | ⚠️ Partial | ❌ CLI complex | ❌ No | ⏪ **Native (`ulpm rollback`)** |
+| **DAG Dependency Resolution** | ❌ Flat runtimes | ❌ Flat runtimes | ❌ None| 🌿 **Native SemVer DAG** |
+| **Signed Repositories** | Snap Store only | Flathub GPG | ❌ None | 🔑 **Ed25519 Pinned Repos** |
+| **Declarative Permissions** | ❌ AppArmor profiles | ✔️ Manifest permissions | ❌ None | 🛡️ **Schema v5+ User Overrides** |
+| **Sandbox Built-in** | AppArmor (Host root) | Bubblewrap| ❌ None by default | 🛡️ **Bubblewrap + D-Bus proxy** |
 | **Dynamic Kill-Switches** | ❌ None | ⚠️ Manual overrides | ❌ None | 🎛️ **`--no-gpu`, `--offline`, `--strict`** |
-| **Distro/RootFS Execution** | ❌ No | ❌ No |❌ No | 🐧 **Full RootFS support** |
-| **RAM Stream Apps (Zero-Disk)** | ❌ No | ❌ No| ❌ No | ⚡ **Direct volatile stream** |
-| **Instant Distro Preview** | ❌ No | ❌ No |❌ No | 🪟 **Live RootFS test without install** |
-| **Mandatory Signatures** | Snap Store only | Flathub GPG | ❌ Rare | 🔑 **Ed25519 Built-in + Pinning** |
+| **Distro/RootFS Execution** | ❌ No | ❌ No | ❌ No | 🐧 **Full RootFS support** |
+| **RAMStream Apps (Zero-Disk)** | ❌ No | ❌ No | ❌ No | ⚡ **Direct volatile stream** |
+| **Mandatory Signatures** | Snap Store only | Flathub GPG | ❌ Rare | 🔑 **EmbeddedEd25519 (104B)** |
 | **Multi-format Builder** | Complex recipe | Complex JSON/YAML | Manual recipes | 🪄 **Auto from .appimage/.deb/.rpm/tar** |
-| **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common | ⚡ **Native host passthrough** |
-| **Micro-Compositor (Gamescope)** | ❌ Difficult | ⚠️ Heavy tweaking | ❌ Fragile | 🎮 **Native nested session** |
-| **Zero-Config GitHub OTA** | ❌ Complex (Action + Store) | ⚠️ Flathub PR pipeline | ❌ Manual re-download | 🐙 **Native `owner/repo` tracking** |
+| **Zero-Mismatch NVIDIA Bridge** | ❌ Complex (nvidia-container-toolkit) | ⚠️ Flatpak runtime dependent | ❌ Host ABI breaks common |⚡ **Native host passthrough** |
 
 ---
 
@@ -86,25 +95,24 @@ It packages applications into **`.lpk`**(*Linux Package Kit*) files—autonomous
 
 ### Dependencies
 
-ULPM is designed with a **zero-daemon, minimal-overhead** philosophy. Instead of bundling redundant background runtimes, it leverages battle-tested, standard Linux utilities:
+ULPM is designedwith a **zero-daemon, minimal-overhead** philosophy. It leverages battle-tested, standard Linux utilities:
 
-| Component | Utility | Description |
-| :---| :--- | :--- |
+| Component | Utility | Description|
+| :--- | :--- | :--- |
 | **Sandboxing** | `bubblewrap` (`bwrap`) | Lightweight unprivileged user-namespace isolation |
 | **D-Bus Filtering** | `xdg-dbus-proxy` | *(Optional but recommended)* Restricts and filters session D-Bus access |
-| **Filesystem** |`squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
-| **Bundle Creation** | `squashfs-tools` (`mksquashfs`, `unsquashfs`) | Generates and safely extracts optimized $zstd$-compressed `.lpk` images |
+| **Filesystem** | `squashfuse` & `fuse3` | High-performance user-space mounting for compressed images |
+| **Bundle Creation** | `squashfs-tools` (`mksquashfs`,`unsquashfs`) | Generates and safely extracts optimized $zstd$-compressed `.lpk` images |
 | **Cryptography** |`openssl` (>= 3.0) & `coreutils` | Autonomous Ed25519 trailer signature verification & raw I/O |
-| **Binary Inspection** | `od`, `cmp`, `file`, `readelf` | Secure non-executing ELF header parsing and binary offset matching |
-| **Metadata Parsing** | `jq` | FastJSON manifest validation and declarative overrides merging |
-| **Transport** | `curl` | Smart conditional caching and remote repository sync |
-| **Process Locking** | `util-linux` (`flock`) | Safe multi-process concurrency and database locking |
-
+| **JSON & Data Parsing** | `jq`, `awk` | Fast JSON manifest validation, query merging, and DB indexing |
+| **Binary Inspection** | `od`, `cmp`, `file`,`readelf` | Secure non-executing ELF header parsing and binary offset matching |
+| **Transport** |`curl` | Smart conditional caching and remote repository sync |
+| **Process Locking & WAL** | `util-linux` (`flock`), `sync` | Safe multi-process concurrency, WAL journaling and durability |
 ---
 
-### Quick Install (Automated)
+### Quick Install(Automated)
 
-The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`, `pacman`, `dnf`, `zypper`, `apk`, `xbps`), andsets up either a **rootless** or **system-wide** installation.
+The official installer auto-detects your environment, resolves dependencies across major package managers (`apt`,`pacman`, `dnf`, `zypper`, `apk`, `xbps`), and sets up either a **rootless** or **system-wide** installation.
 
 #### Run Installation Dashboard
 ```bash
@@ -160,32 +168,76 @@ sudo apk add bubblewrap xdg-dbus-proxy squashfuse fuse3 squashfs-tools openssl j
 
 ---
 
+---
+
 ## 📖 Usage Guide
 
-### 1. Ephemeral Streaming & Demos (`stream`)
-Stream remote applications directly into volatile RAM/tmpfs. Perfect for instant trials, demo software, or running single-use tools without writing them to disk:
+### 1. Atomic Multi-Package Transactions (`transaction`)
+Install one or multiple applications and their entire dependency chains atomically. If any error occurs or a signature fails, the entire transaction is rolled back cleanly:
 
-**Stream directly from a URL or GitHub repository**
+**Install multiple applications with atomic safety**
 ```bash
-ulpm stream https://example.com/app_amd64.lpk
+ulpm transaction install io.lpk.firefox io.lpk.vlc
 ```
-or
+**Target a specific verified repository**
 ```bash
-ulpm stream owner/repo
+ulpm transaction install io.lpk.retroarch --repo gaming-repo
 ```
-*When the application exits, the ephemeral runtime and all cached binaries are automatically destroyed.*
+**Manually trigger recovery of interrupted transactions**
+```bash
+ulpm transaction recover
+```
+### 2. Rollback & History Engines (`history` & `rollback`)
+ULPM preserves historical snapshots before each package upgrade or transaction commit:
 
-### 2. Running Applications & Sandboxing Flags (`run`)
-Launch any local `.lpk`, an installed package ID, or an entire containerized RootFS with fine-grained security controls:
+**View snapshot history for an application**
+```bash
+ulpm history io.lpk.firefox
+```
+**Roll back to the previous snapshot version**
+```bash
+ulpm rollback io.lpk.firefox 
+```
+*(Rolling back automatically preserves the reverted package as a historical swap point, allowing seamless undo).*
+
+### 3. Signed Repositories (`repo`)
+Manage trusted online repository mirrors with pinned cryptographic signatures:
+
+**Add a remote repository with pinned developer public key**
+```bash
+ulpm repo add myrepo https://repo.example.com/ulpm publisher.pub
+```
+**Update cached repository indexes and verify Ed25519 signatures**
+```bash
+ulpm repo update
+```
+**Search across all enabled repositories**
+```bash
+ulpm repo search blender
+```
+**Generatea signed, deterministic repository index from local bundles**
+```bash
+ulpm repo index /var/www/ulpm/packages ~/.config/ulpm/keys/release.priv
+```
+### 4. Dependency Resolution & Verification (`deps`)
+Inspect manifest dependencies and compute clean DAG installation plans:
+
+**Validate dependencies of an installed package or manifest file**
+```bash
+ulpm deps check io.lpk.firefox
+ulpm deps check ./manifest.json
+```
+**Resolve dependency graph for an application (dependencies first)**
+```bash
+ulpm deps resolve io.lpk.firefox
+```
+### 5. Running Applications & Sandboxing Flags (`run`)
+Launch any local `.lpk`, an installed package ID, or an entire containerized RootFS:
 
 **Run a local bundle or installed package**
 ```bash
-ulpm run ./brave_amd64.lpk
+ulpm run ./brave_amd64.lpkulpm run io.lpk.brave
 ```
-```bash
-ulpm run io.lpk.brave
-```
-
 **Execution Profiles (v5 Declarative):**
 
 Launch with high-performance gaming passthrough (DRI, Input, HID, USB)
@@ -196,7 +248,6 @@ Launch in strict lockdown (Offline, no GPU, no downloads, isolated home)
 ```bash
 ulpm run --strict io.lpk.untrusted-tool
 ```
-
 **Runtime Kill-Switches & Storage Controls:**
 
 Disable all networking
@@ -209,9 +260,9 @@ ulpm run --no-gpu io.lpk.app
 ```
 Disable audio servers (PulseAudio, PipeWire, ALSA)
 ```bash
-ulpm run --no-audio io.lpk.game
+ulpm run --no-audio io.lpk.gameRun 
 ```
-Run in pure CLI / headless mode (severs X11 and Wayland sockets)
+in pure CLI / headless mode (severs X11 and Wayland sockets)
 ```bash
 ulpm run --no-gui io.lpk.distro-rootfs
 ```
@@ -221,89 +272,77 @@ ulpm run --share-home io.lpk.editor
 ```
 Mount a custom host directory into the sandbox
 ```bash
-ulpm run --bind /data/projects:/workspace io.lpk.ide
+ulpm run --bind/data/projects:/workspace io.lpk.ide
 ```
-### 3. Declarative Permissions & Overrides (`permissions` & `override`)
+### 6. Declarative Permissions & Overrides (`permissions` & `override`)
 Audit effective permissions and customize security boundaries without modifying package bundles:
 
 **Inspect effective application permissions**
 ```bash
-ulpm permissionsio.lpk.firefox
+ulpm permissions io.lpk.firefox
 ```
-**Apply persistent local overrides**
+**Apply persistent localoverrides**
 ```bash
-ulpm override io.lpk.firefox--no-net
+ulpm override io.lpk.firefox --no-net
 ulpm override io.lpk.blender --share-home
-ulpm override io.lpk.game--gaming
+ulpm override io.lpk.game --gaming
 ulpm override io.lpk.custom permissions.devices.kvm=true
 ```
 **Reset local overrides back to package defaults**
 ```bash
 ulpm permissions reset io.lpk.firefox
 ```
-
-### 4. Installing Packages
-Install directly from local files, archives, or remote GitHub releases:
-
-**Install a pre-built .lpk bundle**
+### 7. Ephemeral Streaming & Demos (`stream`)
+Stream remote applications directly into volatile RAM/tmpfs:
 ```bash
-ulpm install ./app_amd64.lpk
+ulpm stream https://example.com/app_amd64.lpkor
+ulpm streamowner/repo
 ```
-**Install directly from a GitHub repository's latest release**
-```bash
-ulpm install owner/repo
-```
+*When the application exits, the ephemeral runtime and all cached binaries are automatically destroyed.*
 
-### 5. Packaging & Fat-Bundling (`pack` & `deb-pack`)
-ULPM can automatically resolve dependencies using `ldd` andfat-bundle required shared libraries with Schema v5 manifests:
+### 8. Packaging & Fat-Bundling (`pack` & `deb-pack`)
+ULPM resolves hostdependencies using `ldd` and fat-bundles required shared libraries:
 
 **Package a folder, archive or AppImage into an autonomous .lpk**
 ```bash
-ulpm pack ./app.AppImage
-```
-```bash
-ulpm pack ./extracted_folder myapp
-```
-```bash
+ulpm pack ./app.AppImageulpm pack ./extracted_folder myapp
 ulpm pack ./app.tar.gz my-custom-app
 ```
 **Build a standalone .lpk bundle fetching all recursive APT dependencies**
 ```bash
 ulpm deb-pack firefox-esr
 ```
-
-### 6. Shared Runtimes (`runtime`)
-Inspect and manage reusable shared foundation layers:
+### 9. Shared Runtimes (`runtime`)
+Inspect and managere usable shared foundation layers:
 
 **List available runtimes**
 ```bash
 ulpm runtime list
 ```
 **Install a shared base runtime layer**
-```bash
-ulpm runtime install ./runtime-base_amd64.lpk
-```
 
-### 7. Updating & Managing Packages
+ulpm runtime install ./runtime-base_amd64.lpk
+
+### 10. Updating & Managing Packages
 **List all installed packages**
-```bash
+
 ulpm list
-```
-**Upgrade allinstalled packages (automatically tracking upstream GitHub releases with key verification)**
-```bash
+
+**Upgrade tracked repository packages and standalone GitHub releases**
+
 ulpm upgrade
-```
-**Upgrade a specific package fromits GitHub source**
-```bash
-ulpm upgrade owner/repo
-```
+
 **Completely remove an application and its desktop integration**
+
+ulpm uninstall io.lpk.brave --remove-all
+
+**Integrate .lpk MIME types with desktop environment (double-click to launch)**
 ```bash
-ulpm remove io.lpk.brave
+ulpm integrate
 ```
-**Purge downloaded package and API caches**
+Run environmental diagnostic**
 ```bash
-ulpm clean
+ulpm doctor
 ```
 
 ---
