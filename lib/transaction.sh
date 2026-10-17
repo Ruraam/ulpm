@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-#==============================================================================
+# ==============================================================================
 # lib/transaction.sh - Multi-package Atomic Transaction Engine with WAL
 # ULPM v5.3 Architecture Engine (Crash Recovery, Persistent WAL & LIFO Rollback)
-# Packages are fully resolved, downloaded, hash-checked and signature-checked
-# before the first installation mutation. The persistent WAL guarantees full
-# post-crash recovery even across SIGKILL or power losses.
 # ==============================================================================
 
 _txn_safe_name() {
-    printf '%s' "$1" | tr -cd 'a-zA-Z0-9._-'
+    printf '%s' "${1:-}" | tr -cd 'a-zA-Z0-9._-'
 }
 
 _txn_wal_dir() {
@@ -58,7 +55,7 @@ _txn_select_row() {
                     ($arch == "armhf" and (.arch == "armv7l" or .arch == "armv7"))
                 )
             )
-        ' "$f" | head -n 1)"
+        ' "$f" 2>/dev/null | head -n 1)"
         [[ -n "$row" ]] || continue
 
         candidate_version="$(jq -r '.version' <<< "$row")"
@@ -87,7 +84,7 @@ _txn_select_row() {
     fi
 
     local pref_msg=""
-    [[ -n "$preferred" ]] && pref_msg="(preferred repository: '$preferred')"
+    [[ -n "$preferred" ]] && pref_msg=" (preferred repository: '$preferred')"
     error "No compatible package '$id' exists in an enabled, verified repository${pref_msg}."
     return 1
 }
@@ -110,6 +107,7 @@ _txn_restore_file() {
 
 _txn_rollback() {
     local snap="$1" apps_dir="$2" db="$3" history="$4" data_home="$5"
+    [[ -n "$snap" && -d "$snap" ]] || return 0
     local failed=0 i name existed target id
     local meta_wal="$snap/meta.json"
 
@@ -123,7 +121,7 @@ _txn_rollback() {
         done < <(jq -r '.items[]? | [.id, .name, (.existed|tostring)] | @tsv' "$meta_wal" 2>/dev/null || true)
     fi
 
-    # LIFO Rollback (in strict reverse order of installation mutation)
+    # LIFO Rollback (strict reverse order of installation mutations)
     for ((i=${#t_names[@]}-1; i>=0; i--)); do
         name="${t_names[$i]}"
         existed="${t_existed[$i]}"
@@ -145,11 +143,6 @@ _txn_rollback() {
             sync_file "$db.restore.$$" && \
             mv -f -- "$db.restore.$$" "$db" || failed=1
         sync_dir "$(dirname -- "$db")"
-    else
-        mkdir -p -- "$(dirname -- "$db")" 2>/dev/null || true
-        ( umask 077 && :> "$db") 2>/dev/null || rm -f -- "$db" || failed=1
-        chmod 600 "$db" 2>/dev/null || true
-        sync_file "$db"
     fi
 
     if [[ -d "$history" && -f "$snap/history.before" ]]; then
@@ -183,7 +176,11 @@ cmd_transaction_recover() {
     (( ${#journals[@]} == 0 )) && return 0
 
     warn "Detected unfinished transaction journal(s). Performing crash recovery..."
-    acquire_lock 10 || { error "Cannot acquire lock to perform transaction recovery."; return 1; }
+    local release_needed=0
+    if [[ "${ULPM_LOCK_HELD:-0}" != 1 ]]; then
+        acquire_lock 10 || { error "Cannot acquire lock to perform transaction recovery."; return 1; }
+        release_needed=1
+    fi
 
     local db="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
     local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
@@ -207,12 +204,15 @@ cmd_transaction_recover() {
             sync_dir "$wal_dir"
         fi
     done
-    release_lock
+
+    if (( release_needed == 1 )); then
+        release_lock
+    fi
 }
 
 cmd_transaction() {
     local action="${1:-}"
-    shift || true
+    shift 2>/dev/null || shift $#
 
     case "$action" in
         recover)
@@ -227,7 +227,7 @@ cmd_transaction() {
             ;;
     esac
 
-    local preferred_repo='' arg
+    local preferred_repo=''
     local -a roots=()
     while (( $# )); do
         case "$1" in
@@ -256,6 +256,7 @@ cmd_transaction() {
 
     check_dependencies jq sha256sum unsquashfs sync || return 1
 
+    local arg
     for arg in "${roots[@]}"; do
         is_safe_app_id "$arg" || {
             error "Invalid package ID: $arg"
@@ -269,14 +270,16 @@ cmd_transaction() {
         }
     fi
 
-    # Trigger automatic recovery of previous crashes if any
-    cmd_transaction_recover || return 1
+    # Acquire lock for the ENTIRE transaction lifespan
+    acquire_lock 10 || return 1
+
+    # Safe crash recovery while holding the transaction lock
+    cmd_transaction_recover || { release_lock; return 1; }
 
     if [[ "${ULPM_SKIP_REPO_REFRESH:-0}" != 1 ]]; then
         cmd_repo update || warn 'Repository refresh had errors; resolving from verified cached indexes.'
     fi
 
-    acquire_lock 10 || return 1
     local work_root="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/transactions"
     local wal_dir
     wal_dir="$(_txn_wal_dir)"
@@ -338,10 +341,10 @@ cmd_transaction() {
     # shellcheck disable=SC2034
     local -a done_ids=()
     local -a TXN_IDS=() TXN_NAMES=() TXN_EXISTED=() PKG_FILES=() PKG_REPOS=() PKG_VERSIONS=()
-    local root id selected repo row name version file hash base pkg got manifest_id manifest_version existing_name installed_version remote_version
+    local root id selected repo row name version file hash base pkg got manifest_raw manifest_id manifest_version existing_name installed_version remote_version
 
     for root in "${roots[@]}"; do
-        installed_version="$(_deps_installed_version "$root" "$db" 2>/dev/null || true)"
+        installed_version="$(_deps_installed_version "$root" 2>/dev/null || true)"
         if [[ -n "$installed_version" ]]; then
             local root_preferred=''
             [[ -n "$preferred_repo" && "$root" == "${roots[0]}" ]] && root_preferred="$preferred_repo"
@@ -440,12 +443,11 @@ cmd_transaction() {
             error "Signature/trust check failed for '$id'; no packages were installed."
             return 1
         }
-        manifest_id="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)"
-        manifest_version="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
-        if [[ -z "$manifest_id" ]]; then
-            manifest_id="$(unsquashfs -cat "$pkg" lpk.json 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)"
-            manifest_version="$(unsquashfs -cat "$pkg" lpk.json 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
-        fi
+
+        manifest_raw="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null || unsquashfs -cat "$pkg" lpk.json 2>/dev/null || true)"
+        manifest_id="$(jq -r '.id // empty' <<< "$manifest_raw" 2>/dev/null || true)"
+        manifest_version="$(jq -r '.version // empty' <<< "$manifest_raw" 2>/dev/null || true)"
+
         [[ "$manifest_id" == "$id" && "$manifest_version" == "$version" ]] || {
             rm -rf -- "$work"
             release_lock
@@ -468,7 +470,7 @@ cmd_transaction() {
             TXN_EXISTED+=(1)
         else
             TXN_EXISTED+=(0)
-        fi
+        }
         [[ ! -L "$data_home/icons/hicolor/256x256/apps/$id.png" ]] || {
             rm -rf -- "$work"
             release_lock
@@ -528,9 +530,9 @@ cmd_transaction() {
     # Setup signal traps to trigger LIFO rollback cleanly
     # shellcheck disable=SC2329
     _txn_handler() {
-        local sig="$1"
+        local sig="${1:-UNKNOWN}"
         trap - INT TERM HUP EXIT
-        if (( txn_committed == 0 )); then
+        if (( txn_committed == 0 )) && [[ -n "${work:-}" && -d "$work/snap" ]]; then
             error "Transaction interrupted by $sig; executing atomic LIFO rollback..."
             if _txn_rollback "$work/snap" "$apps_dir" "$db" "$history" "$data_home"; then
                 rm -rf -- "$work" "$wal_file"

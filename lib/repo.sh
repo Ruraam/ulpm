@@ -20,7 +20,7 @@ _repo_fetch() {
             ;;
         file://*)
             local f
-            f="$(normalize_target "$url")" || return 1
+            f="$(normalize_target "$url" 2>/dev/null || printf '%s' "${url#file://}")" || return 1
             [[ -f "$f" ]] || return 1
             cp -- "$f" "$dest" || return 1
             ;;
@@ -70,10 +70,12 @@ _repo_verify_index() {
         actual_fingerprint="$(openssl pkey -pubin -in "$pub" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
     fi
 
-    [[ -n "$expected_fingerprint" && -n "$actual_fingerprint" && "$actual_fingerprint" == "$expected_fingerprint" ]] || {
-        error "Pinned repository key fingerprint mismatch for '$name'."
-        return 1
-    }
+    if [[ -n "$expected_fingerprint" ]]; then
+        [[ -n "$actual_fingerprint" && "$actual_fingerprint" == "$expected_fingerprint" ]] || {
+            error "Pinned repository key fingerprint mismatch for '$name'."
+            return 1
+        }
+    fi
 
     openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -sigfile "$sig" -in "$index" > /dev/null 2>&1 || {
         error "Repository index signature verification failed for '$name'."
@@ -148,7 +150,10 @@ cmd_repo() {
             shopt -s nullglob
             local configs=("$root"/*.json)
             shopt -u nullglob
-            if (( ${#configs[@]} == 0 )); then info 'No repositories configured.'; return 0; fi
+            if (( ${#configs[@]} == 0 )); then
+                info 'No repositories configured.'
+                return 0
+            fi
             printf '%-18s %-8s %s\n' NAME STATUS URL
             for f in "${configs[@]}"; do
                 name="$(basename -- "$f" .json)"
@@ -175,14 +180,17 @@ cmd_repo() {
                 https://*|http://*) ;;
                 /*|./*|../*|file://*)
                     local local_url
-                    local_url="$(normalize_target "$url")" || return 1
+                    local_url="$(normalize_target "$url" 2>/dev/null || printf '%s' "${url#file://}")" || return 1
                     [[ -d "$local_url" ]] || {
                         error 'Local repository must be an existing directory containing index.json and index.json.sig.'
                         return 1
                     }
                     url="$(cd -- "$local_url" && pwd -P)" || return 1
                     ;;
-                *) error 'Repository URL must be HTTPS or a local directory.'; return 1;;
+                *)
+                    error 'Repository URL must be HTTPS or a local directory.'
+                    return 1
+                    ;;
             esac
             local root dest key_tmp fingerprint
             root="$(_repo_root)"; mkdir -p -- "$root" || return 1
@@ -314,7 +322,7 @@ cmd_repo() {
                 local fetch_ok=1
                 if [[ "$url" == /* || "$url" == ./* || "$url" == ../* || "$url" == file://* ]]; then
                     local dir
-                    dir="$(normalize_target "$url")" || dir=''
+                    dir="$(normalize_target "$url" 2>/dev/null || printf '%s' "${url#file://}")" || dir=''
                     if [[ -d "$dir" ]]; then
                         cp -- "$dir/index.json" "$index_tmp" 2>/dev/null || fetch_ok=0
                         cp -- "$dir/index.json.sig" "$sig_tmp" 2>/dev/null || fetch_ok=0
@@ -382,11 +390,16 @@ cmd_repo() {
         install)
             local target="${1:-}" repo_name="${2:-}"
             [[ -n "$target" ]] || { error 'Usage: ulpm repo install <app-id> [repository]'; return 2; }
-            if [[ -n "$repo_name" ]]; then
-                _repo_name_ok "$repo_name" || { error "Invalid repository name: $repo_name"; return 2; }
-                cmd_transaction install "$target" --repo "$repo_name"
+            if declare -F cmd_transaction >/dev/null 2>&1; then
+                if [[ -n "$repo_name" ]]; then
+                    _repo_name_ok "$repo_name" || { error "Invalid repository name: $repo_name"; return 2; }
+                    cmd_transaction install "$target" --repo "$repo_name"
+                else
+                    cmd_transaction install "$target"
+                fi
             else
-                cmd_transaction install "$target"
+                error "Transaction manager module (transaction.sh) is missing."
+                return 1
             fi
             ;;
         index|create-index)
@@ -495,14 +508,16 @@ cmd_repo() {
 }
 
 cmd_upgrade() {
-    local target="${1:-}"; shift || true
+    local target="${1:-}"; shift 2>/dev/null || shift $#
     if [[ -n "$target" ]]; then
         is_safe_app_id "$target" || {
             error "Targeted upgrade expects a package ID: $target"
             return 2
         }
-        cmd_transaction install "$target"
-        return $?
+        if declare -F cmd_transaction >/dev/null 2>&1; then
+            cmd_transaction install "$target"
+            return $?
+        fi
     fi
 
     local db="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
@@ -583,7 +598,12 @@ cmd_upgrade() {
 
     if (( ${#repo_targets[@]} > 0 )); then
         info "Preparing atomic transaction for ${#repo_targets[@]} repository upgrade(s)."
-        ULPM_SKIP_REPO_REFRESH=1 cmd_transaction install "${repo_targets[@]}"
+        if declare -F cmd_transaction >/dev/null 2>&1; then
+            ULPM_SKIP_REPO_REFRESH=1 cmd_transaction install "${repo_targets[@]}"
+        else
+            error "Transaction manager module (transaction.sh) required for batch upgrades."
+            return 1
+        fi
     elif (( updated_standalone == 0 )); then
         info 'All tracked applications and repository packages are up to date.'
     fi

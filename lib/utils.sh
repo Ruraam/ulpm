@@ -64,7 +64,7 @@ durable_write() {
     tmp_file="$(mktemp "$dest_dir/.tmp.wal.XXXXXX")" || return 1
     chmod "$mode" "$tmp_file" 2>/dev/null || true
 
-    if ! printf '%s' "$content" > "$tmp_file"; then
+    if ! printf '%s' "$content" >"$tmp_file"; then
         rm -f -- "$tmp_file"
         return 1
     fi
@@ -80,7 +80,7 @@ durable_write() {
 normalize_target() {
     local t="${1:-}" rest escape hex prefix ch decoded=''
     if [[ "$t" != file://* ]]; then
-        printf '%s\n' "$t"
+        printf '%s' "$t"
         return 0
     fi
 
@@ -95,7 +95,7 @@ normalize_target() {
     fi
 
     if [[ "$rest" =~ %00 ]]; then
-        error 'NUL byte is not valid in a file path.'
+        error 'NUL byte is not valid in a filepath.'
         return 1
     fi
 
@@ -112,7 +112,7 @@ normalize_target() {
         error 'Path traversal is not permitted in file URIs.'
         return 1
     fi
-    printf '%s\n' "$result"
+    printf '%s' "$result"
 }
 
 canonicalize_strict_path() {
@@ -123,7 +123,7 @@ canonicalize_strict_path() {
     if [[ "$target" =~ (^|/)\.\.(/|$) ]]; then
         return 1
     fi
-    printf '%s\n' "$target"
+    printf '%s' "$target"
 }
 
 init_environment() {
@@ -151,7 +151,7 @@ init_environment() {
         return 1
     }
 
-    # Secure directories creation with explicit permissions
+    # Secure directories creation with explicit permissions (0700)
     mkdir -p -- "$keys_dir" "$trusted_dir" "$journal_dir" || {
         error 'Could not create secure ULPM key or transaction directories.'
         return 1
@@ -305,7 +305,7 @@ version_matches_constraint() {
         "<=")     (( cmp == 0 || cmp == 2 )) ;;
         ">")      (( cmp == 1 )) ;;
         "<")      (( cmp == 2 )) ;;
-        *)         return 1 ;;
+        *)        return 1 ;;
     esac
 }
 
@@ -412,7 +412,7 @@ db_remove_entry() {
         rm -f -- "$tmp"
         return 1
     }
-    sync_file "$tmp_file"
+    sync_file "$tmp"
     mv -f -- "$tmp" "$db_file" || {
         rm -f -- "$tmp"
         error "Could not commit package database removal."
@@ -450,21 +450,21 @@ acquire_lock() {
         error "Could not create lock directory for $lock_file."
         return 1
     }
-    eval "exec ${ULPM_LOCK_FD}>\$lock_file" || {
+    exec 200>"$lock_file" || {
         error "Could not open lock file: $lock_file"
         return 1
     }
-    if flock -n "$ULPM_LOCK_FD"; then
+    if flock -n 200; then
         ULPM_LOCK_HELD=1
         return 0
     fi
     warn "Another instance of ULPM is active. Waiting up to ${timeout}s..."
-    if flock -w "$timeout" "$ULPM_LOCK_FD"; then
+    if flock -w "$timeout" 200; then
         ULPM_LOCK_HELD=1
         return 0
     fi
     error "Could not acquire database lock within ${timeout}s ($lock_file)."
-    eval "exec ${ULPM_LOCK_FD}>&-"
+    exec 200>&-
     ULPM_LOCK_HELD=0
     return 1
 }
@@ -474,8 +474,8 @@ release_lock() {
         return 0
     fi
     [[ "${ULPM_LOCK_HELD:-0}" == 1 ]] || return 0
-    flock -u "$ULPM_LOCK_FD" 2>/dev/null || true
-    eval "exec ${ULPM_LOCK_FD}>&-" 2>/dev/null || true
+    flock -u 200 2>/dev/null || true
+    exec 200>&- 2>/dev/null || true
     ULPM_LOCK_HELD=0
 }
 
@@ -535,21 +535,23 @@ is_arch_compatible() {
 
 detect_arch() {
     case "$(uname -m)" in
-        x86_64|amd64) echo amd64 ;;
+        x86_64|amd64)        echo amd64 ;;
         aarch64|arm64)       echo arm64 ;;
-        armv7*|armhf)        echo armhf ;;
+        armv7*|armv6*|armhf) echo armhf ;;
         i386|i486|i586|i686) echo i386 ;;
         riscv64)             echo riscv64 ;;
+        ppc64le)             echo ppc64le ;;
+        s390x)               echo s390x ;;
         *)                   uname -m ;;
     esac
 }
 
 find_host_loader() {
     local arch
-    arch="$(uname -m)" || return 1
+    arch="$(detect_arch)" || return 1
     local candidates=()
     case "$arch" in
-        x86_64|amd64)
+        amd64)
             candidates=(
                 /lib64/ld-linux-x86-64.so.2
                 /usr/lib64/ld-linux-x86-64.so.2
@@ -559,7 +561,7 @@ find_host_loader() {
                 /usr/lib/ld-musl-x86_64.so.1
             )
             ;;
-        aarch64|arm64)
+        arm64)
             candidates=(
                 /lib/ld-linux-aarch64.so.1
                 /usr/lib/ld-linux-aarch64.so.1
@@ -569,17 +571,15 @@ find_host_loader() {
                 /usr/lib/ld-musl-aarch64.so.1
             )
             ;;
-        armv7*|armv6*|armhf)
+        armhf)
             candidates=(
                 /lib/ld-linux-armhf.so.3
                 /usr/lib/ld-linux-armhf.so.3
                 /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
                 /usr/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
-                /lib/ld-musl-armhf.so.1
-                /usr/lib/ld-musl-armhf.so.1
             )
             ;;
-        i386|i486|i586|i686)
+        i386)
             candidates=(
                 /lib/ld-linux.so.2
                 /usr/lib/ld-linux.so.2
@@ -642,7 +642,7 @@ cmd_token() {
             error 'No terminal available to read the GitHub token.'
             return 1
         }
-        printf '%b' "${C_CYAN}Enter GitHub Personal Access Token (PAT):${C_RESET}" >/dev/tty
+        printf '%b' "${C_CYAN}Enter GitHub Personal Access Token (PAT): ${C_RESET}" >/dev/tty
         IFS= read -r -s token < /dev/tty || {
             printf '\n' >/dev/tty
             error 'Could not read token.'
@@ -768,10 +768,10 @@ cmd_doctor() {
     local ok="${C_GREEN}✔ OK${C_RESET}" warn_tag="${C_YELLOW}⚠ WARN${C_RESET}" fail_tag="${C_RED}✖ FAIL${C_RESET}"
     local arch kver
     arch="$(detect_arch)"; kver="$(uname -r)"
-    printf '%-34s: %s (%s)\n' 'Host Architecture & Kernel' "$arch" "$kver"
+    printf '%-34s : %s (%s)\n' 'Host Architecture & Kernel' "$arch" "$kver"
 
     # 1. Bubblewrap engine
-    if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / true > /dev/null 2>&1; then
+    if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / true >/dev/null 2>&1; then
         printf '%-34s : %b (Unprivileged namespaces)\n' 'Bubblewrap Sandbox Engine' "$ok"
     elif [[ ${EUID:-1} -eq 0 ]] && command -v bwrap >/dev/null 2>&1 && bwrap --dev-bind / / true >/dev/null 2>&1; then
         printf '%-34s : %b (Privileged/root mode)\n' 'Bubblewrap Sandbox Engine' "$warn_tag"
@@ -935,7 +935,7 @@ cmd_self_update() {
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    if awk 'substr($0,1,1) ~ /^[bcps]/ { bad=1 } END { exit bad ? 0 : 1 }' "$tmp_dir/archive.verbose"; then
+    if awk 'substr($0,1,1) ~ /^[bcps]/ { bad=1 } END {exit bad ? 0 : 1 }' "$tmp_dir/archive.verbose"; then
         error 'Archive contains dangerous special device nodes or FIFOs; update cancelled.'
         rm -rf -- "$tmp_dir"
         return 1

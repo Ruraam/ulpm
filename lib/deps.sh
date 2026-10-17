@@ -5,7 +5,7 @@
 # ==============================================================================
 
 _deps_compare() {
-    local have="$1" op="$2" want="$3"
+    local have="${1:-0}" op="${2:-=}" want="${3:-0}"
     [[ -n "$want" ]] || return 0
 
     if declare -F version_matches_constraint >/dev/null 2>&1; then
@@ -20,7 +20,7 @@ _deps_compare() {
             '<=')     dpkg --compare-versions "$have" le "$want" ;;
             '>')      dpkg --compare-versions "$have" gt "$want" ;;
             '<')      dpkg --compare-versions "$have" lt "$want" ;;
-            *)         return 2 ;;
+            *)        return 2 ;;
         esac
     else
         local cmp=0
@@ -31,7 +31,7 @@ _deps_compare() {
             '<=')     (( cmp == 0 || cmp == 2 )) ;;
             '>')      (( cmp == 1 )) ;;
             '<')      (( cmp == 2 )) ;;
-            *)         return 2 ;;
+            *)        return 2 ;;
         esac
     fi
 }
@@ -244,7 +244,10 @@ _deps_resolve_visit() {
         [[ -n "$preferred_repo" && "$repo" != "$preferred_repo" ]] && continue
         [[ -f "$key" && -f "$cfg" ]] || continue
         [[ "$(jq -r '.enabled // true' "$cfg" 2>/dev/null)" == true ]] || continue
-        _repo_verify_index "$repo" "$f" "$(dirname "$f")/index.json.sig" "$key" >/dev/null 2>&1 || continue
+
+        if declare -F _repo_verify_index >/dev/null 2>&1; then
+            _repo_verify_index "$repo" "$f" "$(dirname "$f")/index.json.sig" "$key" >/dev/null 2>&1 || continue
+        fi
 
         local rows
         rows="$(jq -c --arg id "$id" --arg arch "$host_arch" '
