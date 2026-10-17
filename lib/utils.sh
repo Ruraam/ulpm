@@ -36,8 +36,8 @@ die()   { error "$*"; exit 1; }
 sync_file() {
 local target="${1:-}"
 [[ -n "$target" && -f "$target" ]] || return 0
-ifcommand -v python3 >/dev/null 2>&1; then
-python3 -c "importos, sys; f = os.open(sys.argv[1], os.O_RDONLY); os.fsync(f); os.close(f)" "$target" 2>/dev/null && return0
+if command -v python3 >/dev/null 2>&1; then
+python3 -c "importos, sys; f = os.open(sys.argv[1], os.O_RDONLY); os.fsync(f); os.close(f)" "$target" 2>/dev/null && return 0
 fi
 if command -v sync >/dev/null 2>&1; then
 sync "$target" 2>/dev/null || sync 2>/dev/null || true
@@ -46,7 +46,7 @@ fi
 
 sync_dir() {
 local dir="${1:-}"
-[[ -n "$dir" &&-d "$dir" ]] || return 0
+[[ -n "$dir" && -d "$dir" ]] || return 0
 if command -v python3 >/dev/null2>&1; then
 python3 -c "import os, sys; d = os.open(sys.argv[1], os.O_RDONLY); os.fsync(d); os.close(d)" "$dir" 2>/dev/null && return 0
 fi
