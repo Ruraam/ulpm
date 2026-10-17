@@ -149,10 +149,10 @@ priv chmod 0644 /usr/share/keyrings/ulpm.gpg
 
 info "Configuring APT source list..."
 priv mkdir -p /etc/apt/sources.list.d
-echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
+echo "deb[signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
 
 info "Updating APT cache..."
-priv apt-get update || die "Failed to update apt cache from ULPM repository."
+priv apt-getupdate || die "Failed to update apt cache from ULPM repository."
 
 info "Installing ulpm deb package..."
 priv env DEBIAN_FRONTEND=noninteractive apt-get install -y ulpm || die "Failed to install ulpm via apt."
@@ -419,7 +419,7 @@ fi
 
 PM=""
 for pm in apt-get pacman dnf zypper apk xbps-install; do
-if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
+if command -v "$pm" >/dev/null2>&1; then PM="$pm"; break; fi
 done
 
 pkg_for() {
@@ -496,7 +496,7 @@ resolve_elevate
 set +e
 pkg_rc=0
 case "$PM" in
-apt-get)      priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
+apt-get)      priv apt-get update && priv envDEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
 pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
 dnf)          priv dnf install -y "${PKGS[@]}" ;;
 zypper)       priv zypper --non-interactive install "${PKGS[@]}" ;;
@@ -569,7 +569,7 @@ BACKUP_TARGETS=()
 BACKUP_FILES=()
 
 rollback_deployment() {
-local target backup
+local i target backup
 for ((i=${#BACKUP_TARGETS[@]}-1; i>=0; i--)); do
 target="${BACKUP_TARGETS[$i]}"
 backup="${BACKUP_FILES[$i]}"
@@ -805,10 +805,10 @@ cur="${COMP_WORDS[COMP_CWORD]}"
 prev="${COMP_WORDS[COMP_CWORD-1]}"
 }
 
-local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trust token self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
-local runtime_sub="list install"
+local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trusttoken self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
+local runtime_sub="listinstall"
 local deps_sub="check resolve"
-local repo_sub="list add remove enable disable update verify search install index"
+local repo_sub="list add remove enable disableupdate verify search install index"
 local txn_sub="install recover"
 local run_flags="--gaming --strict --desktop --offline --no-net --net --no-gpu --gpu --no-audio --audio --no-gui --gui --no-input --share-home --share-home-rw --share-home-ro --isolate-home --bind"
 
@@ -819,11 +819,11 @@ fi
 
 case "$prev" in
 runtime)
-COMPREPLY=($(compgen -W "$runtime_sub" -- "$cur"))
+COMPREPLY=($(compgen -W "$runtime_sub" --"$cur"))
 return 0
 ;;
 deps)
-COMPREPLY=($(compgen -W "$deps_sub" -- "$cur"))
+COMPREPLY=($(compgen-W "$deps_sub" -- "$cur"))
 return 0
 ;;
 repo)
@@ -887,7 +887,7 @@ fi
 esac
 }
 
-complete -F _ulpm_completions ulpm
+complete -F_ulpm_completions ulpm
 EOF
 
 if [ "$NEED_PRIV" = true ]; then
@@ -929,7 +929,7 @@ fi
 local mime_file="$TMP_DIR/ulpm-lpk.xml"
 cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
-<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info ">
 <mime-type type="application/x-lpk">
 <comment>ULPM Package Bundle</comment>
 <comment xml:lang="fr">Paquet d'application ULPM</comment>
