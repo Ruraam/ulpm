@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
-# ============================================================================ ==
-#ULPM Official Universal Installer & Lifecycle Manager (v5.3 Architecture)
+# ============================================================================
+# ULPM Official Universal Installer & Lifecycle Manager (v5.3 Architecture)
 # Supports: Rootless (~/.local/bin) & System-wide (/usr/local/bin)
 #
 # Usage:
 #   ./install.sh [options]
 #   curl -fsSL https://raw.githubusercontent.com/Ruraam/ulpm/main/install.sh | bash
-# ============================================================================ ==
+# ============================================================================
 
 if [ -z "${BASH_VERSION:-}" ]; then
-echo "[X] This installer requires bash (try: curl -fsSL <url>| bash)" >&2
-exit 1
+    echo "[X] This installer requires bash (try: curl -fsSL <url> | bash)" >&2
+    exit 1
 fi
 
 set -euo pipefail
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-BOLD='\033[1m'
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-GRAY='\033[0;90m'
-NC='\033[0m'
+    BOLD='\033[1m'
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    CYAN='\033[0;36m'
+    YELLOW='\033[1;33m'
+    GRAY='\033[0;90m'
+    NC='\033[0m'
 else
-BOLD=''
-RED=''
-GREEN=''
-CYAN=''
-YELLOW=''
-GRAY=''
-NC=''
+    BOLD=''
+    RED=''
+    GREEN=''
+    CYAN=''
+    YELLOW=''
+    GRAY=''
+    NC=''
 fi
 
 info() { echo -e "${CYAN}::${NC} $*"; }
@@ -43,24 +43,25 @@ BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
 APT_REPO_URL="https://ruraam.github.io/ulpm"
 
 print_banner() {
-local term_cols
-term_cols=$(tput cols 2>/dev/null || echo 80)
+    local term_cols
+    term_cols=$(tput cols 2>/dev/null || echo 80)
 
-if [[ -n "${NO_COLOR:-}" || ! -t 1 || "$term_cols" -lt 80 ]] ; then
-echo -e "\n=== ULPM (Universal Linux Package Manager Engine v5.3) ===\n"
-return 0
-fi
+    if [[ -n "${NO_COLOR:-}" || ! -t 1 || "$term_cols" -lt 80 ]]; then
+        echo -e "\n=== ULPM (Universal Linux Package Manager Engine v5.3) ===\n"
+        return 0
+    fi
 
-clear
-echo -e "         \033[0;97m▐\033[0;96m██\033[0;37m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
-echo -e "         \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
-echo -e "         \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
-echo -e "         \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
-echo -e "         \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+    clear
+    echo -e ".             \033[0;97m▐\033[0;96m██\033[0;97m \033[0;97m▐\033[0;96m██\033[0;97m▐\033[0;96m██\033[0;37m    \033[0;97m▐\033[0;96m█████▌\033[0;97m▐\033[0;96m███▄███▄\033[0m"
+    echo -e "              \033[0;37m▐\033[0;97m██\033[0;37m \033[0;97m▐██\033[0;37m▐\033[0;97m██\033[0;37m    ▐\033[0;97m██\033[0;37m  \033[0;97;47m▐\033[0;97m█\033[0;37m▐\033[0;97m██\033[0;36m▐\033[0;97m█\033[0;97;47m▌\033[0;97m▐██\033[0m"
+    echo -e ".             \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
+    echo -e "              \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
+    echo -e "              \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+    echo -e "               \033[1;30mDeclarative Sandbox & Universal Package Engine v5.3\033[0m\n"
 }
 
 # ------------------------------------------------------------
-# System checks & Privilegesresolution
+# System checks & Privileges resolution
 # ------------------------------------------------------------
 
 [ "$(uname -s)" = "Linux" ] || die "ULPM only supports Linux operating systems."
@@ -69,58 +70,58 @@ echo -e "         \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;9
 
 ELEVATE=()
 resolve_elevate() {
-if [ "$(id -u)" -eq 0 ]; then
-ELEVATE=()
-elif command -v sudo >/dev/null 2>&1; then
-ELEVATE=(sudo)
-elif command -v doas >/dev/null 2>&1; then
-ELEVATE=(doas)
-else
-die "Root privileges are required, but neither 'sudo' nor 'doas' was found."
-fi
+    if [ "$(id -u)" -eq 0 ]; then
+        ELEVATE=()
+    elif command -v sudo >/dev/null 2>&1; then
+        ELEVATE=(sudo)
+    elif command -v doas >/dev/null 2>&1; then
+        ELEVATE=(doas)
+    else
+        die "Root privileges are required, but neither 'sudo' nor 'doas' was found."
+    fi
 }
 
 priv() {
-if [ "${#ELEVATE[@]}" -gt 0 ]; then
-"${ELEVATE[@]}" "$@"
-else
-"$@"
-fi
+    if [ "${#ELEVATE[@]}" -gt 0 ]; then
+        "${ELEVATE[@]}" "$@"
+    else
+        "$@"
+    fi
 }
 
 confirm() {
-local prompt="$1" default="${2:-y}" reply=""
-[ "${ASSUME_YES:-false}" = true ] && return 0
-if [ -t 0 ]; then
-printf '%b' "$prompt"
-read -r reply || reply=""
-elif [ -r /dev/tty ]; then
-printf '%b' "$prompt"
-read -r reply< /dev/tty || reply=""
-else
-[ "$default" = "y" ] && return 0 || return 1
-fi
-[ -z "$reply" ] && reply="$default"
-case "$reply" in
-[yY]|[yY][eE][sS]|[oO]|[oO][uU][iI]) return 0 ;;
-*) return 1 ;;
-esac
+    local prompt="$1" default="${2:-y}" reply=""
+    [ "${ASSUME_YES:-false}" = true ] && return 0
+    if [ -t 0 ]; then
+        printf '%b' "$prompt"
+        read -r reply || reply=""
+    elif [ -r /dev/tty ]; then
+        printf '%b' "$prompt"
+        read -r reply < /dev/tty || reply=""
+    else
+        [ "$default" = "y" ] && return 0 || return 1
+    fi
+    [ -z "$reply" ] && reply="$default"
+    case "$reply" in
+        [yY]|[yY][eE][sS]|[oO]|[oO][uU][iI]) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 clean_path_file() {
-local cfg="$1"
-[ -f "$cfg" ] || return 0
-local tmp
-tmp="$(mktemp)"
-awk '
-/# Added by ULPM installer/ { skip=1; next }
-/# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
-skip && /^[[:space:]]*export PATH=/ { skip=0; next }
-skip { skip=0 }
-{ print }
-' "$cfg" > "$tmp"
-cat "$tmp" > "$cfg"
-rm -f "$tmp"
+    local cfg="$1"
+    [ -f "$cfg" ] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+        /# Added by ULPM installer/ { skip=1; next }
+        /# Added by ULPM \(graphical sessions do not read ~\/.bashrc\)/ { skip=1; next }
+        skip && /^[[:space:]]*export PATH=/ { skip=0; next }
+        skip { skip=0 }
+        { print }
+    ' "$cfg" > "$tmp"
+    cat "$tmp" > "$cfg"
+    rm -f "$tmp"
 }
 
 # ------------------------------------------------------------
@@ -128,41 +129,41 @@ rm -f "$tmp"
 # ------------------------------------------------------------
 
 install_via_apt() {
-resolve_elevate
-info "Installing ULPM from official signed APTrepository..."
+    resolve_elevate
+    info "Installing ULPM from official signed APT repository..."
 
-command -v curl >/dev/null 2>&1 || {
-info "curlis required to fetch GPG key, installing via apt..."
-priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y curl
-}
-command -v gpg > /dev/null 2>&1 || {
-info "gpg is required to dearmor repository key,installing via apt..."
-priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y gnupg
-}
+    command -v curl >/dev/null 2>&1 || {
+        info "curl is required to fetch GPG key, installing via apt..."
+        priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y curl
+    }
+    command -v gpg >/dev/null 2>&1 || {
+        info "gpg is required to dearmor repository key, installing via apt..."
+        priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y gnupg
+    }
 
-info "Importing official repository signing key..."
-priv mkdir -p /usr/share/keyrings
-curl -fsSL --retry 2 "$APT_REPO_URL/KEY.gpg" | gpg --dearmor | priv tee /usr/share/keyrings/ulpm.gpg >/dev/null \
-|| die "Failed to download and dearmor the ULPM repository signing key."
-priv chmod 0644 /usr/share/keyrings/ulpm.gpg
+    info "Importing official repository signing key..."
+    priv mkdir -p /usr/share/keyrings
+    curl -fsSL --proto '=https' --retry 2 "$APT_REPO_URL/KEY.gpg" | gpg --dearmor | priv tee /usr/share/keyrings/ulpm.gpg >/dev/null \
+        || die "Failed to download and dearmor the ULPM repository signing key."
+    priv chmod 0644 /usr/share/keyrings/ulpm.gpg
 
-info "Configuring APT source list..."
-priv mkdir -p /etc/apt/sources.list.d
-echo "deb[signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
+    info "Configuring APT source list..."
+    priv mkdir -p /etc/apt/sources.list.d
+    echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
 
-info "Updating APT cache..."
-priv apt-getupdate || die "Failed to update apt cache from ULPM repository."
+    info "Updating APT cache..."
+    priv apt-get update || die "Failed to update apt cache from ULPM repository."
 
-info "Installing ulpm deb package..."
-priv env DEBIAN_FRONTEND=noninteractive apt-get install -y ulpm || die "Failed to install ulpm via apt."
+    info "Installing ulpm deb package..."
+    priv env DEBIAN_FRONTEND=noninteractive apt-get install -y ulpm || die "Failed to install ulpm via apt."
 
-provision_default_keys
+    provision_default_keys
 
-echo
-echo -e "${GREEN}✔ ULPM engine successfully installed via APT!${NC}"
-echo -e "  Binary: ${BOLD}/usr/bin/ulpm${NC} (or system configured path)"
-echo -e "\nGet started with:${BOLD}ulpm help${NC}"
-exit 0
+    echo
+    echo -e "${GREEN}✔ ULPM engine successfully installed via APT!${NC}"
+    echo -e "  Binary: ${BOLD}/usr/bin/ulpm${NC} (or system configured path)"
+    echo -e "\nGet started with: ${BOLD}ulpm help${NC}"
+    exit 0
 }
 
 # ------------------------------------------------------------
@@ -180,78 +181,104 @@ USE_APT=false
 print_banner
 
 while [ $# -gt 0 ]; do
-case "$1" in
---apt)           USE_APT=true ;;
---user)          MODE="user" ;;
---system)        MODE="system" ;;
---bin-dir)       shift; BIN_DIR="${1:?--bin-dir needs a directory}" ;;
---ref)           shift; REF="${1:?--ref needs a value}" ;;
--y|--yes)        ASSUME_YES=true ;;
---no-deps)       INSTALL_DEPS=false ;;
---integrate)     INTEGRATE=true ;;
---no-integrate)  INTEGRATE=false ;;
---uninstall)     UNINSTALL=true ;;
--h|--help)
-echo "Usage: ./install.sh [OPTIONS]"
-echo
-echo "Options:"
-echo "  --apt           Install via official signed APT repository (Debian/Ubuntu)"
-echo "  --user          Install in user home directory (~/.local/bin)"
-echo "  --system        Install system-wide (/usr/local, requires root)"
-echo "  --bin-dir DIR   Custom binary directory"
-echo "  --ref REF       GitHub branch/tag to download from (default: main)"
-echo "  -y, --yes       Assume yes to all prompts"
-echo "  --no-deps        Do not attempt to install missing host dependencies"
-echo "  --integrate     Force desktop MIME and launcher configuration"
-echo "  --no-integrate  Skip desktop MIME and launcher configuration"
-echo "  --uninstall     Completely remove ULPM from system and user profiles"
-exit 0
-;;
-*) die "Unknown option: $1" ;;
-esac
-shift
+    case "$1" in
+        --apt)           USE_APT=true ;;
+        --user)          MODE="user" ;;
+        --system)        MODE="system" ;;
+        --bin-dir)       shift; BIN_DIR="${1:?--bin-dir needs a directory}" ;;
+        --ref)           shift; REF="${1:?--ref needs a value}" ;;
+        -y|--yes)        ASSUME_YES=true ;;
+        --no-deps)       INSTALL_DEPS=false ;;
+        --integrate)     INTEGRATE=true ;;
+        --no-integrate)  INTEGRATE=false ;;
+        --uninstall)     UNINSTALL=true ;;
+        -h|--help)
+            echo "Usage: ./install.sh [OPTIONS]"
+            echo
+            echo "Options:"
+            echo "  --apt           Install via official signed APT repository (Debian/Ubuntu)"
+            echo "  --user          Install in user home directory (~/.local/bin)"
+            echo "  --system        Install system-wide (/usr/local, requires root)"
+            echo "  --bin-dir DIR   Custom binary directory"
+            echo "  --ref REF       GitHub branch/tag to download from (default: main)"
+            echo "  -y, --yes       Assume yes to all prompts"
+            echo "  --no-deps       Do not attempt to install missing host dependencies"
+            echo "  --integrate     Force desktop MIME and launcher configuration"
+            echo "  --no-integrate  Skip desktop MIME and launcher configuration"
+            echo "  --uninstall     Completely remove ULPM from system and user profiles"
+            exit 0
+            ;;
+        *) die "Unknown option: $1" ;;
+    esac
+    shift
 done
 
 BASE_URL="https://raw.githubusercontent.com/$REPO/$REF"
 
 if [ "$USE_APT" = true ]; then
-command -v apt-get >/dev/null 2>&1 || die "Option --apt specified, but'apt-get' was not found on this system."
-install_via_apt
+    command -v apt-get >/dev/null 2>&1 || die "Option --apt specified, but 'apt-get' was not found on this system."
+    install_via_apt
 fi
 
 if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
-TTY_IN=""
-if [ -t 0 ]; then
-TTY_IN="-"
-elif [ -r /dev/tty ]; then
-TTY_IN="/dev/tty"
-fi
+    TTY_IN=""
+    if [ -t 0 ]; then
+        TTY_IN="-"
+    elif [ -r /dev/tty ]; then
+        TTY_IN="/dev/tty"
+    fi
 
-if [ -n "$TTY_IN" ]; then
-echo
-echo -e "${BOLD}${CYAN}ULPM —Universal Linux Package Manager Engine (v5.3)${NC}"
-echo "  1) Rootless installation(User: ~/.local/bin)"
-echo "  2) System-wide installation (Root: /usr/local/bin)"
-echo "  3) Clean uninstallation"
-echo "  4) Exit"
-echo
-printf "Choice [1-4] : "
-choice=""
-if [ "$TTY_IN" = "-" ]; then
-read -r choice || choice=""
-else
-read -r choice < /dev/tty || choice=""
-fi
-case "$choice" in
-1) MODE="user" ;;
-2) MODE="system" ;;
-3) UNINSTALL=true ;;
-4) info "Aborted by user."; exit 0 ;;
-*) die "Invalid choice: $choice";;
-esac
-else
-MODE="user"
-fi
+    if [ -n "$TTY_IN" ]; then
+        HAS_APT=false
+        command -v apt-get >/dev/null 2>&1 && HAS_APT=true
+
+        echo
+        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine (v5.3)${NC}"
+        echo "  1) Rootless installation (User: ~/.local/bin)"
+        echo "  2) System-wide installation (Root: /usr/local/bin)"
+        if [ "$HAS_APT" = true ]; then
+            echo "  3) Official signed APT repository (Debian/Ubuntu system-wide)"
+            echo "  4) Clean uninstallation"
+            echo "  5) Exit"
+            echo
+            printf "Choice [1-5] : "
+        else
+            echo "  1) Rootless installation (User: ~/.local/bin)"
+            echo "  2) System-wide installation (Root: /usr/local/bin)"
+            echo "  3) Clean uninstallation"
+            echo "  4) Exit"
+            echo
+            printf "Choice [1-4] : "
+        fi
+
+        choice=""
+        if [ "$TTY_IN" = "-" ]; then
+            read -r choice || choice=""
+        else
+            read -r choice < /dev/tty || choice=""
+        fi
+
+        if [ "$HAS_APT" = true ]; then
+            case "$choice" in
+                1) MODE="user" ;;
+                2) MODE="system" ;;
+                3) install_via_apt ;;
+                4) UNINSTALL=true ;;
+                5) info "Aborted by user."; exit 0 ;;
+                *) die "Invalid choice: $choice" ;;
+            esac
+        else
+            case "$choice" in
+                1) MODE="user" ;;
+                2) MODE="system" ;;
+                3) UNINSTALL=true ;;
+                4) info "Aborted by user."; exit 0 ;;
+                *) die "Invalid choice: $choice" ;;
+            esac
+        fi
+    else
+        MODE="user"
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -259,298 +286,298 @@ fi
 # ------------------------------------------------------------
 
 uninstall_ulpm() {
-local target_home="$HOME"
-if [ -n "${SUDO_USER:-}" ] &&[ "$SUDO_USER" != "root" ]; then
-local detected_home
-detected_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
-if [ -n "$detected_home" ] && [ -d "$detected_home" ]; then
-target_home="$detected_home"
-fi
-fi
+    local target_home="$HOME"
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        local detected_home
+        detected_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+        if [ -n "$detected_home" ] && [ -d "$detected_home" ]; then
+            target_home="$detected_home"
+        fi
+    fi
 
-local user_bin="${XDG_BIN_HOME:-$target_home/.local/bin}"
-local data_home="${XDG_DATA_HOME:-$target_home/.local/share}"
-local cache_home="${XDG_CACHE_HOME:-$target_home/.cache}"
-local config_home="${XDG_CONFIG_HOME:-$target_home/.config}"
-local state_home="${XDG_STATE_HOME:-$target_home/.local/state}"
+    local user_bin="${XDG_BIN_HOME:-$target_home/.local/bin}"
+    local data_home="${XDG_DATA_HOME:-$target_home/.local/share}"
+    local cache_home="${XDG_CACHE_HOME:-$target_home/.cache}"
+    local config_home="${XDG_CONFIG_HOME:-$target_home/.config}"
+    local state_home="${XDG_STATE_HOME:-$target_home/.local/state}"
 
-local xdg_path
-for xdg_path in "$data_home" "$cache_home" "$config_home" "$state_home"; do
-case "$xdg_path" in
-/*) ;;
-*) die "Refusing uninstall: XDG directory is not absolute: $xdg_path" ;;
-esac
-[ "$xdg_path" != "/" ] || die "Refusing uninstall: an XDG directory resolves to /"
-done
+    local xdg_path
+    for xdg_path in "$data_home" "$cache_home" "$config_home" "$state_home"; do
+        case "$xdg_path" in
+            /*) ;;
+            *) die "Refusing uninstall: XDG directory is not absolute: $xdg_path" ;;
+        esac
+        [ "$xdg_path" != "/" ] || die "Refusing uninstall: an XDG directory resolves to /"
+    done
 
-echo
-echo -e "${YELLOW}This operationwill remove ULPM, its libraries, installed apps, runtimes, WAL logs and overrides.${NC}"
-echo "Sandbox app storage in ~/.var/app will be preserved."
-echo
+    echo
+    echo -e "${YELLOW}This operation will remove ULPM, its libraries, installed apps, runtimes, WAL logs and overrides.${NC}"
+    echo "Sandbox app storage in ~/.var/app will be preserved."
+    echo
 
-if ! confirm "Confirm completeuninstallation of ULPM? [y/N]: " "n"; then
-info "Uninstallation cancelled."
-return 0
-fi
+    if ! confirm "Confirm complete uninstallation of ULPM? [y/N]: " "n"; then
+        info "Uninstallation cancelled."
+        return 0
+    fi
 
-local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm" "/usr/bin/ulpm")
-if [ -n "$BIN_DIR" ]; then
-case "$BIN_DIR" in
-/*) targets+=("$BIN_DIR/ulpm") ;;
-*) warn "Ignoring non-absolute custom BIN_DIR during uninstall: $BIN_DIR" ;;
-esac
-fi
-local lib_dirs=("$target_home/.local/lib/ulpm" "/usr/local/lib/ulpm" "/usr/lib/ulpm" "$data_home/ulpm/engine" "$data_home/ulpm/lib")
+    local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm" "/usr/bin/ulpm")
+    if [ -n "$BIN_DIR" ]; then
+        case "$BIN_DIR" in
+            /*) targets+=("$BIN_DIR/ulpm") ;;
+            *) warn "Ignoring non-absolute custom BIN_DIR during uninstall: $BIN_DIR" ;;
+        esac
+    fi
 
-local path
-for path in "${targets[@]}"; do
-if [ -e "$path" ] || [ -L "$path" ]; then
-if [ -w "$(dirname "$path")" ]; then
-rm -f -- "$path"
-else
-resolve_elevate
-priv rm -f -- "$path"
-fi
-info "Removed binary: $path"
-fi
-done
+    local lib_dirs=(
+        "$target_home/.local/lib/ulpm"
+        "/usr/local/lib/ulpm"
+        "/usr/lib/ulpm"
+        "$data_home/ulpm/engine"
+        "$data_home/ulpm/lib"
+    )
+    if [ -n "${LIB_DIR:-}" ]; then
+        lib_dirs+=("$LIB_DIR")
+    fi
 
-local dir
-for dir in "${lib_dirs[@]}"; do
-if [ -d "$dir" ]; then
-if [ -w "$(dirname "$dir")" ]; then
-rm -rf -- "$dir"
-else
-resolve_elevate
-priv rm -rf -- "$dir"
-fi
-info "Removed libraries: $dir"
-fi
-done
+    local path
+    for path in "${targets[@]}"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            if [ -w "$(dirname "$path")" ]; then
+                rm -f -- "$path"
+            else
+                resolve_elevate
+                priv rm -f -- "$path"
+            fi
+            info "Removed binary: $path"
+        fi
+    done
 
-for path in "$target_home/.profile" "$target_home/.bashrc" "$target_home/.zshrc"; do
-clean_path_file "$path"
-done
-rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
+    local dir
+    for dir in "${lib_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            if [ -w "$(dirname "$dir")" ]; then
+                rm -rf -- "$dir"
+            else
+                resolve_elevate
+                priv rm -rf -- "$dir"
+            fi
+            info "Removed libraries: $dir"
+        fi
+    done
 
-rm -f "$data_home/applications/ulpm-open.desktop" \
-"$data_home/applications/ulpm-handler.desktop" \
-"$data_home/mime/packages/ulpm-lpk.xml" \
-"$data_home/mime/packages/application-x-lpk.xml"
+    for path in "$target_home/.profile" "$target_home/.bashrc" "$target_home/.zshrc"; do
+        clean_path_file "$path"
+    done
+    rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
 
-rm -f -- "$data_home/bash-completion/completions/ulpm" 2>/dev/null || true
-if [ -e /usr/local/share/bash-completion/completions/ulpm ]; then
-if [ -w /usr/local/share/bash-completion/completions ]; then
-rm -f -- /usr/local/share/bash-completion/completions/ulpm
-else
-resolve_elevate
-priv rm -f -- /usr/local/share/bash-completion/completions/ulpm
-fi
-fi
-find "$data_home/applications" -maxdepth 1 -type f -name 'io.lpk.*.desktop' -delete 2>/dev/null || true
-find "$data_home/icons/hicolor/256x256/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
-find "$data_home/icons/hicolor/512x512/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
+    rm -f "$data_home/applications/ulpm-open.desktop" \
+          "$data_home/applications/ulpm-handler.desktop" \
+          "$data_home/mime/packages/ulpm-lpk.xml" \
+          "$data_home/mime/packages/application-x-lpk.xml"
 
-local sys_path
-for sys_path in /usr/local/share/applications/ulpm-open.desktop \
-/usr/local/share/applications/ulpm-handler.desktop \
-/usr/local/share/mime/packages/ulpm-lpk.xml \
-/usr/local/share/mime/packages/application-x-lpk.xml; do
-if [ -e "$sys_path" ]; then
-if [ -w "$(dirname "$sys_path")" ]; then
-rm -f --"$sys_path"
-else
-resolve_elevate
-priv rm -f -- "$sys_path"
-fi
-info "Removed: $sys_path"
-fi
-done
+    rm -f -- "$data_home/bash-completion/completions/ulpm" 2>/dev/null || true
+    if [ -e /usr/local/share/bash-completion/completions/ulpm ]; then
+        if [ -w /usr/local/share/bash-completion/completions ]; then
+            rm -f -- /usr/local/share/bash-completion/completions/ulpm
+        else
+            resolve_elevate
+            priv rm -f -- /usr/local/share/bash-completion/completions/ulpm
+        fi
+    fi
+    find "$data_home/applications" -maxdepth 1 -type f -name 'io.lpk.*.desktop' -delete 2>/dev/null || true
+    find "$data_home/icons/hicolor/256x256/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
+    find "$data_home/icons/hicolor/512x512/apps" -maxdepth 1 -type f -name 'io.lpk.*.png' -delete 2>/dev/null || true
 
-local sys_cfg
-for sys_cfg in /etc/xdg/mimeapps.list /usr/local/share/applications/mimeapps.list; do
-if [ -f "$sys_cfg" ] && grep -q '^application/x-lpk=' "$sys_cfg" 2>/dev/null;then
-if [ -w "$sys_cfg" ]; then
-sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
-else
-resolve_elevate
-priv sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
-fi
-info "Cleaned default-app mapping in: $sys_cfg"
-fi
-done
+    local sys_path
+    for sys_path in /usr/local/share/applications/ulpm-open.desktop \
+                     /usr/local/share/applications/ulpm-handler.desktop \
+                     /usr/local/share/mime/packages/ulpm-lpk.xml \
+                     /usr/local/share/mime/packages/application-x-lpk.xml; do
+        if [ -e "$sys_path" ]; then
+            if [ -w "$(dirname "$sys_path")" ]; then
+                rm -f -- "$sys_path"
+            else
+                resolve_elevate
+                priv rm -f -- "$sys_path"
+            fi
+            info "Removed: $sys_path"
+        fi
+    done
 
-for path in "$config_home/mimeapps.list" "$data_home/applications/mimeapps.list"; do
-[ -f "$path" ] && sed -i '/^application\/x-lpk=/d' "$path" 2>/dev/null || true
-done
+    local sys_cfg
+    for sys_cfg in /etc/xdg/mimeapps.list /usr/local/share/applications/mimeapps.list; do
+        if [ -f "$sys_cfg" ] && grep -q '^application/x-lpk=' "$sys_cfg" 2>/dev/null; then
+            if [ -w "$sys_cfg" ]; then
+                sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
+            else
+                resolve_elevate
+                priv sed -i '/^application\/x-lpk=/d' "$sys_cfg" 2>/dev/null || true
+            fi
+            info "Cleaned default-app mapping in: $sys_cfg"
+        fi
+    done
 
-if [ -d "$config_home/ulpm" ]; then
-if confirm "Back up your ULPM config, keys, and overrides to \$HOME before removal? [y/N]: " "n"; then
-local key_backup
-key_backup="$target_home/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
-if mkdir -p "$key_backup" && chmod 700 "$key_backup" && cp -a "$config_home/ulpm/." "$key_backup/"; then
-[ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER":"$SUDO_USER" "$key_backup" 2>/dev/null || true
-info "Config and keys backed up to: $key_backup"
-else
-warn "Backup failed."
-fi
-fi
-fi
+    for path in "$config_home/mimeapps.list" "$data_home/applications/mimeapps.list"; do
+        [ -f "$path" ] && sed -i '/^application\/x-lpk=/d' "$path" 2>/dev/null || true
+    done
 
-rm -rf -- "$data_home/ulpm" "$cache_home/ulpm" "$config_home/ulpm" "$state_home/ulpm"
+    if [ -d "$config_home/ulpm" ]; then
+        if confirm "Back up your ULPM config, keys, and overrides to \$HOME before removal? [y/N]: " "n"; then
+            local key_backup
+            key_backup="$target_home/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
+            if mkdir -p "$key_backup" && chmod 700 "$key_backup" && cp -a "$config_home/ulpm/." "$key_backup/"; then
+                [ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER":"$SUDO_USER" "$key_backup" 2>/dev/null || true
+                info "Config and keys backed up to: $key_backup"
+            else
+                warn "Backup failed."
+            fi
+        fi
+    fi
 
-command -v update-mime-database >/dev/null 2>&1 && \
-update-mime-database "$data_home/mime" >/dev/null 2>&1 || true
-command -v update-desktop-database >/dev/null 2>&1 && \
-update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
+    rm -rf -- "$data_home/ulpm" "$cache_home/ulpm" "$config_home/ulpm" "$state_home/ulpm"
 
-echo -e "\n${GREEN}✔ ULPM has been completely uninstalled.${NC}"
+    command -v update-mime-database >/dev/null 2>&1 && \
+        update-mime-database "$data_home/mime" >/dev/null 2>&1 || true
+    command -v update-desktop-database >/dev/null 2>&1 && \
+        update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
+
+    echo -e "\n${GREEN}✔ ULPM has been completely uninstalled.${NC}"
 }
 
 if [ "$UNINSTALL" = true ]; then
-uninstall_ulpm
-exit 0
+    uninstall_ulpm
+    exit 0
 fi
 
-#------------------------------------------------------------
+# ------------------------------------------------------------
 # Host Dependencies Check
 # ------------------------------------------------------------
 
 PM=""
 for pm in apt-get pacman dnf zypper apk xbps-install; do
-if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
+    if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
 done
 
 pkg_for() {
-local cmd="$1"
-case "$cmd" in
-flock)          echo "util-linux" ;;
-squashfuse)echo "squashfuse" ;;
-mksquashfs|unsquashfs)
-case "$PM" in
-zypper) echo "squashfs" ;;
-*)      echo "squashfs-tools" ;;
-esac
-;;
-bwrap)          echo "bubblewrap" ;;
-fuse3)          echo "fuse3" ;;
-xdg-dbus-proxy) echo "xdg-dbus-proxy" ;;
-cmp)            echo "diffutils" ;;
-readelf)        echo "binutils" ;;
-dpkg-deb)       echo "dpkg" ;;
-od|truncate|tail|head|dd|realpath|mktemp|sync) echo "coreutils" ;;
-find)           echo "findutils" ;;
-awk)            echo "gawk" ;;
-tar)            echo "tar" ;;
-sha256sum)      echo "coreutils" ;;
-*)              echo "$cmd" ;;
-esac
+    local cmd="$1"
+    case "$cmd" in
+        flock)          echo "util-linux" ;;
+        squashfuse)     echo "squashfuse" ;;
+        mksquashfs|unsquashfs)
+            case "$PM" in
+                zypper) echo "squashfs" ;;
+                *) echo "squashfs-tools" ;;
+            esac
+            ;;
+        bwrap)          echo "bubblewrap" ;;
+        fuse3)          echo "fuse3" ;;
+        xdg-dbus-proxy) echo "xdg-dbus-proxy" ;;
+        cmp)            echo "diffutils" ;;
+        readelf)        echo "binutils" ;;
+        dpkg-deb)       echo "dpkg" ;;
+        od|truncate|tail|head|dd|realpath|mktemp|sync) echo "coreutils" ;;
+        find)           echo "findutils" ;;
+        awk)            echo "gawk" ;;
+        tar)            echo "tar" ;;
+        sha256sum)      echo "coreutils" ;;
+        *)              echo "$cmd" ;;
+    esac
 }
 
 REQUIRED_CMDS=(
-flock
-unsquashfs
-jq
-curl
-openssl
-tail
-head
-realpath
-mktemp
-find
-awk
-tar
-sha256sum
-sync
-)
-
-OPTIONAL_CMDS=(
-bwrap
-squashfuse
-mksquashfs
-xdg-dbus-proxy
-readelf
+    flock
+    squashfuse
+    unsquashfs
+    mksquashfs
+    bwrap
+    jq
+    curl
+    openssl
+    cmp
+    sync
+    tail
+    head
+    realpath
+    mktemp
+    find
+    awk
+    tar
+    sha256sum
 )
 
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
-command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
+    command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
 done
-
-OPT_MISSING=()
-for cmd in "${OPTIONAL_CMDS[@]}"; do
-command -v "$cmd" >/dev/null 2>&1 || OPT_MISSING+=("$cmd")
-done
+command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || MISSING+=("fuse3")
 
 if [ "${#MISSING[@]}" -gt 0 ]; then
-warn "Missing mandatory tools: ${MISSING[*]}"
-if [ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
-if confirm "${BOLD}Install missing packages automatically with $PM? [Y/n]: ${NC}" "y"; then
-PKGS=()
-for c in "${MISSING[@]}" "${OPT_MISSING[@]}"; do
-p="$(pkg_for "$c")"
-case " ${PKGS[*]-} " in *" $p "*);; *) PKGS+=("$p") ;; esac
-done
-resolve_elevate
-set +e
-pkg_rc=0
-case "$PM" in
-apt-get)      priv apt-get update && priv envDEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
-pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
-dnf)          priv dnf install -y "${PKGS[@]}" ;;
-zypper)       priv zypper --non-interactive install "${PKGS[@]}" ;;
-apk)          priv apk add "${PKGS[@]}" ;;
-xbps-install) priv xbps-install -Sy "${PKGS[@]}" ;;
-esac
-pkg_rc=$?
-set -e
-[ "$pkg_rc" -eq 0 ] || warn "Automatic package installation failed (exit $pkg_rc). Install manually: ${PKGS[*]}"
-fi
-elif [ -z "$PM" ]; then
-warn "No supported package manager detected."
-info "Please install missing packages manually: ${MISSING[*]}"
-fi
-fi
-
-if [ "${#OPT_MISSING[@]}" -gt 0 ] && [ "${#MISSING[@]}" -eq 0 ]; then
-info "Recommendedisolation tools missing (FUSE/Sandbox will run in compatibility mode): ${OPT_MISSING[*]}"
+    warn "Missing tools: ${MISSING[*]}"
+    if [ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
+        if confirm "${BOLD}Install missing packages automatically with $PM? [Y/n]:${NC}" "y"; then
+            PKGS=()
+            for c in "${MISSING[@]}"; do
+                p="$(pkg_for "$c")"
+                case " ${PKGS[*]-} " in *" $p "*) ;; *) PKGS+=("$p") ;; esac
+            done
+            resolve_elevate
+            set +e
+            pkg_rc=0
+            case "$PM" in
+                apt-get)      priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
+                pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
+                dnf)          priv dnf install -y "${PKGS[@]}" ;;
+                zypper)       priv zypper --non-interactive install "${PKGS[@]}" ;;
+                apk)          priv apk add "${PKGS[@]}" ;;
+                xbps-install) priv xbps-install -Sy "${PKGS[@]}" ;;
+            esac
+            pkg_rc=$?
+            set -e
+            [ "$pkg_rc" -eq 0 ] || warn "Automatic package installation failed (exit $pkg_rc). Install manually: ${PKGS[*]}"
+        fi
+    elif [ -z "$PM" ]; then
+        warn "No supported package manager detected."
+        info "Please install missing packages manually: ${MISSING[*]}"
+    fi
 fi
 
 STILL_MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
-command -v "$cmd" >/dev/null 2>&1 || STILL_MISSING+=("$cmd")
+    command -v "$cmd" >/dev/null 2>&1 || STILL_MISSING+=("$cmd")
 done
+command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || STILL_MISSING+=("fuse3")
+
 if [ "${#STILL_MISSING[@]}" -gt 0 ]; then
-die "Cannot continuewithout required tools: ${STILL_MISSING[*]}"
+    die "Cannot continue without required tools: ${STILL_MISSING[*]}"
 fi
 
 # ------------------------------------------------------------
-# DeploymentPaths & Validation
+# Deployment Paths & Validation
 # ------------------------------------------------------------
 
 NEED_PRIV=false
 if [ "$MODE" = "system" ]; then
-BIN_DIR="${BIN_DIR:-/usr/local/bin}"
-LIB_DIR="/usr/local/lib/ulpm"
-[ "$(id -u)" -ne 0 ] && NEED_PRIV=true
+    BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+    LIB_DIR="/usr/local/lib/ulpm"
+    [ "$(id -u)" -ne 0 ] && NEED_PRIV=true
 else
-BIN_DIR="${BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
-LIB_DIR="$HOME/.local/lib/ulpm"
+    BIN_DIR="${BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+    LIB_DIR="$HOME/.local/lib/ulpm"
 fi
 
 [ "$NEED_PRIV" = true ] && resolve_elevate
 
 case "$BIN_DIR" in
-/*) ;;
-*) die "Binary directory must be an absolute path: $BIN_DIR" ;;
+    /*) ;;
+    *) die "Binary directory must be an absolute path: $BIN_DIR" ;;
 esac
 case "$BIN_DIR" in
-"/"|"/usr"|"/usr/local"|"/bin"|"/sbin"|"/etc"|"/home"|"/root"|"/var"|"/tmp")
-die "Refusing unsafebinary directory: $BIN_DIR"
-;;
+    "/"|"/usr"|"/usr/local"|"/bin"|"/sbin"|"/etc"|"/home"|"/root"|"/var"|"/tmp")
+        die "Refusing unsafe binary directory: $BIN_DIR"
+        ;;
 esac
 case "$BIN_DIR" in
-*$'\n'*|*$'\r'*|*:*) die "Binary directory contains an unsafe character (newline or colon)." ;;
+    *$'\n'*|*$'\r'*|*:*) die "Binary directory contains an unsafe character (newline or colon)." ;;
 esac
 
 info "Installing ULPM to ${BOLD}$BIN_DIR/ulpm${NC} (Modules: ${BOLD}$LIB_DIR${NC})..."
@@ -568,55 +595,46 @@ BACKUP_TARGETS=()
 BACKUP_FILES=()
 
 rollback_deployment() {
-local i target backup
-for ((i=${#BACKUP_TARGETS[@]}-1; i>=0; i--)); do
-target="${BACKUP_TARGETS[$i]}"
-backup="${BACKUP_FILES[$i]}"
-if [ "$NEED_PRIV" = true ]; then
-priv rm -f -- "$target" 2>/dev/null || true
-if [ -e "$backup" ] || [ -L "$backup" ]; then
-priv mkdir -p "$(dirname "$target")" 2>/dev/null || true
-priv cp -a -- "$backup" "$target" 2>/dev/null || warn "Could notrestore $target automatically."
-fi
-else
-rm -f -- "$target" 2>/dev/null || true
-if [ -e "$backup" ] || [ -L "$backup" ]; then
-mkdir -p "$(dirname "$target")" 2>/dev/null || true
-cp -a -- "$backup" "$target" 2>/dev/null || warn "Could not restore $target automatically."
-fi
-fi
-done
+    local target backup
+    for ((i=${#BACKUP_TARGETS[@]}-1; i>=0; i--)); do
+        target="${BACKUP_TARGETS[$i]}"
+        backup="${BACKUP_FILES[$i]}"
+        if [ "$NEED_PRIV" = true ]; then
+            priv rm -f -- "$target" 2>/dev/null || true
+            if [ -e "$backup" ] || [ -L "$backup" ]; then
+                priv mkdir -p "$(dirname "$target")" 2>/dev/null || true
+                priv cp -a -- "$backup" "$target" 2>/dev/null || warn "Could not restore $target automatically."
+            fi
+        else
+            rm -f -- "$target" 2>/dev/null || true
+            if [ -e "$backup" ] || [ -L "$backup" ]; then
+                mkdir -p "$(dirname "$target")" 2>/dev/null || true
+                cp -a -- "$backup" "$target" 2>/dev/null || warn "Could not restore $target automatically."
+            fi
+        fi
+    done
 }
 
 cleanup_install() {
-local rc=$?
-if [ "$DEPLOYMENT_STARTED" = true ] &&[ "$DEPLOYMENT_COMMITTED" = false ]; then
-warn "Installation did not finish; restoring previousULPM files..."
-rollback_deployment
-fi
-rm -rf -- "$TMP_DIR"
-return "$rc"
+    local rc=$?
+    if [ "$DEPLOYMENT_STARTED" = true ] && [ "$DEPLOYMENT_COMMITTED" = false ]; then
+        warn "Installation did not finish; restoring previous ULPM files..."
+        rollback_deployment
+    fi
+    rm -rf -- "$TMP_DIR"
+    return "$rc"
 }
 trap cleanup_install EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # ------------------------------------------------------------
-# Fetch or Copy Modules
+# Fetch or Copy Modules (All 11 Core Modules)
 # ------------------------------------------------------------
 
 MODULES=(
-"utils.sh"
-"crypto.sh"
-"sandbox.sh"
-"pack.sh"
-"deb.sh"
-"run.sh"
-"stream.sh"
-"manage.sh"
-"repo.sh"
-"deps.sh"
-"transaction.sh"
+    "utils.sh" "crypto.sh" "sandbox.sh" "pack.sh" "deb.sh"
+    "run.sh" "stream.sh" "manage.sh" "repo.sh" "deps.sh" "transaction.sh"
 )
 
 mkdir -p "$TMP_DIR/lib"
@@ -624,31 +642,31 @@ FETCHED=()
 
 LOCAL_MAIN=""
 if [ -f "./bin/ulpm" ]; then
-LOCAL_MAIN="./bin/ulpm"
+    LOCAL_MAIN="./bin/ulpm"
 elif [ -f "./ulpm" ]; then
-LOCAL_MAIN="./ulpm"
+    LOCAL_MAIN="./ulpm"
 fi
 LOCAL_TREE=true
 [ -n "$LOCAL_MAIN" ] || LOCAL_TREE=false
 for m in "${MODULES[@]}"; do
-[ -f "./lib/$m" ] || LOCAL_TREE=false
+    [ -f "./lib/$m" ] || LOCAL_TREE=false
 done
 
 if [ "$LOCAL_TREE" = true ]; then
-cp -- "$LOCAL_MAIN" "$TMP_DIR/ulpm"
-for m in "${MODULES[@]}"; do
-cp -- "./lib/$m" "$TMP_DIR/lib/$m"
-done
+    cp -- "$LOCAL_MAIN" "$TMP_DIR/ulpm"
+    for m in "${MODULES[@]}"; do
+        cp -- "./lib/$m" "$TMP_DIR/lib/$m"
+    done
 else
-info "Fetching ULPM engineand modules from $BASE_URL..."
-curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" \
-|| die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
-FETCHED+=("bin/ulpm")
-for m in "${MODULES[@]}"; do
-curl -fL --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" \
-|| die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
-FETCHED+=("lib/$m")
-done
+    info "Fetching ULPM engine and modules from $BASE_URL..."
+    curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" \
+        || die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
+    FETCHED+=("bin/ulpm")
+    for m in "${MODULES[@]}"; do
+        curl -fL --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" \
+            || die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
+        FETCHED+=("lib/$m")
+    done
 fi
 
 # ------------------------------------------------------------
@@ -656,33 +674,33 @@ fi
 # ------------------------------------------------------------
 
 if [ "${#FETCHED[@]}" -gt 0 ]; then
-if ! command -v sha256sum >/dev/null 2>&1; then
-warn "sha256sum not found: integrity of downloaded files not verified."
-elif curl -fsSL --retry 2 "$BASE_URL/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
-info "Verifying checksums (SHA256SUMS)..."
-for f in "${FETCHED[@]}"; do
-expected="$(awk -v f="$f" '{n = $2; sub(/^\*/, "", n); if (n ==f || n == "./" f) { print $1; exit } }' "$TMP_DIR/SHA256SUMS")"
-target_local=""
-if [ -f "$TMP_DIR/$f" ]; then
-target_local="$TMP_DIR/$f"
-elif [ -f "$TMP_DIR/${f#bin/}" ]; then
-target_local="$TMP_DIR/${f#bin/}"
-elif [ -f "$TMP_DIR/${f##*/}" ]; then
-target_local="$TMP_DIR/${f##*/}"
-fi
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        warn "sha256sum not found: integrity of downloaded files not verified."
+    elif curl -fsSL --retry 2 "$BASE_URL/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
+        info "Verifying checksums (SHA256SUMS)..."
+        for f in "${FETCHED[@]}"; do
+            expected="$(awk -v f="$f" '{n = $2; sub(/^\*/, "", n); if (n == f || n == "./"f) {print $1; exit } }' "$TMP_DIR/SHA256SUMS")"
+            target_local=""
+            if [ -f "$TMP_DIR/$f" ]; then
+                target_local="$TMP_DIR/$f"
+            elif [ -f "$TMP_DIR/${f#bin/}" ]; then
+                target_local="$TMP_DIR/${f#bin/}"
+            elif [ -f "$TMP_DIR/${f##*/}" ]; then
+                target_local="$TMP_DIR/${f##*/}"
+            fi
 
-[ -n "$target_local" ] && [ -f "$target_local" ] || die "Internal error locating: $f"
-actual="$(sha256sum "$target_local" | awk '{print $1}')"
+            [ -n "$target_local" ] && [ -f "$target_local" ] || die "Internal error locating: $f"
+            actual="$(sha256sum "$target_local" | awk '{print $1}')"
 
-if [ -z "$expected" ]; then
-die "No checksum entry for $f in SHA256SUMS."
-elif [ "$expected" != "$actual" ]; then
-die "Checksum mismatch for $f."
-fi
-done
-else
-warn "Could not fetchSHA256SUMS from $BASE_URL (running in unverified network mode)."
-fi
+            if [ -z "$expected" ]; then
+                die "No checksum entry for $f in SHA256SUMS."
+            elif [ "$expected" != "$actual" ]; then
+                die "Checksum mismatch for $f."
+            fi
+        done
+    else
+        warn "Could not fetch SHA256SUMS from $BASE_URL (running in unverified network mode)."
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -692,42 +710,43 @@ fi
 info "Performing syntax checks..."
 bash -n "$TMP_DIR/ulpm" || die "Syntax error detected in ulpm executable!"
 for m in "${MODULES[@]}"; do
-bash -n "$TMP_DIR/lib/$m" || die "Syntax error detected in module lib/$m!"
+    bash -n "$TMP_DIR/lib/$m" || die "Syntax error detected in module lib/$m!"
 done
 
 # ------------------------------------------------------------
-# AtomicDeployment
+# Atomic Deployment
 # ------------------------------------------------------------
 
 DEPLOYMENT_STARTED=true
 
 install_managed_file() {
-local source="$1" target="$2" mode="$3" backup=""
-if [ -e "$target" ] || [ -L "$target" ]; then
-backup="$BACKUP_DIR/$(printf '%04d' "${#BACKUP_TARGETS[@]}")"
-if [ "$NEED_PRIV" = true ]; then
-priv cp -a -- "$target" "$backup"
-else
-cp -a -- "$target" "$backup"
-fi
-BACKUP_TARGETS+=("$target")
-BACKUP_FILES+=("$backup")
-else
-BACKUP_TARGETS+=("$target")
-BACKUP_FILES+=("")
-fi
-if [ "$NEED_PRIV" = true ]; then
-priv mkdir -p -- "$(dirname "$target")"
-priv install -m "$mode" "$source" "$target"
-else
-mkdir -p -- "$(dirname "$target")"
-install -m "$mode" "$source" "$target"
-fi
+    local source="$1" target="$2" mode="$3" backup=""
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        backup="$BACKUP_DIR/$(printf '%04d' "${#BACKUP_TARGETS[@]}")"
+        if [ "$NEED_PRIV" = true ]; then
+            priv cp -a -- "$target" "$backup"
+        else
+            cp -a -- "$target" "$backup"
+        fi
+        BACKUP_TARGETS+=("$target")
+        BACKUP_FILES+=("$backup")
+    else
+        BACKUP_TARGETS+=("$target")
+        BACKUP_FILES+=("")
+    fi
+    if [ "$NEED_PRIV" = true ]; then
+        priv mkdir -p -- "$(dirname "$target")"
+        priv install -m "$mode" "$source" "$target"
+    else
+        mkdir -p -- "$(dirname "$target")"
+        install -m "$mode" "$source" "$target"
+    fi
 }
 
 install_managed_file "$TMP_DIR/ulpm" "$BIN_DIR/ulpm" 0755
 for m in "${MODULES[@]}"; do
-install_managed_file "$TMP_DIR/lib/$m" "$LIB_DIR/$m" 0644
+    # Corrected target path: $LIB_DIR/$m (NOT $LIB_DIR/lib/$m)
+    install_managed_file "$TMP_DIR/lib/$m" "$LIB_DIR/$m" 0644
 done
 DEPLOYMENT_COMMITTED=true
 
@@ -736,16 +755,16 @@ DEPLOYMENT_COMMITTED=true
 # ------------------------------------------------------------
 
 add_path_line() {
-local cfg="$1"
-mkdir -p "$(dirname "$cfg")"
-touch "$cfg"
-if ! grep -qF "$BIN_DIR" "$cfg" 2>/dev/null; then
-{
-echo ""
-echo "# Added by ULPM installer"
-echo "export PATH=\"$BIN_DIR:\$PATH\""
-} >> "$cfg"
-fi
+    local cfg="$1"
+    mkdir -p "$(dirname "$cfg")"
+    touch "$cfg"
+    if ! grep -qF "$BIN_DIR" "$cfg" 2>/dev/null; then
+        {
+            echo ""
+            echo "# Added by ULPM installer"
+            echo "export PATH=\"$BIN_DIR:\$PATH\""
+        } >> "$cfg"
+    fi
 }
 
 RELOAD_HINT=""
@@ -753,149 +772,149 @@ USER_SHELL_NAME="${SHELL:-}"
 USER_SHELL_NAME="${USER_SHELL_NAME##*/}"
 
 if [ "$MODE" = "user" ]; then
-case "$USER_SHELL_NAME" in
-fish)
-cfg="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/ulpm.fish"
-mkdir -p "$(dirname "$cfg")"
-echo "fish_add_path -g \"$BIN_DIR\"" > "$cfg"
-;;
-zsh)  add_path_line "$HOME/.zshrc" ;;
-bash) add_path_line "$HOME/.bashrc" ;;
-*)    add_path_line "$HOME/.profile" ;;
-esac
-add_path_line "$HOME/.profile"
+    case "$USER_SHELL_NAME" in
+        fish)
+            cfg="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/ulpm.fish"
+            mkdir -p "$(dirname "$cfg")"
+            echo "fish_add_path -g \"$BIN_DIR\"" > "$cfg"
+            ;;
+        zsh)  add_path_line "$HOME/.zshrc" ;;
+        bash) add_path_line "$HOME/.bashrc" ;;
+        *)    add_path_line "$HOME/.profile" ;;
+    esac
+    add_path_line "$HOME/.profile"
 
-envd="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d/60-ulpm.conf"
-mkdir -p "$(dirname "$envd")"
-printf 'PATH=%s:${PATH}\n' "$BIN_DIR" > "$envd"
+    envd="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d/60-ulpm.conf"
+    mkdir -p "$(dirname "$envd")"
+    printf 'PATH=%s:${PATH}\n' "$BIN_DIR" > "$envd"
 
-case ":$PATH:" in
-*":$BIN_DIR:"*) ;;
-*)
-RELOAD_HINT="$BIN_DIR isnot yet in your PATH for this terminal session."
-;;
-esac
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            RELOAD_HINT="$BIN_DIR is not yet in your PATH for this terminal session."
+            ;;
+    esac
 fi
 
 # ------------------------------------------------------------
-# Shell Auto-Completion
+# Shell Auto-Completion (v5.3 Full Command Matrix)
 # ------------------------------------------------------------
 
 setup_shell_completion() {
-local comp_target_dir
-if [ "$MODE" = "system" ]; then
-comp_target_dir="/usr/local/share/bash-completion/completions"
-else
-comp_target_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
-fi
+    local comp_target_dir
+    if [ "$MODE" = "system" ]; then
+        comp_target_dir="/usr/local/share/bash-completion/completions"
+    else
+        comp_target_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+    fi
 
-info "Setting up shell auto-completion..."
+    info "Setting up shell auto-completion..."
 
-local comp_file="$TMP_DIR/ulpm_completion.bash"
-cat <<'EOF' > "$comp_file"
-# ============================================================================ ==
+    local comp_file="$TMP_DIR/ulpm_completion.bash"
+    cat <<'EOF' > "$comp_file"
+# ============================================================================
 # ULPM Bash/Zsh Completion Engine (v5.3 Architecture)
-# ============================================================================ ==
+# ============================================================================
 
 _ulpm_completions() {
-local cur prevwords cword
-_init_completion -n = 2>/dev/null || {
-cur="${COMP_WORDS[COMP_CWORD]}"
-prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local cur prev words cword
+    _init_completion -n = 2>/dev/null || {
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+    }
+
+    local commands="run stream override permissions perms runtime pack deb-pack install remove rm uninstall search list inspect info doctor keygen sign trust token self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
+    local runtime_sub="list install"
+    local deps_sub="check resolve"
+    local repo_sub="list add remove enable disable update verify search install index"
+    local txn_sub="install recover"
+    local run_flags="--gaming --strict --desktop --offline --no-net --net --no-gpu --gpu --no-audio --audio --no-gui --gui --no-input --share-home --share-home-rw --share-home-ro --isolate-home --bind"
+
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+        return 0
+    fi
+
+    case "$prev" in
+        runtime)
+            COMPREPLY=($(compgen -W "$runtime_sub" -- "$cur"))
+            return 0
+            ;;
+        deps)
+            COMPREPLY=($(compgen -W "$deps_sub" -- "$cur"))
+            return 0
+            ;;
+        repo)
+            COMPREPLY=($(compgen -W "$repo_sub" -- "$cur"))
+            return 0
+            ;;
+        transaction|txn)
+            COMPREPLY=($(compgen -W "$txn_sub" -- "$cur"))
+            return 0
+            ;;
+        run|remove|rm|uninstall|inspect|info|override|permissions|perms|rollback)
+            local db_file="${ULPM_DB:-$HOME/.local/share/ulpm/installed.db}"
+            local installed_apps=""
+            if [[ -s "$db_file" ]]; then
+                installed_apps="$(awk -F'|' '{print $2}' "$db_file" 2>/dev/null)"
+            fi
+            local matches=()
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -W "$installed_apps" -- "$cur")
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.lpk' -- "$cur")
+            COMPREPLY=("${matches[@]}")
+            ;;
+        install|sign)
+            local matches=()
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.lpk' -- "$cur")
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
+            COMPREPLY=("${matches[@]}")
+            ;;
+        trust)
+            local matches=()
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.pub' -- "$cur")
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
+            COMPREPLY=("${matches[@]}")
+            ;;
+        deb-pack)
+            local matches=()
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.deb' -- "$cur")
+            while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
+            COMPREPLY=("${matches[@]}")
+            ;;
+        pack)
+            COMPREPLY=($(compgen -W "--no-scan --fast --shared --runtime --dependency --depends" -- "$cur"))
+            ;;
+        history)
+            local db_file="${ULPM_DB:-$HOME/.local/share/ulpm/installed.db}"
+            local installed_ids=""
+            if [[ -s "$db_file" ]]; then
+                installed_ids="$(awk -F'|' '{print $1}' "$db_file" 2>/dev/null)"
+            fi
+            COMPREPLY=($(compgen -W "$installed_ids" -- "$cur"))
+            ;;
+        doctor|keygen|clean|list|self-update|upgrade|integrate|completion|version)
+            COMPREPLY=()
+            ;;
+        *)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$run_flags" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -f -- "$cur"))
+            fi
+            ;;
+    esac
 }
 
-local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trusttoken self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
-local runtime_sub="listinstall"
-local deps_sub="check resolve"
-local repo_sub="list add remove enable disableupdate verify search install index"
-local txn_sub="install recover"
-local run_flags="--gaming --strict --desktop --offline --no-net --net --no-gpu --gpu --no-audio --audio --no-gui --gui --no-input --share-home --share-home-rw --share-home-ro --isolate-home --bind"
-
-if [[ $COMP_CWORD -eq 1 ]] ; then
-COMPREPLY=($(compgen -W "$commands" -- "$cur"))
-return 0
-fi
-
-case "$prev" in
-runtime)
-COMPREPLY=($(compgen -W "$runtime_sub" --"$cur"))
-return 0
-;;
-deps)
-COMPREPLY=($(compgen-W "$deps_sub" -- "$cur"))
-return 0
-;;
-repo)
-COMPREPLY=($(compgen -W "$repo_sub" -- "$cur"))
-return 0
-;;
-transaction|txn)
-COMPREPLY=($(compgen -W "$txn_sub" -- "$cur"))
-return 0
-;;
-run|remove|rm|inspect|info|override|permissions|perms|rollback)
-local db_file="${ULPM_DB:-$HOME/.local/share/ulpm/installed.db}"
-local installed_apps=""
-if [[ -s "$db_file" ]] ; then
-installed_apps="$(awk -F'|' '{print $2}' "$db_file" 2>/dev/null)"
-fi
-local matches=()
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -W "$installed_apps" -- "$cur")
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.lpk' -- "$cur")
-COMPREPLY=("${matches[@]}")
-;;
-install|sign)
-local matches=()
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.lpk' -- "$cur")
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
-COMPREPLY=("${matches[@]}")
-;;
-trust)
-local matches=()
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.pub' -- "$cur")
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
-COMPREPLY=("${matches[@]}")
-;;
-deb-pack)
-local matches=()
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -f -X '!*.deb' -- "$cur")
-while IFS= read -r line; do [[ -n "$line" ]] && matches+=("$line"); done < <(compgen -d -- "$cur")
-COMPREPLY=("${matches[@]}")
-;;
-pack)
-COMPREPLY=($(compgen -W "--no-scan --fast --shared --runtime --dependency --depends" -- "$cur"))
-;;
-history)
-local db_file="${ULPM_DB:-$HOME/.local/share/ulpm/installed.db}"
-local installed_ids=""
-if [[ -s "$db_file" ]] ; then
-installed_ids="$(awk -F'|' '{print $1}' "$db_file" 2>/dev/null)"
-fi
-COMPREPLY=($(compgen -W "$installed_ids" -- "$cur"))
-;;
-doctor|keygen|clean|list|self-update|upgrade|integrate|completion|version)
-COMPREPLY=()
-;;
-*)
-if [[ "$cur" == -* ]] ; then
-COMPREPLY=($(compgen -W "$run_flags" -- "$cur"))
-else
-COMPREPLY=($(compgen -f -- "$cur"))
-fi
-;;
-esac
-}
-
-complete -F_ulpm_completions ulpm
+complete -F _ulpm_completions ulpm
 EOF
 
-if [ "$NEED_PRIV" = true ]; then
-priv mkdir -p "$comp_target_dir"
-priv install -m 0644 "$comp_file" "$comp_target_dir/ulpm"
-else
-mkdir -p "$comp_target_dir"
-install -m 0644 "$comp_file" "$comp_target_dir/ulpm"
-fi
+    if [ "$NEED_PRIV" = true ]; then
+        priv mkdir -p "$comp_target_dir"
+        priv install -m 0644 "$comp_file" "$comp_target_dir/ulpm"
+    else
+        mkdir -p "$comp_target_dir"
+        install -m 0644 "$comp_file" "$comp_target_dir/ulpm"
+    fi
 }
 
 setup_shell_completion
@@ -905,30 +924,30 @@ setup_shell_completion
 # ------------------------------------------------------------
 
 setup_desktop_integration() {
-local target_data target_config
-if [ "$MODE" = "system" ]; then
-target_data="/usr/local/share"
-target_config="/etc/xdg"
-else
-target_data="${XDG_DATA_HOME:-$HOME/.local/share}"
-target_config="${XDG_CONFIG_HOME:-$HOME/.config}"
-fi
+    local target_data target_config
+    if [ "$MODE" = "system" ]; then
+        target_data="/usr/local/share"
+        target_config="/etc/xdg"
+    else
+        target_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+        target_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+    fi
 
-info "Configuring OS Desktop &MIME association (Double-click / Right-click)..."
+    info "Configuring OS Desktop & MIME association (Double-click / Right-click)..."
 
-local mime_dir="$target_data/mime/packages"
-local apps_dir="$target_data/applications"
+    local mime_dir="$target_data/mime/packages"
+    local apps_dir="$target_data/applications"
 
-if [ "$NEED_PRIV" = true ]; then
-priv mkdir -p "$mime_dir" "$apps_dir"
-else
-mkdir -p "$mime_dir" "$apps_dir"
-fi
+    if [ "$NEED_PRIV" = true ]; then
+        priv mkdir -p "$mime_dir" "$apps_dir"
+    else
+        mkdir -p "$mime_dir" "$apps_dir"
+    fi
 
-local mime_file="$TMP_DIR/ulpm-lpk.xml"
-cat <<'EOF' > "$mime_file"
+    local mime_file="$TMP_DIR/ulpm-lpk.xml"
+    cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
-<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info ">
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
 <mime-type type="application/x-lpk">
 <comment>ULPM Package Bundle</comment>
 <comment xml:lang="fr">Paquet d'application ULPM</comment>
@@ -939,8 +958,8 @@ cat <<'EOF' > "$mime_file"
 </mime-info>
 EOF
 
-local desktop_file="$TMP_DIR/ulpm-handler.desktop"
-cat <<EOF >"$desktop_file"
+    local desktop_file="$TMP_DIR/ulpm-handler.desktop"
+    cat <<EOF > "$desktop_file"
 [Desktop Entry]
 Type=Application
 Name=ULPM Package Runner
@@ -957,150 +976,64 @@ Categories=System;Utility;
 StartupNotify=true
 EOF
 
-if [ "$NEED_PRIV" = true ]; then
-priv install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
-priv install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
-else
-install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
-install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
-fi
+    if [ "$NEED_PRIV" = true ]; then
+        priv install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
+        priv install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
+    else
+        install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
+        install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
+    fi
 
-local mimeapps_list="$target_config/mimeapps.list"
-if [ "$NEED_PRIV" = true ]; then
-priv mkdir -p "$target_config"
-priv touch "$mimeapps_list"
-if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
-if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
-priv sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-handler.desktop;' "$mimeapps_list"
-else
-printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" | priv tee -a "$mimeapps_list" > /dev/null
-fi
-else
-priv sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
-fi
-else
-mkdir -p "$target_config"
-touch "$mimeapps_list"
-if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
-if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
-sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-handler.desktop;' "$mimeapps_list"
-else
-printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" >> "$mimeapps_list"
-fi
-else
-sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
-fi
-fi
+    local mimeapps_list="$target_config/mimeapps.list"
+    if [ "$NEED_PRIV" = true ]; then
+        priv mkdir -p "$target_config"
+        priv touch "$mimeapps_list"
+        if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
+            if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
+                priv sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-handler.desktop;' "$mimeapps_list"
+            else
+                printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" | priv tee -a "$mimeapps_list" >/dev/null
+            fi
+        else
+            priv sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
+        fi
+    else
+        mkdir -p "$target_config"
+        touch "$mimeapps_list"
+        if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
+            if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
+                sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-handler.desktop;' "$mimeapps_list"
+            else
+                printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" >> "$mimeapps_list"
+            fi
+        else
+            sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
+        fi
+    fi
 
-if command -v update-mime-database >/dev/null 2>&1; then
-if [ "$NEED_PRIV" = true ]; then
-priv update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
-else
-update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
-fi
-fi
+    if command -v update-mime-database >/dev/null 2>&1; then
+        if [ "$NEED_PRIV" = true ]; then
+            priv update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
+        else
+            update-mime-database "$target_data/mime" >/dev/null 2>&1 || true
+        fi
+    fi
 
-if command -v update-desktop-database >/dev/null 2>&1; then
-if [ "$NEED_PRIV" = true ]; then
-priv update-desktop-database "$target_data/applications" > /dev/null 2>&1 || true
-else
-update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
-fi
-fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        if [ "$NEED_PRIV" = true ]; then
+            priv update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
+        else
+            update-desktop-database "$target_data/applications" >/dev/null 2>&1 || true
+        fi
+    fi
 
-nautilus -q 2>/dev/null || true
-thunar -q 2>/dev/null || true
-kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
+    nautilus -q 2>/dev/null || true
+    thunar -q 2>/dev/null || true
+    kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
 }
 
 if [ "$INTEGRATE" = "auto" ]; then
-if confirm "Enable desktop integration (double-click & context menu for .lpk files)?[Y/n]: " "y"; then
-setup_desktop_integration
-else
-info "Desktop integration skipped.You can enable it anytime via: ulpm integrate"
-fi
-elif [ "$INTEGRATE" = true ]; then
-setup_desktop_integration
-fi
-
-# ------------------------------------------------------------
-# Crypto Key Provisioning& State Setup (Ed25519 - ULPM v5 Standard)
-# ------------------------------------------------------------
-
-provision_default_keys() {
-local target_user_home="$HOME"
-local run_as_user=""
-
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-local detected_home
-detected_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
-if [ -n "$detected_home" ] && [ -d "$detected_home" ]; then
-target_user_home="$detected_home"
-run_as_user="$SUDO_USER"
-fi
-fi
-
-local config_dir="${target_user_home}/.config/ulpm"
-local state_dir="${target_user_home}/.local/state/ulpm"
-local keys_dir="$config_dir/keys"
-local trusted_dir="$config_dir/trusted_keys"
-local overrides_dir="$config_dir/overrides"
-local wal_dir="$state_dir/wal"
-local priv_key="$keys_dir/default.priv"
-local pub_key="$keys_dir/default.pub"
-local trusted_pub="$trusted_dir/default.pub"
-
-info "Initializing ULPM v5.3 storage structures, WAL state & Ed25519 authority..."
-
-if [ -n "$run_as_user" ] && [ "$(id -u)" -eq 0 ]; then
-su - "$run_as_user" -c "mkdir -p '$overrides_dir' '$wal_dir' && ( umask 077 && mkdir -p '$keys_dir' '$trusted_dir' )" 2>/dev/null || {
-mkdir -p "$overrides_dir" "$wal_dir"
-( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
-chown -R "$run_as_user":"$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
-}
-else
-mkdir -p "$overrides_dir" "$wal_dir"
-(umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
-fi
-
-if command -v openssl >/dev/null 2>&1; then
-if [ ! -f "$priv_key" ]; then
-( umask 077; openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
-|| warn "Failed to generateEd25519 private key ($priv_key)."
-fi
-chmod 600 "$priv_key" 2>/dev/null || true
-if [ -f "$priv_key" ];then
-openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
-|| warn "Failed to derive public key ($pub_key)."
-chmod 644 "$pub_key" 2>/dev/null || true
-cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
-fi
-fi
-
-if [ -n "$run_as_user" ] && [ "$(id -u)" -eq 0 ]; then
-chown -R "$run_as_user":"$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
-fi
-}
-
-provision_default_keys
-
-#------------------------------------------------------------
-# Final Summary
-# ------------------------------------------------------------
-
-echo
-echo -e "${GREEN}✔ ULPM engine v5.3 successfully installed!${NC}"
-echo -e "  Binary:    ${BOLD}$BIN_DIR/ulpm${NC}"
-echo -e "  Libraries: ${GRAY}$LIB_DIR${NC}"
-
-if [ -n "$RELOAD_HINT" ]; then
-echo
-warn "$RELOAD_HINT"
-case "$USER_SHELL_NAME" in
-fish)  echo -e "  >> Run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
-zsh)echo -e "  >> Run: ${BOLD}source ~/.zshrc${NC} (or restart terminal)" ;;
-*)     echo -e "  >> Run: ${BOLD}source ~/.bashrc${NC}(or restart terminal)" ;;
-esac
-fi
-
-echo -e "\nGet started with: ${BOLD}ulpm help${NC}"
+    if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
+        setup_desktop_integration
+    else
+        info "Desktop integration skipped. You can enable
