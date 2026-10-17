@@ -61,7 +61,7 @@ local bname bin elf_magic
 local tmp_scan
 tmp_scan="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/elf_scan.XXXXXX")" || return 0
 
-while(( added > 0 && iterations < max_iterations )); do
+while (( added > 0 && iterations < max_iterations )); do
 added=0
 iterations=$((iterations + 1))
 
@@ -74,7 +74,7 @@ elf_magic="$(head -c 4 -- "$bin" 2>/dev/null || true)"
 [[ "$elf_magic" == $'\x7fELF' ]] || continue
 
 local lib_list
-lib_list="$("$loader" --list "$bin" 2>/dev/null | awk '{for(i=1;i <=NF;i++) if($i~/^\//) {sub(/[),;]+$/,"",$i); print $i}}' | sort -u)"
+lib_list="$("$loader" --list "$bin" 2>/dev/null | awk '{for(i=1;i <=NF;i++) if ($i~/^\//) {sub(/[),;]+$/,"",$i); print $i}}' | sort -u)"
 if [[ -n "$lib_list" ]] ;then
 while IFS= read -r lib_path; do
 [[ "$lib_path" == /* && -f "$lib_path" ]] || continue
