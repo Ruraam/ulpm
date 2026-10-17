@@ -916,7 +916,7 @@ StartupNotify=true
 EOF_HANDLER
 
 chmod 644 "$mime_dir/packages/ulpm-lpk.xml" "$desk_dir/ulpm-handler.desktop"
-command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null2>&1 || true
+command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null 2>&1 || true
 refresh_desktop_environment
 
 nautilus -q 2>/dev/null || true

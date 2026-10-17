@@ -552,7 +552,7 @@ if lpk_is_rootfs "$mnt_dir" "$manifest_file"; then
 local exec_bin="bin/main"
 [[ -f "$manifest_file" ]] && exec_bin="$(jq -r '.exec // "bin/main"' "$manifest_file" 2>/dev/null || echo "bin/main")"
 local rootfs_rc=0
-lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true"\
+lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true" \
 "$cli_no_gpu" "$cli_no_audio" "$cli_no_gui" "$cli_no_input" custom_binds "$@" || rootfs_rc=$?
 return "$rootfs_rc"
 fi
@@ -565,7 +565,7 @@ effective_json="$(cat "$manifest_file")"
 fi
 
 local exec_bin is_chromium allow_net allow_gpu allow_audio allow_gui
-local dev_dri dev_input dev_hidraw dev_usb dev_kvm home_modedl_mode
+local dev_dri dev_input dev_hidraw dev_usb dev_kvm home_mode dl_mode
 local req_runtime req_abi
 
 exec_bin="$(manifest_get "$effective_json" '.exec'"bin/main")"
@@ -662,7 +662,7 @@ esac
 done
 
 local can_use_bwrap=1
-if ! command -v bwrap >/dev/null2>&1 || is_proot; then
+if ! command -v bwrap >/dev/null 2>&1 || is_proot; then
 can_use_bwrap=0
 elif ! bwrap --ro-bind / / true >/dev/null 2>&1; then
 can_use_bwrap=0
