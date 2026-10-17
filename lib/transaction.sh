@@ -426,7 +426,7 @@ cmd_transaction() {
             release_lock
             error "Could not download '$id' from '$repo'."
             return 1
-        }
+            
         got="$(sha256sum "$pkg" | awk '{print $1}')"
         [[ "$got" == "$hash" ]] || {
             rm -rf -- "$work"
