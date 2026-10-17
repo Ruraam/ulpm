@@ -426,7 +426,7 @@ cmd_transaction() {
             release_lock
             error "Could not download '$id' from '$repo'."
             return 1
-            
+        fi
         got="$(sha256sum "$pkg" | awk '{print $1}')"
         [[ "$got" == "$hash" ]] || {
             rm -rf -- "$work"
@@ -468,7 +468,7 @@ cmd_transaction() {
             TXN_EXISTED+=(1)
         else
             TXN_EXISTED+=(0)
-        }
+        fi
         [[ ! -L "$data_home/icons/hicolor/256x256/apps/$id.png" ]] || {
             rm -rf -- "$work"
             release_lock
