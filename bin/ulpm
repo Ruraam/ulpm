@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# ========================================================================== ==
+# ============================================================================
 # ULPM - Universal Linux Package Manager (v5.3 Architecture Engine)
-# Main CLI entry point |rootless by default | no resident daemon
-# ========================================================================== ==
+# Main CLI entry point | rootless by default | no resident daemon
+# ============================================================================
 set -Eeuo pipefail
 
 export ULPM_VERSION="5.3.0"
 export ULPM_FORMAT_VERSION="5"
 
-if [[ -t 2 && -z "${NO_COLOR:-}" ]] ; then
-RED=$'\033[0;31m'
-YELLOW=$'\033[0;33m'
-NC=$'\033[0m'
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+    RED=$'\033[0;31m'
+    YELLOW=$'\033[0;33m'
+    NC=$'\033[0m'
 else
-RED=''
-YELLOW=''
-NC=''
+    RED=''
+    YELLOW=''
+    NC=''
 fi
 
 _die() {
-printf '%s[-] %s%s\n' "$RED" "$*" "$NC" >&2
-exit 1
+    printf '%s[-] %s%s\n' "$RED" "$*" "$NC" >&2
+    exit 1
 }
 
 _warn() {
-printf '%s[!]%s%s\n' "$YELLOW" "$*" "$NC" >&2
+    printf '%s[!] %s%s\n' "$YELLOW" "$*" "$NC" >&2
 }
 
 # Resolve HOME before expanding any user paths (set -u safe).
@@ -32,67 +32,67 @@ printf '%s[!]%s%s\n' "$YELLOW" "$*" "$NC" >&2
 
 # Resolve this entry point safely.
 ULPM_BIN="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
-if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]] ; then
-ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
+if [[ -z "$ULPM_BIN" || ! -f "$ULPM_BIN" ]]; then
+    ULPM_BIN="$(command -v ulpm 2>/dev/null || true)"
 fi
 [[ -n "$ULPM_BIN" && -f "$ULPM_BIN" ]] || _die 'Cannot resolve the ULPM executable path.'
 ULPM_BIN_DIR="$(cd -- "$(dirname -- "$ULPM_BIN")" && pwd -P)"
 
 # Find the module directory across common source trees and installed layouts.
 _ulpm_lib_candidates=()
-if [[ -n "${ULPM_LIB_DIR:-}" ]] ; then
-_ulpm_lib_candidates+=("$ULPM_LIB_DIR")
+if [[ -n "${ULPM_LIB_DIR:-}" ]]; then
+    _ulpm_lib_candidates+=("$ULPM_LIB_DIR")
 fi
 _ulpm_lib_candidates+=(
-"$ULPM_BIN_DIR/lib/ulpm"
-"$ULPM_BIN_DIR/lib"
-"$ULPM_BIN_DIR"
-"$(dirname -- "$ULPM_BIN_DIR")/lib/ulpm"
-"$(dirname -- "$ULPM_BIN_DIR")/lib"
-"$HOME/.local/lib/ulpm"
-"/usr/local/lib/ulpm"
-"/usr/lib/ulpm"
+    "$ULPM_BIN_DIR/lib/ulpm"
+    "$ULPM_BIN_DIR/lib"
+    "$ULPM_BIN_DIR"
+    "$(dirname -- "$ULPM_BIN_DIR")/lib/ulpm"
+    "$(dirname -- "$ULPM_BIN_DIR")/lib"
+    "$HOME/.local/lib/ulpm"
+    "/usr/local/lib/ulpm"
+    "/usr/lib/ulpm"
 )
 ULPM_LIB_DIR=''
 for _candidate in "${_ulpm_lib_candidates[@]}"; do
-if [[ -f "$_candidate/utils.sh" ]] ; then
-ULPM_LIB_DIR="$(cd -- "$_candidate" && pwd -P)"
-break
-fi
+    if [[ -f "$_candidate/utils.sh" ]]; then
+        ULPM_LIB_DIR="$(cd -- "$_candidate" && pwd -P)"
+        break
+    fi
 done
 [[ -n "$ULPM_LIB_DIR" ]] || _die 'ULPM library directory not found (utils.sh is missing).'
 
 case "$ULPM_LIB_DIR" in
-"$ULPM_BIN_DIR")
-ULPM_ROOT_DIR="$ULPM_BIN_DIR"
-;;
-*/lib/ulpm)
-ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}"
-;;
-*/lib)
-ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}"
-;;
-*)
-ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")"
-;;
+    "$ULPM_BIN_DIR")
+        ULPM_ROOT_DIR="$ULPM_BIN_DIR"
+        ;;
+    */lib/ulpm)
+        ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib/ulpm}"
+        ;;
+    */lib)
+        ULPM_ROOT_DIR="${ULPM_LIB_DIR%/lib}"
+        ;;
+    *)
+        ULPM_ROOT_DIR="$(dirname -- "$ULPM_LIB_DIR")"
+        ;;
 esac
 export ULPM_BIN ULPM_BIN_DIR ULPM_ROOT_DIR ULPM_LIB_DIR
 
-# Help GUI-launchedapps find ULPM and user-installed binaries.
+# Help GUI-launched apps find ULPM and user-installed binaries.
 _path_add() {
-local dir="${1:-}"
-[[ -n "$dir" && -d "$dir" ]] || return 0
-case ":${PATH:-}:" in
-*":$dir:"*) return 0 ;;
-esac
-PATH="$dir${PATH:+:$PATH}"
-return 0
+    local dir="${1:-}"
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    case ":${PATH:-}:" in
+        *":$dir:"*) return 0 ;;
+    esac
+    PATH="$dir${PATH:+:$PATH}"
+    return 0
 }
 _path_add "$ULPM_BIN_DIR"
 _path_add "$HOME/.local/bin"
 export PATH
 
-# Standard XDG paths; rootlessby design.
+# Standard XDG paths; rootless by design.
 export ULPM_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ulpm"
 export ULPM_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/ulpm"
 export ULPM_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/ulpm"
@@ -103,197 +103,199 @@ export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
 export ULPM_OVERRIDES_DIR="$ULPM_CONFIG_HOME/overrides"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
 export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
+export ULPM_LOCK_FILE="$ULPM_DATA_HOME/installed.db.lock"
 
-# Atomicdirectory creation with strict privacy on keychains and WAL.
-mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_STATE_HOME/wal" "$ULPM_APPS_DIR" "$ULPM_RUNTIMES_DIR" "$ULPM_OVERRIDES_DIR" || _die 'Unable to create ULPM directories.'
+# Atomic directory creation with strict privacy on keychains and WAL.
+mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_STATE_HOME/wal" \
+    "$ULPM_APPS_DIR" "$ULPM_RUNTIMES_DIR" "$ULPM_OVERRIDES_DIR" \
+    || _die 'Unable to create ULPM directories.'
 ( umask 077 && mkdir -p -- "$ULPM_KEYS_DIR" ) || _die 'Unable to create secure keys directory.'
 
 # Load modules in strict dependency order.
 for mod in utils crypto sandbox pack deb run stream manage repo deps transaction; do
-module="$ULPM_LIB_DIR/$mod.sh"
-[[ -r "$module" ]] || _die "Required module '$mod.sh' is missing or unreadable in $ULPM_LIB_DIR."
-#shellcheck disable=SC1090
-source "$module" || _die "Error while loading module '$mod.sh'."
+    module="$ULPM_LIB_DIR/$mod.sh"
+    if [[ ! -f "$module" && -f "$ULPM_LIB_DIR/${mod}" ]]; then
+        module="$ULPM_LIB_DIR/${mod}"
+    fi
+    [[ -r "$module" ]] || _die "Required module '$mod.sh' is missing or unreadable in $ULPM_LIB_DIR."
+    # shellcheck disable=SC1090
+    source "$module" || _die "Error while loading module '$mod.sh'."
 done
 unset mod module _candidate _ulpm_lib_candidates
 
 # Initialize runtime environment if declared.
 if declare -F init_environment >/dev/null 2>&1; then
-init_environment
+    init_environment
 fi
 
 # Automatic FreeDesktop / MIME Integration check (double-click & context menu)
 _auto_integrate() {
-case "${1:-}" in
--v|--version|version|-h|--help|help|completion) return 0 ;;
-esac
+    case "${1:-}" in
+        -v|--version|version|-h|--help|help|completion) return 0 ;;
+    esac
 
-local desktop_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/ulpm-handler.desktop"
-local mime_entry="${XDG_DATA_HOME:-$HOME/.local/share}/mime/packages/ulpm-lpk.xml"
-if [[ ! -f "$desktop_entry" || ! -f "$mime_entry" ]] ; then
-if declare -F cmd_integrate >/dev/null 2>&1; then
-cmd_integrate >/dev/null 2>&1 || true
-fi
-fi
+    local desktop_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/ulpm-handler.desktop"
+    local mime_entry="${XDG_DATA_HOME:-$HOME/.local/share}/mime/packages/ulpm-lpk.xml"
+    if [[ ! -f "$desktop_entry" || ! -f "$mime_entry" ]]; then
+        if declare -F cmd_integrate >/dev/null 2>&1; then
+            cmd_integrate >/dev/null 2>&1 || true
+        fi
+    fi
 }
 _auto_integrate "${1:-}"
 unset -f _auto_integrate
 
-# Automatic crash recovery hook on mutating commands (only if WAL journals exist)
-_auto_recover() {
-case "${1:-}" in
-install|-i|add|-a|upgrade|-u|remove|-r|rm|transaction|txn|rollback)
-local wal_dir="${ULPM_STATE_HOME}/wal"
-if [[ -d "$wal_dir" ]] ; then
-shopt -s nullglob
-local journals=("$wal_dir"/*.wal)
-shopt -u nullglob
-if (( ${#journals[@]} > 0)) && declare -F cmd_transaction_recover >/dev/null 2>&1; then
-cmd_transaction_recover >/dev/null 2>&1 || true
-fi
-fi
-;;
-esac
-}
-_auto_recover "${1:-}"
-unset -f _auto_recover
-
 show_help() {
-cat <<EOF_HELP
-ULPM - Universal Linux Package Manager (v${ULPM_VERSION})
+    cat <<'EOF_HELP'
+ULPM - Universal Linux Package Manager (v5.3.0)
 
 Usage: ulpm <command> [options] [arguments]
 
 Execution & Sandbox:
-run [flags] <target>[-- args...]             Run an application in a Bubblewrap sandbox
-stream <url|repo> [flags] [-- args...]       Run ephemerally, using volatile RAM storage
+  run [flags] <target> [-- args...]            Run an application in a Bubblewrap sandbox
+  stream <url|repo> [flags] [-- args...]       Run ephemerally, using volatile RAM storage
 
 Sandbox Profiles & Overrides:
-override <app>[options]                      Configure persistent permission overrides
-permissions <app> [reset]                    Show or reset effective application permissions
-runtime <list|install> [runtime.lpk]         Manage shared runtimes (4-axis matrix: ID/Ver/Arch/ABI)
+  override <app> [options]                     Configure persistent permission overrides
+  permissions <app> [reset]                    Show or reset effective application permissions
+  runtime <list|install> [runtime.lpk]         Manage shared runtimes (4-axis matrix: ID/Ver/Arch/ABI)
 
 Packaging (Deterministic & Sealed):
-pack [flags] <src> [name][out.lpk] [ver]     Create a sealed LPK bundle (v5 schema, 104Bsignature)
---no-scan, --fast                            Bypass ELF dynamic dependency bundling
---shared                                     Mark bundle as sharedruntime
---runtime <id>                               Specify shared runtime base requirement
---dependency <id[ >=ver]>                    Declare runtime package dependencies
-deb-pack <pkg|file.deb> [name]               Convert and bundle aDebian package into an LPK
+  pack [flags] <src> [name] [out.lpk] [ver]    Create a sealed LPK bundle (v5 schema, 104B signature)
+      --no-scan, --fast                        Bypass ELF dynamic dependency bundling
+      --shared                                 Mark bundle as shared runtime
+      --runtime <id>                           Specify shared runtime base requirement
+      --dependency <id[ >=ver]>                Declare runtime package dependencies
+  deb-pack <pkg|file.deb> [name]               Convert and bundle a Debian package into an LPK
 
-Application management:
-install, -i <source> [name]                  Install an application atomically
-upgrade,-u [app-id]                          Upgrade tracked applications
-remove, -r [--purge] <app_name>Uninstall an application
-list, -l                                     List installed applications
-search, -s <query>Search available applications across GitHub & repos
-repo <list|add|remove|enable|disable|update|verify|search|install|index>
-                                             Manage signed repositories and static distribution
-deps <check|resolve> <app-id|manifest.json>  Check dependencies / resolve topological install plan
-transaction install <app-id>[app-id ...]     Atomic multi-package installation with persistent WAL
-history [app-id]                             List locally retained previous versions
-rollback <app-id>                            Restore the most recent retained version
-inspect <package.lpk>                        Inspect package manifest and signature trailer
-clean                                        Clean ULPM cache, build leftovers anddangling sessions
-integrate                                    Register desktop launchers and MIME associations
+Application Management:
+  install, -i <source> [name]                  Install an application atomically
+  upgrade, -u [app-id]                         Upgrade tracked applications
+  remove, -r [--purge] <app_name>              Uninstall an application
+  list, -l                                     List installed applications
+  search, -s <query>                           Search available applications across GitHub & repos
+  repo <list|add|remove|enable|disable|update|verify|search|install|index>
+                                               Manage signed repositories and static distribution
+  deps <check|resolve> <app-id|manifest.json>  Check dependencies / resolve topological install plan
+  transaction install <app-id> [app-id ...]    Atomic multi-package installation with persistent WAL
+  history [app-id]                             List locally retained previous versions
+  rollback <app-id>                            Restore the most recent retained version
+  inspect <package.lpk>                        Inspect package manifest and signature trailer
+  info <app-id|name>                           Show details of an installed package
+  clean                                        Clean ULPM cache, build leftovers and dangling sessions
+  integrate                                    Register desktop launchers and MIME associations
 
 Security and Cryptography (Ed25519):
-keygen [name]                                Generate an Ed25519 keypair
-sign <file.lpk> [priv_key]                   Sign an LPK package with a 104-byte trailer
-trust <public_key.pub>                       Register and trust a publisher public key
-token [PAT]                                  Configure a GitHub personal access token
-doctor                                       Diagnose runtime, sandbox, portals, drivers & GPU
-self-update [repo]                           Update ULPM from a release source
-completion                                   Print shell completion configuration
+  keygen [name]                                Generate an Ed25519 keypair
+  sign <file.lpk> [priv_key]                   Sign an LPK package with a 104-byte trailer
+  trust <public_key.pub>                       Register and trust a publisher public key
+  token [PAT]                                  Configure a GitHub personal access token
+  doctor                                       Diagnose runtime, sandbox, portals, drivers & GPU
+  self-update [repo]                           Update ULPM from a release source
+  completion                                   Print shell completion configuration
 
-Runtime Flags(run/stream/override):
---gaming                                     Apply gaming preset (DRI, Low-latency audio, Input, HID)
---strict                                     Apply hardened isolation profile (no network, seccomp BPF)
---offline, --no-net                          Disable network access
---no-gpu                                     Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
---no-audio                                   Disable audio server access (PulseAudio/PipeWire)
---no-gui                                     Disable graphical display access (X11 & Wayland)
---no-input                                   Disable gamepad & host input devices
---bind <host>:<dest>                         Bind a host path into the sandbox
+Runtime Flags (run/stream/override):
+  --gaming                                     Apply gaming preset (DRI, Low-latency audio, Input, HID)
+  --strict                                     Apply hardened isolation profile (no network, seccomp BPF)
+  --offline, --no-net                          Disable network access
+  --no-gpu                                     Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
+  --no-audio                                   Disable audio server access (PulseAudio/PipeWire)
+  --no-gui                                     Disable graphical display access (X11 & Wayland)
+  --no-input                                   Disable gamepad & host input devices
+  --bind <host>:<dest>                         Bind a host path into the sandbox
 
 Global:
--h, --help                                   Show this help
--v, --version                                Show version
+  -h, --help                                   Show this help
+  -v, --version                                Show version
 EOF_HELP
 }
 
 _dispatch() {
-local fn="$1" label="$2"
-shift 2
-if ! declare -F "$fn" >/dev/null 2>&1; then
-_die "Command '$label' is notavailable: module function '$fn' is not defined. Check the installed ULPM modules."
-fi
-"$fn" "$@"
+    local fn="$1" label="$2"
+    shift 2
+    if ! declare -F "$fn" >/dev/null 2>&1; then
+        _die "Command '$label' is not available: function '$fn' is not defined. Check the installed ULPM modules."
+    fi
+    "$fn" "$@"
 }
 
 main() {
-if (($# == 0)); then
-show_help
-exit 0
-fi
-case "$1" in
--h|--help|help)
-show_help
-exit 0
-;;
--v|--version|version)
-printf 'ulpm v%s (LPK format %s)\n' "$ULPM_VERSION" "$ULPM_FORMAT_VERSION"
-exit 0
-;;
-esac
+    if (($# == 0)); then
+        show_help
+        exit 0
+    fi
 
-local cmd="$1"
-shift
-case "$cmd" in
-run)          _dispatch cmd_run run "$@" ;;
-stream)       _dispatch cmd_stream stream "$@" ;;
-override)     _dispatch cmd_override override "$@" ;;
-permissions|perms)
-_dispatch cmd_permissions permissions "$@" ;;
-runtime)      _dispatch cmd_runtime runtime "$@" ;;
-pack)         _dispatch cmd_pack pack "$@" ;;
-deb-pack|deb_pack)
-_dispatch cmd_deb_pack deb-pack "$@" ;;
-install|-i|add|-a)
-_dispatch cmd_install install "$@" ;;
-upgrade|-u)   _dispatch cmd_upgrade upgrade "$@" ;;
-repo|repository|repositories)
-_dispatch cmd_repo repo "$@" ;;
-deps|dependencies)
-_dispatch cmd_deps deps "$@" ;;
-transaction|txn)
-_dispatch cmd_transaction transaction "$@" ;;
-history)      _dispatch cmd_history history "$@" ;;
-rollback)     _dispatch cmd_rollback rollback "$@" ;;
-remove|-r|rm) _dispatch cmd_remove remove "$@" ;;
-search|-s)    _dispatch cmd_search search "$@" ;;
-list|-l|ls)   _dispatch cmd_list list "$@" ;;
-inspect|info) _dispatch cmd_inspect inspect "$@" ;;
-clean)        _dispatch cmd_clean clean "$@" ;;
-integrate)    _dispatch cmd_integrate integrate "$@" ;;
-keygen)       _dispatch cmd_keygen keygen "$@" ;;
-sign)         _dispatch cmd_sign sign "$@" ;;
-trust)        _dispatch cmd_trust trust "$@" ;;
-token|auth)   _dispatch cmd_token token "$@" ;;
-doctor|check|-d|--doctor)
-_dispatch cmd_doctor doctor "$@" ;;
-self-update)  _dispatch cmd_self_update self-update "$@" ;;
-completion)   _dispatch cmd_completion completion "$@" ;;
-*)
-if declare -F error >/dev/null 2>&1; then
-error "Unknown command: $cmd"
-else
-_die "Unknown command: $cmd"
-fi
-show_help
-exit 1
-;;
-esac
+    # Support direct double-click or CLI invocation: `ulpm package.lpk`
+    if [[ -f "$1" && "$1" == *.lpk ]]; then
+        _dispatch cmd_run run "$@"
+        return $?
+    fi
+
+    case "$1" in
+        -h|--help|help)
+            show_help
+            exit 0
+            ;;
+        -v|--version|version)
+            printf 'ulpm v%s (LPK format %s)\n' "$ULPM_VERSION" "$ULPM_FORMAT_VERSION"
+            exit 0
+            ;;
+    esac
+
+    local cmd="$1"
+    shift
+    case "$cmd" in
+        run)              _dispatch cmd_run run "$@" ;;
+        stream)           _dispatch cmd_stream stream "$@" ;;
+        override)         _dispatch cmd_override override "$@" ;;
+        permissions|perms)
+            _dispatch cmd_permissions permissions "$@" ;;
+        runtime)          _dispatch cmd_runtime runtime "$@" ;;
+        pack)             _dispatch cmd_pack pack "$@" ;;
+        deb-pack|deb_pack)
+            _dispatch cmd_deb_pack deb-pack "$@" ;;
+        install|-i|add|-a)
+            _dispatch cmd_install install "$@" ;;
+        upgrade|-u)       _dispatch cmd_upgrade upgrade "$@" ;;
+        repo|repository|repositories)
+            _dispatch cmd_repo repo "$@" ;;
+        deps|dependencies)
+            _dispatch cmd_deps deps "$@" ;;
+        transaction|txn)
+            _dispatch cmd_transaction transaction "$@" ;;
+        history)          _dispatch cmd_history history "$@" ;;
+        rollback)         _dispatch cmd_rollback rollback "$@" ;;
+        remove|-r|rm|uninstall)
+            if declare -F cmd_remove >/dev/null 2>&1; then
+                _dispatch cmd_remove remove "$@"
+            else
+                _dispatch cmd_uninstall uninstall "$@"
+            fi
+            ;;
+        search|-s)        _dispatch cmd_search search "$@" ;;
+        list|-l|ls)       _dispatch cmd_list list "$@" ;;
+        inspect)          _dispatch cmd_inspect inspect "$@" ;;
+        info)             _dispatch cmd_info info "$@" ;;
+        clean)            _dispatch cmd_clean clean "$@" ;;
+        integrate)        _dispatch cmd_integrate integrate "$@" ;;
+        keygen)           _dispatch cmd_keygen keygen "$@" ;;
+        sign)             _dispatch cmd_sign sign "$@" ;;
+        trust)            _dispatch cmd_trust trust "$@" ;;
+        token|auth)       _dispatch cmd_token token "$@" ;;
+        doctor|check|-d|--doctor)
+            _dispatch cmd_doctor doctor "$@" ;;
+        self-update)      _dispatch cmd_self_update self-update "$@" ;;
+        completion)       _dispatch cmd_completion completion "$@" ;;
+        *)
+            if declare -F error >/dev/null 2>&1; then
+                error "Unknown command: $cmd"
+            else
+                _die "Unknown command: $cmd"
+            fi
+            show_help
+            exit 1
+            ;;
+    esac
 }
 
 main "$@"
