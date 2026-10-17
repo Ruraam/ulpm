@@ -56,7 +56,7 @@ bundle_elf_libraries() {
 
     log "Bundling dependencies via host linker ($loader)..."
     local added=1 iterations=0 max_iterations=10
-    local binlib_path bname
+    local bin lib_path bname
     local -A seen_libs=()
 
     # Transitive loop to resolve dependencies of dependencies
