@@ -396,20 +396,20 @@ _cmd_deb_pack_work() (
     for cand_bin in "$root_dir/usr/bin/$app_name" "$root_dir/bin/$app_name" "$root_dir/usr/games/$app_name"; do
         if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
             rel_target="${cand_bin#"$root_dir/"}"
-            cat <<'EOF' > "$root_dir/AppRun"
+            cat <<EOF > "$root_dir/AppRun"
 #!/bin/sh
-HERE="$(dirname "$(readlink -f "$0")")"
-export PATH="$HERE/usr/bin:$HERE/bin:$HERE/usr/games:$PATH"
+HERE="\$(dirname "\$(readlink -f "\$0")")"
+export PATH="\$HERE/usr/bin:\$HERE/bin:\$HERE/usr/games:\$PATH"
 
 EXTRA_LIBS=""
-for d in "$HERE"/usr/lib/*-linux-* "$HERE"/lib/*-linux-* "$HERE"/usr/lib64 "$HERE"/lib64 "$HERE"/usr/lib32 "$HERE"/lib32; do
-    if [ -d "$d" ]; then
-        EXTRA_LIBS="${EXTRA_LIBS:+$EXTRA_LIBS:}$d"
+for d in "\$HERE"/usr/lib/*-linux-* "\$HERE"/lib/*-linux-* "\$HERE"/usr/lib64 "\$HERE"/lib64 "\$HERE"/usr/lib32 "\$HERE"/lib32; do
+    if [ -d "\$d" ]; then
+        EXTRA_LIBS="\${EXTRA_LIBS:+\$EXTRA_LIBS:}\$d"
     fi
 done
 
-export LD_LIBRARY_PATH="$HERE/lib:$HERE/usr/lib:$HERE/lib64:$HERE/usr/lib64${EXTRA_LIBS:+:$EXTRA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$HERE/$rel_target" "$@"
+export LD_LIBRARY_PATH="\$HERE/lib:\$HERE/usr/lib:\$HERE/lib64:\$HERE/usr/lib64\${EXTRA_LIBS+:+\$EXTRA_LIBS}\${LD_LIBRARY_PATH+:+\$LD_LIBRARY_PATH}"
+exec "\$HERE/$rel_target" "\$@"
 EOF
             chmod 0755 "$root_dir/AppRun"
             entry_found=1
@@ -424,20 +424,20 @@ EOF
         while IFS= read -r -d '' cand_bin; do
             if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
                 rel_target="${cand_bin#"$root_dir/"}"
-                cat <<'EOF' > "$root_dir/AppRun"
+                cat <<EOF > "$root_dir/AppRun"
 #!/bin/sh
-HERE="$(dirname "$(readlink -f "$0")")"
-export PATH="$HERE/usr/bin:$HERE/bin:$HERE/usr/games:$PATH"
+HERE="\$(dirname "\$(readlink -f "\$0")")"
+export PATH="\$HERE/usr/bin:\$HERE/bin:\$HERE/usr/games:\$PATH"
 
 EXTRA_LIBS=""
-for d in "$HERE"/usr/lib/*-linux-* "$HERE"/lib/*-linux-* "$HERE"/usr/lib64 "$HERE"/lib64 "$HERE"/usr/lib32 "$HERE"/lib32; do
-    if [ -d "$d" ]; then
-        EXTRA_LIBS="${EXTRA_LIBS:+$EXTRA_LIBS:}$d"
+for d in "\$HERE"/usr/lib/*-linux-* "\$HERE"/lib/*-linux-* "\$HERE"/usr/lib64 "\$HERE"/lib64 "\$HERE"/usr/lib32 "\$HERE"/lib32; do
+    if [ -d "\$d" ]; then
+        EXTRA_LIBS="\${EXTRA_LIBS:+\$EXTRA_LIBS:}\$d"
     fi
 done
 
-export LD_LIBRARY_PATH="$HERE/lib:$HERE/usr/lib:$HERE/lib64:$HERE/usr/lib64${EXTRA_LIBS:+:$EXTRA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$HERE/$rel_target" "$@"
+export LD_LIBRARY_PATH="\$HERE/lib:\$HERE/usr/lib:\$HERE/lib64:\$HERE/usr/lib64\${EXTRA_LIBS+:+\$EXTRA_LIBS}\${LD_LIBRARY_PATH+:+\$LD_LIBRARY_PATH}"
+exec "\$HERE/$rel_target" "\$@"
 EOF
                 chmod 0755 "$root_dir/AppRun"
                 entry_found=1
