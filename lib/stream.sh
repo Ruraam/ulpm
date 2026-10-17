@@ -242,7 +242,7 @@ local stream_rc=0
 if (( ${#app_args[@]} > 0 )); then
 cmd_run "${sandbox_opts[@]}" "$tmp_lpk" -- "${app_args[@]}" || stream_rc=$?
 else
-cmd_run"${sandbox_opts[@]}" "$tmp_lpk" || stream_rc=$?
+cmd_run "${sandbox_opts[@]}" "$tmp_lpk" || stream_rc=$?
 fi
 
 _ulpm_stream_cleanup
