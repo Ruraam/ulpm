@@ -419,7 +419,7 @@ fi
 
 PM=""
 for pm in apt-get pacman dnf zypper apk xbps-install; do
-if command -v "$pm" >/dev/null2>&1; then PM="$pm"; break; fi
+if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
 done
 
 pkg_for() {
