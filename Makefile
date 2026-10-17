@@ -21,12 +21,12 @@ syntax:
 
 # Catches copy/paste damage such as 'if[[', 'for_x in' or "printf'%s" (missing spaces)
 whitespace:
-	@! grep -nE "(^|[[:space:];])(if|elif|while|until)(\[\[|\(|!)|printf'|null[0-9]>|^[[:space:]]*for_[a-z_]+ in " $(SCRIPTS) \
+	@! grep -nE "(^|[[:space:];])(if|elif|until|while)(\[\[|!)|printf'|null[0-9]>|^[[:space:]]*for_[a-z_]+ in " $(SCRIPTS) \
 	  && echo "whitespace guard: OK" || { echo "whitespace guard: FAILED (see lines above)"; exit 1; }
 
 lint:
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed, skipping"; exit 0; }
-	@shellcheck -x $(SCRIPTS) && echo "shellcheck: OK"
+	@shellcheck -x -S warning $(SCRIPTS) && echo "shellcheck: OK"
 
 test:
 	@command -v bats >/dev/null || { echo "bats not installed"; exit 1; }

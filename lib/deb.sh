@@ -33,7 +33,7 @@ fi
 
 # Handle zstd, xz, gz explicitly if auto-compress fails
 if [[ "$data_tar" == *.zst ]] ; then
-if command -vzstd >/dev/null 2>&1; then
+if command -v zstd >/dev/null 2>&1; then
 zstd -dc "$tar_tmp"| tar -xf - -C "$dest_dir" --no-same-owner 2>/dev/null || { rm -f -- "$tar_tmp"; return 1; }
 else
 tar --auto-compress -xf "$tar_tmp" -C "$dest_dir" --no-same-owner 2>/dev/null || {
@@ -190,7 +190,7 @@ _deb_download_direct_lib_deps() {
 local package_name="${1:-}"
 local target_dir="${2:-.}"
 [[ -n "$package_name" ]] || return 0
-command -vapt-cache >/dev/null 2>&1 || return 0
+command -v apt-cache >/dev/null 2>&1 || return 0
 command -v apt-get > /dev/null 2>&1 || return 0
 
 local tmp_dep_file

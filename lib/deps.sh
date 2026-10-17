@@ -177,6 +177,8 @@ error "No repository indexes cached; run 'ulpm repo update' first."
 return 1
 }
 
+# These arrays are accessed by name through namerefs in _deps_resolve_visit.
+# shellcheck disable=SC2034
 local -a plan=() visiting=() done_ids=()
 _deps_resolve_visit "$target" "$root" "$db" plan visiting done_ids '' || return 1
 printf 'Dependency installation plan(dependencies first):\n'

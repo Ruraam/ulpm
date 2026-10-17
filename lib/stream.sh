@@ -175,7 +175,7 @@ fi
 if (( free_kb < 262144 )) || [[ ! -w "$ram_base" ]] ; then
 ram_base="${XDG_RUNTIME_DIR:-${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/tmp}"
 fi
-mkdir -p --"$ram_base" 2>/dev/null || ram_base="/tmp"
+mkdir -p -- "$ram_base" 2>/dev/null || ram_base="/tmp"
 
 local tmp_lpk=""
 tmp_lpk="$(
@@ -212,6 +212,9 @@ local auth_header=() token
 if declare -F get_github_token >/dev/null 2>&1 && token="$(get_github_token)"; then
 auth_header=(-H "Authorization: Bearer $token")
 fi
+if [[ -n "${token:-}" ]]; then
+auth_header=(-H "Authorization: Bearer $token")
+fi
 
 if [[ "$target_url" == file://* ]] ; then
 local source_file="${target_url#file://}"
@@ -242,10 +245,10 @@ local stream_rc=0
 if (( ${#app_args[@]} > 0 )); then
 cmd_run "${sandbox_opts[@]}" "$tmp_lpk" -- "${app_args[@]}" || stream_rc=$?
 else
-cmd_run"${sandbox_opts[@]}" "$tmp_lpk" || stream_rc=$?
+cmd_run "${sandbox_opts[@]}" "$tmp_lpk" || stream_rc=$?
 fi
 
 _ulpm_stream_cleanup
-trap- INT TERM HUP EXIT
+trap - INT TERM HUP EXIT
 return "$stream_rc"
 }
