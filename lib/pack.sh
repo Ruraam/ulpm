@@ -61,7 +61,7 @@ local bname bin elf_magic
 local tmp_scan
 tmp_scan="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/elf_scan.XXXXXX")" || return 0
 
-while(( added > 0 && iterations < max_iterations )); do
+while (( added > 0 && iterations < max_iterations )); do
 added=0
 iterations=$((iterations + 1))
 

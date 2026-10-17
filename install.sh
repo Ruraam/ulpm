@@ -149,10 +149,10 @@ priv chmod 0644 /usr/share/keyrings/ulpm.gpg
 
 info "Configuring APT source list..."
 priv mkdir -p /etc/apt/sources.list.d
-echo "deb[signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/ulpm.gpg] $APT_REPO_URL stable main" | priv tee /etc/apt/sources.list.d/ulpm.list >/dev/null
 
 info "Updating APT cache..."
-priv apt-getupdate || die "Failed to update apt cache from ULPM repository."
+priv apt-get update || die "Failed to update apt cache from ULPM repository."
 
 info "Installing ulpm deb package..."
 priv env DEBIAN_FRONTEND=noninteractive apt-get install -y ulpm || die "Failed to install ulpm via apt."
@@ -286,7 +286,7 @@ done
 
 echo
 echo -e "${YELLOW}This operationwill remove ULPM, its libraries, installed apps, runtimes, WAL logs and overrides.${NC}"
-echo"Sandbox app storage in ~/.var/app will be preserved."
+echo "Sandbox app storage in ~/.var/app will be preserved."
 echo
 
 if ! confirm "Confirm completeuninstallation of ULPM? [y/N]: " "n"; then
@@ -319,7 +319,7 @@ done
 local dir
 for dir in "${lib_dirs[@]}"; do
 if [ -d "$dir" ]; then
-if [ -w "$(dirname "$dir")"]; then
+if [ -w "$(dirname "$dir")" ]; then
 rm -rf -- "$dir"
 else
 resolve_elevate
@@ -419,7 +419,7 @@ fi
 
 PM=""
 for pm in apt-get pacman dnf zypper apk xbps-install; do
-if command -v "$pm" >/dev/null2>&1; then PM="$pm"; break; fi
+if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
 done
 
 pkg_for() {
@@ -496,7 +496,7 @@ resolve_elevate
 set +e
 pkg_rc=0
 case "$PM" in
-apt-get)      priv apt-get update && priv envDEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
+apt-get)      priv apt-get update && priv env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PKGS[@]}" ;;
 pacman)       priv pacman -S --needed --noconfirm "${PKGS[@]}" ;;
 dnf)          priv dnf install -y "${PKGS[@]}" ;;
 zypper)       priv zypper --non-interactive install "${PKGS[@]}" ;;
@@ -505,7 +505,7 @@ xbps-install) priv xbps-install -Sy "${PKGS[@]}" ;;
 esac
 pkg_rc=$?
 set -e
-[ "$pkg_rc" -eq 0] || warn "Automatic package installation failed (exit $pkg_rc). Install manually: ${PKGS[*]}"
+[ "$pkg_rc" -eq 0 ] || warn "Automatic package installation failed (exit $pkg_rc). Install manually: ${PKGS[*]}"
 fi
 elif [ -z "$PM" ]; then
 warn "No supported package manager detected."
@@ -513,7 +513,7 @@ info "Please install missing packages manually: ${MISSING[*]}"
 fi
 fi
 
-if [ "${#OPT_MISSING[@]}"-gt 0 ] && [ "${#MISSING[@]}" -eq 0 ]; then
+if [ "${#OPT_MISSING[@]}" -gt 0 ] && [ "${#MISSING[@]}" -eq 0 ]; then
 info "Recommendedisolation tools missing (FUSE/Sandbox will run in compatibility mode): ${OPT_MISSING[*]}"
 fi
 
@@ -533,7 +533,7 @@ NEED_PRIV=false
 if [ "$MODE" = "system" ]; then
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 LIB_DIR="/usr/local/lib/ulpm"
-[ "$(id -u)" -ne 0] && NEED_PRIV=true
+[ "$(id -u)" -ne 0 ] && NEED_PRIV=true
 else
 BIN_DIR="${BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 LIB_DIR="$HOME/.local/lib/ulpm"
@@ -569,7 +569,7 @@ BACKUP_TARGETS=()
 BACKUP_FILES=()
 
 rollback_deployment() {
-local itarget backup
+local target backup
 for ((i=${#BACKUP_TARGETS[@]}-1; i>=0; i--)); do
 target="${BACKUP_TARGETS[$i]}"
 backup="${BACKUP_FILES[$i]}"
@@ -656,7 +656,7 @@ fi
 # Checksum Verification
 # ------------------------------------------------------------
 
-if [ "${#FETCHED[@]}" -gt0 ]; then
+if [ "${#FETCHED[@]}" -gt 0 ]; then
 if ! command -v sha256sum >/dev/null 2>&1; then
 warn "sha256sum not found: integrity of downloaded files not verified."
 elif curl -fsSL --retry 2 "$BASE_URL/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
@@ -805,10 +805,10 @@ cur="${COMP_WORDS[COMP_CWORD]}"
 prev="${COMP_WORDS[COMP_CWORD-1]}"
 }
 
-local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trusttoken self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
-local runtime_sub="listinstall"
+local commands="run stream override permissions perms runtime pack deb-pack install remove rm search list inspect info doctor keygen sign trust token self-update upgrade clean integrate completion help version repo deps transaction txn history rollback"
+local runtime_sub="list install"
 local deps_sub="check resolve"
-local repo_sub="list add remove enable disableupdate verify search install index"
+local repo_sub="list add remove enable disable update verify search install index"
 local txn_sub="install recover"
 local run_flags="--gaming --strict --desktop --offline --no-net --net --no-gpu --gpu --no-audio --audio --no-gui --gui --no-input --share-home --share-home-rw --share-home-ro --isolate-home --bind"
 
@@ -819,11 +819,11 @@ fi
 
 case "$prev" in
 runtime)
-COMPREPLY=($(compgen -W "$runtime_sub" --"$cur"))
+COMPREPLY=($(compgen -W "$runtime_sub" -- "$cur"))
 return 0
 ;;
 deps)
-COMPREPLY=($(compgen-W "$deps_sub" -- "$cur"))
+COMPREPLY=($(compgen -W "$deps_sub" -- "$cur"))
 return 0
 ;;
 repo)
@@ -887,7 +887,7 @@ fi
 esac
 }
 
-complete -F_ulpm_completions ulpm
+complete -F _ulpm_completions ulpm
 EOF
 
 if [ "$NEED_PRIV" = true ]; then
@@ -929,7 +929,7 @@ fi
 local mime_file="$TMP_DIR/ulpm-lpk.xml"
 cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
-<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info ">
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
 <mime-type type="application/x-lpk">
 <comment>ULPM Package Bundle</comment>
 <comment xml:lang="fr">Paquet d'application ULPM</comment>
@@ -958,7 +958,7 @@ Categories=System;Utility;
 StartupNotify=true
 EOF
 
-if [ "$NEED_PRIV" = true]; then
+if [ "$NEED_PRIV" = true ]; then
 priv install -m 0644 "$mime_file" "$mime_dir/ulpm-lpk.xml"
 priv install -m 0644 "$desktop_file" "$apps_dir/ulpm-handler.desktop"
 else
@@ -1020,7 +1020,7 @@ setup_desktop_integration
 else
 info "Desktop integration skipped.You can enable it anytime via: ulpm integrate"
 fi
-elif [ "$INTEGRATE" = true]; then
+elif [ "$INTEGRATE" = true ]; then
 setup_desktop_integration
 fi
 
@@ -1032,7 +1032,7 @@ provision_default_keys() {
 local target_user_home="$HOME"
 local run_as_user=""
 
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" !="root" ]; then
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
 local detected_home
 detected_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
 if [ -n "$detected_home" ] && [ -d "$detected_home" ]; then
@@ -1078,7 +1078,7 @@ cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
 fi
 fi
 
-if [ -n "$run_as_user" ] && [ "$(id -u)" -eq0 ]; then
+if [ -n "$run_as_user" ] && [ "$(id -u)" -eq 0 ]; then
 chown -R "$run_as_user":"$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
 fi
 }

@@ -213,7 +213,7 @@ printf '  %-24s : DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
 local custom_paths
 custom_paths="$(jq -r '.permissions.filesystem.custom[]? | "- \(.path) (\(.mode))"' <<< "$effective_json" 2>/dev/null || true)"
 if [[ -n "$custom_paths" ]] ; then
-printf '  %-24s :\n%s\n''Custom Bind Paths' "$custom_paths"
+printf '  %-24s :\n%s\n' 'Custom Bind Paths' "$custom_paths"
 fi
 
 local dbus_talk
@@ -268,7 +268,7 @@ manifest_set_override "$app_id" '.permissions.devices.dri' "true"
 manifest_set_override "$app_id" '.permissions.filesystem.home' '"isolated"'
 ;;
 --share-home|--share-home-rw)
-manifest_set_override "$app_id"'.permissions.filesystem.home' '"read-write"'
+manifest_set_override "$app_id" '.permissions.filesystem.home' '"read-write"'
 ;;
 --share-home-ro)
 manifest_set_override "$app_id" '.permissions.filesystem.home' '"read"'
@@ -279,7 +279,7 @@ manifest_set_override "$app_id" '.permissions.audio' "true"
 manifest_set_override "$app_id" '.permissions.devices.dri' "true"
 manifest_set_override "$app_id" '.permissions.devices.input' "true"
 manifest_set_override "$app_id" '.permissions.devices.hidraw' "true"
-manifest_set_override "$app_id" '.permissions.devices.usb'"true"
+manifest_set_override "$app_id" '.permissions.devices.usb' "true"
 ;;
 --strict)
 manifest_set_override "$app_id" '.permissions.network' "false"
@@ -340,7 +340,7 @@ rm -f -- "$tmp_scan"
 if (( ${#runtime_manifests[@]} == 0 && ${#runtime_dirs[@]} ==0 )); then
 printf '  No shared runtimes installed.\n'
 else
-local rdr_id sz r_version r_arch r_abi
+local sz r_version r_arch r_abi
 for rd in "${runtime_manifests[@]}"; do
 r_id="$(jq -r '.id // "?"' "$rd" 2>/dev/null)"
 r_version="$(jq -r '.version // "1.0.0"' "$rd" 2>/dev/null)"
@@ -362,7 +362,7 @@ install)
 local r_src="${2:-}"
 [[ -n "$r_src" && -f "$r_src" && -r "$r_src" ]] || { error "Usage: ulpm runtime install <shared-runtime.lpk>"; return 1; }
 check_dependencies unsquashfs jq || return 1
-acquire_lock10 || return 1
+acquire_lock 10 || return 1
 local stage="" runtime_old="" r_id manifest_raw runtime_dest rc=1
 
 stage="$(mktemp -d "$runtimes_dir/.runtime-stage.XXXXXX")" || { release_lock; return 1; }
@@ -541,7 +541,7 @@ local id_slug
 id_slug="${app_name,,}"
 id_slug="${id_slug// /-}"
 id_slug="$(printf '%s' "$id_slug" | sed -E 's/[^a-z0-9._-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
-[[ -n "$id_slug" ]] ||id_slug="app"
+[[ -n "$id_slug" ]] || id_slug="app"
 app_id="io.lpk.$id_slug"
 fi
 _valid_app_id "$app_id" || {
@@ -760,8 +760,8 @@ local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
 
 local app_id="$target" app_name="$target" cur_version="" cur_origin="local"
 if [[ -f "$db_file" ]] ; then
-local id name ver time origin
-while IFS='|' read -r id name ver time origin; do
+local id name ver _time origin
+while IFS='|' read -r id name ver _time origin; do
 if [[ "$name" == "$target" || "$id" == "$target" || "${name,,}" == "${target,,}" || "${id,,}" == "${target,,}" ]] ; then
 app_id="$id"
 app_name="$name"
@@ -818,14 +818,14 @@ fi
 local tmp_target
 tmp_target="$(mktemp "$dest_dir/.rollback.XXXXXX.lpk")" || { release_lock; return 1; }
 cp -- "$roll_pkg" "$tmp_target" || { rm -f -- "$tmp_target"; release_lock; return 1; }
-chmod 644-- "$tmp_target"
+chmod 644 -- "$tmp_target"
 sync_file "$tmp_target"
 mv -f -- "$tmp_target" "$final_pkg" || { release_lock; return 1; }
 sync_dir "$dest_dir"
 
 # Update installed.db atomically
 local db_dir db_tmp
-db_dir="$(dirname --"$db_file")"
+db_dir="$(dirname -- "$db_file")"
 db_tmp="$(mktemp "$db_dir/.installed.db.rollback.XXXXXX")" || { release_lock; return 1; }
 awk -F'|' -v id="$app_id" -v name="$roll_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f -- "$db_tmp"; release_lock; return 1; }
 printf '%s|%s|%s|%s|%s\n' "$app_id" "$roll_name" "$roll_ver" "$(date +%s)" "$roll_origin" >> "$db_tmp" || { rm -f -- "$db_tmp"; release_lock; return 1; }
@@ -849,10 +849,10 @@ local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.d
 
 log "Checkingfor available application updates..."
 local -a update_targets=()
-local id name ver time origin
+local id name ver _time origin
 
 # Preload targets to prevent I/O deadlock during write operations
-while IFS='|' read -rid name ver time origin; do
+while IFS='|' read -r id name ver _time origin; do
 [[ -n "$id" && -n "$origin" ]] || continue
 if [[ "$origin" =~ ^https?:// ]] ; then
 update_targets+=("$name|$id|$origin")
@@ -883,7 +883,7 @@ mkdir -p "$mime_dir/packages" "$desk_dir" || return 1
 
 cat > "$mime_dir/packages/ulpm-lpk.xml" <<'EOF_MIME'
 <?xml version="1.0" encoding="UTF-8"?>
-<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info ">
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
 <mime-type type="application/x-lpk">
 <comment>ULPM Package Bundle</comment>
 <comment xml:lang="fr">Paquet d'application ULPM</comment>
@@ -916,7 +916,7 @@ StartupNotify=true
 EOF_HANDLER
 
 chmod 644 "$mime_dir/packages/ulpm-lpk.xml" "$desk_dir/ulpm-handler.desktop"
-command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null2>&1 || true
+command -v update-mime-database >/dev/null 2>&1 && update-mime-database "$mime_dir" >/dev/null 2>&1 || true
 refresh_desktop_environment
 
 nautilus -q 2>/dev/null || true
@@ -1087,14 +1087,6 @@ is_debian_like=true
 elif command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
 is_debian_like=true
 fi
-local arch arch_regex
-arch="$(detect_arch)"
-case "$arch" in
-arm64|aarch64) arch_regex='arm64|aarch64|arm-64|armv8|arm64v8|all' ;;
-x86_64|amd64)  arch_regex='amd64|x86_64|x86-64|x64|all' ;;
-armv7l|armhf)  arch_regex='armv7|armhf|armv7l|all' ;;
-*)             arch_regex="$arch|all";;
-esac
 info "Searching for '$query' across GitHub Releases and Repositories..."
 
 local -a global_targets=() global_types=() global_labels=()
@@ -1106,7 +1098,7 @@ raw_count="$(jq -r '.items | length // 0' <<< "$raw_results" 2>/dev/null || prin
 if [[ "$raw_count" =~ ^[0-9]+$ ]] && ((raw_count > 0 )); then
 printf '\n\033[1;32m[ GitHub Upstream Releases ]\033[0m\n%s\n' '--------------------------------------------------------------------------------'
 local full_name stars desc
-while IFS=$'\t' read -r full_namestars desc; do
+while IFS=$'\t' read -r full_name stars desc; do
 [[ -n "$full_name" ]] || continue
 printf '[%d]\033[1m%-35s\033[0m (★ %s)\n      %s\n' "$display_idx" "$full_name" "$stars" "${desc:-No description}"
 global_targets+=("$full_name")
@@ -1123,7 +1115,7 @@ repo_matches="$(repo_search_entries "$query" 2>/dev/null || true)"
 if [[ -n "$repo_matches" ]] ;then
 printf '\n\033[1;36m[ Static Repositories ]\033[0m\n%s\n' '--------------------------------------------------------------------------------'
 local r_id r_name r_ver r_url
-while IFS=$'\t' read -r r_idr_name r_ver r_url; do
+while IFS=$'\t' read -r r_id r_name r_ver r_url; do
 [[ -n "$r_id" ]] || continue
 printf '[%d] \033[1m%-25s\033[0m (v%s) [%s]\n' "$display_idx" "$r_name" "$r_ver" "$r_id"
 global_targets+=("$r_url")
