@@ -52,7 +52,6 @@ bundle_elf_libraries() {
     if ! loader="$(find_host_loader 2>/dev/null)" || [[ -z "$loader" || ! -x "$loader" ]]; then
         warn "Dynamic host linker not detected; skipping DT_NEEDED bundling."
         return 0
-    }
 
     log "Bundling dependencies via host linker ($loader)..."
     local added=1 iterations=0 max_iterations=10
