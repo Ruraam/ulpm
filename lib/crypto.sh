@@ -86,8 +86,7 @@ printf '%s\n' "$hash"
 }
 
 ensure_default_keypair() {
-local key_dir
-key_dir="$(_crypto_keys_dir)"
+local key_dir="$(_crypto_keys_dir)"
 local default_priv="$key_dir/default.priv"
 local default_pub="$key_dir/default.pub"
 local tmp_priv="" tmp_pub=""
@@ -132,8 +131,7 @@ local key_name="${1:-default}"
 _crypto_valid_key_name "$key_name" || { error "Invalid key name: use 1-64 alphanumeric chars, dots, underscores or hyphens."; return 1; }
 ensure_crypto_prerequisites || return 1
 
-local key_dir
-key_dir="$(_crypto_keys_dir)"
+local key_dir="$(_crypto_keys_dir)"
 local priv_path="$key_dir/${key_name}.priv"
 local pub_path="$key_dir/${key_name}.pub"
 local tmp_priv="" tmp_pub=""
@@ -200,7 +198,7 @@ if [[ -z "$priv_key" ]] ; then priv_key="$(ensure_default_keypair)" || return 1;
 ensure_crypto_prerequisites || return 1
 _crypto_is_ed25519_key "$priv_key" private || { error "Invalid or non-Ed25519 privatekey: $priv_key"; return 1; }
 
-local base parent tmp_dir work der_full_tmp size mode
+local base parent tmp_dir work sig_tmp pub_raw_tmp der_full_tmp size mode
 base="$(basename -- "$lpk_file")"
 parent="$(dirname -- "$lpk_file")"
 tmp_dir="$(mktemp -d "$parent/.ulpm-sign.XXXXXX")" || return 1
@@ -369,8 +367,7 @@ fi
 #Check key against trusted store
 local trusted_dir trusted is_trusted=0 trusted_raw_tmp="$tmp_dir/trusted_raw.bin"
 trusted_dir="$(_crypto_trusted_dir)"
-local keys_dir
-keys_dir="$(_crypto_keys_dir)"
+local keys_dir="$(_crypto_keys_dir)"
 shopt -s nullglob
 local trusted_keys=("$trusted_dir"/*.pub "$keys_dir"/*.pub)
 shopt -u nullglob

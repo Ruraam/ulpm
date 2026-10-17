@@ -36,7 +36,7 @@ die()   { error "$*"; exit 1; }
 sync_file() {
 local target="${1:-}"
 [[ -n "$target" && -f "$target" ]] || return 0
-if command -v python3 >/dev/null 2>&1; then
+if command -vpython3 >/dev/null 2>&1; then
 python3 -c "import os, sys; f = os.open(sys.argv[1], os.O_RDONLY); os.fsync(f); os.close(f)" "$target" 2>/dev/null && return 0
 fi
 if command -v sync >/dev/null 2>&1; then
@@ -70,7 +70,7 @@ return 1
 fi
 
 sync_file "$tmp_file"
-if ! mv -f -- "$tmp_file" "$dest"; then
+if ! mv -f-- "$tmp_file" "$dest"; then
 rm -f -- "$tmp_file"
 return 1
 fi
@@ -432,6 +432,7 @@ return 1
 fi
 }
 
+ULPM_LOCK_FD=200
 ULPM_LOCK_HELD=0
 
 acquire_lock() {
@@ -528,7 +529,7 @@ esac
 is_arch_compatible() {
 local package_arch="${1:-all}" host_arch
 package_arch="$(normalize_arch_name "$package_arch")"
-host_arch="$(normalize_arch_name "$(detect_arch)")"
+host_arch="$(normalize_arch_name"$(detect_arch)")"
 [[ "$package_arch" == all || "$package_arch" == "$host_arch" ]]
 }
 
@@ -691,7 +692,7 @@ rm -f -- "$tmp_file"
 return 1
 }
 sync_file "$tmp_file"
-if ! chmod 600 -- "$tmp_file" || ! mv -f -- "$tmp_file" "$ULPM_CONFIG_FILE"; then
+if ! chmod 600 -- "$tmp_file" || ! mv -f-- "$tmp_file" "$ULPM_CONFIG_FILE"; then
 rm -f -- "$tmp_file"
 error 'Could not update config file.'
 return 1
@@ -729,9 +730,6 @@ fi
 local auth_header=()
 if token="$(get_github_token)"; then
 auth_header=(-H"Authorization: Bearer $token")
-fi
-if [[ -n "${token:-}" ]]; then
-auth_header=(-H "Authorization: Bearer $token")
 fi
 tmp_file="$(mktemp "$cache_api_dir/.response.XXXXXX")" || return 1
 http_code="$(curl -sS --connect-timeout 10 --max-time 25 --retry 2 \
@@ -775,7 +773,7 @@ printf '%-34s : %s (%s)\n' 'Host Architecture & Kernel' "$arch" "$kver"
 # 1. Bubblewrap engine
 if command -v bwrap >/dev/null 2>&1 && bwrap --ro-bind / / true > /dev/null 2>&1; then
 printf '%-34s : %b (Unprivileged namespaces)\n' 'Bubblewrap Sandbox Engine' "$ok"
-elif [[ ${EUID:-1} -eq 0 ]] && command -v bwrap >/dev/null 2>&1 && bwrap --dev-bind / / true > /dev/null 2>&1; then
+elif [[ ${EUID:-1} -eq 0 ]] &&command -v bwrap >/dev/null 2>&1 && bwrap --dev-bind / / true>/dev/null 2>&1; then
 printf '%-34s : %b (Privileged/root mode)\n' 'Bubblewrap Sandbox Engine' "$warn_tag"
 elif is_proot; then
 printf '%-34s : %b (PRoot environment: sandbox fallback active)\n' 'Bubblewrap Sandbox Engine' "$warn_tag"
@@ -916,9 +914,6 @@ local auth_header=() token
 if token="$(get_github_token)"; then
 auth_header=(-H "Authorization:Bearer $token")
 fi
-if [[ -n "${token:-}" ]]; then
-auth_header=(-H "Authorization: Bearer $token")
-fi
 log "Downloading engine payload ($latest_tag)..."
 if ! curl -fLsS --connect-timeout 10 --max-time 180 --retry 2 "${auth_header[@]}" "$tarball_url" -o "$tmp_dir/update.tar.gz"; then
 error 'Download failed.'
@@ -977,7 +972,7 @@ rm -rf -- "$tmp_dir"
 return 1
 fi
 log 'Applying update payload...'
-if ! cp -a -- "$update_lib_dir/." "$ULPM_LIB_DIR/" || ! install -m 755 -- "$tmp_dir/extracted/bin/ulpm" "$bin_path"; then
+if ! cp -a -- "$update_lib_dir/." "$ULPM_LIB_DIR/" || ! install -m 755-- "$tmp_dir/extracted/bin/ulpm" "$bin_path"; then
 error 'Updatefailed; restoring previous ULPM files.'
 rm -rf -- "$ULPM_LIB_DIR"
 cp -a -- "$backup_dir/lib" "$ULPM_LIB_DIR" 2>/dev/null || error "WARNING: library rollback failed; backup remains at $backup_dir/lib"

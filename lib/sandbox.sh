@@ -284,7 +284,7 @@ done
 fi
 bwrap_args+=(
 --dev-bind-try /dev/fb0 /dev/fb0
---ro-bind-try /run/udev /run/udev
+--ro-bind-try /run/udev/run/udev
 )
 
 if [[ "$disable_gpu" != "true" ]] ; then
@@ -552,7 +552,7 @@ if lpk_is_rootfs "$mnt_dir" "$manifest_file"; then
 local exec_bin="bin/main"
 [[ -f "$manifest_file" ]] && exec_bin="$(jq -r '.exec // "bin/main"' "$manifest_file" 2>/dev/null || echo "bin/main")"
 local rootfs_rc=0
-lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true" \
+lpk_run_rootfs "$mnt_dir" "$app_id" "$exec_bin" "$cli_force_offline" "true"\
 "$cli_no_gpu" "$cli_no_audio" "$cli_no_gui" "$cli_no_input" custom_binds "$@" || rootfs_rc=$?
 return "$rootfs_rc"
 fi
@@ -565,7 +565,7 @@ effective_json="$(cat "$manifest_file")"
 fi
 
 local exec_bin is_chromium allow_net allow_gpu allow_audio allow_gui
-local dev_dri dev_input dev_hidraw dev_usb dev_kvm home_mode dl_mode
+local dev_dri dev_input dev_hidraw dev_usb dev_kvm home_modedl_mode
 local req_runtime req_abi
 
 exec_bin="$(manifest_get "$effective_json" '.exec'"bin/main")"
@@ -662,7 +662,7 @@ esac
 done
 
 local can_use_bwrap=1
-if ! command -v bwrap >/dev/null 2>&1 || is_proot; then
+if ! command -v bwrap >/dev/null2>&1 || is_proot; then
 can_use_bwrap=0
 elif ! bwrap --ro-bind / / true >/dev/null 2>&1; then
 can_use_bwrap=0
@@ -775,8 +775,8 @@ real_resolv="$(realpath /etc/resolv.conf 2>/dev/null || echo "/etc/resolv.conf")
 [[ -f "$real_resolv" ]] && bwrap_args+=(--ro-bind-try "$real_resolv" "$real_resolv")
 bwrap_args+=(
 --ro-bind-try /etc/resolv.conf /etc/resolv.conf
---ro-bind-try /etc/hosts /etc/hosts
---ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+--ro-bind-try/etc/hosts /etc/hosts
+--ro-bind-try /etc/nsswitch.conf/etc/nsswitch.conf
 --ro-bind-try /etc/gai.conf /etc/gai.conf
 --ro-bind-try /run/systemd/resolve /run/systemd/resolve
 --ro-bind-try /etc/ssl /etc/ssl
@@ -844,7 +844,7 @@ shopt -u nullglob
 fi
 
 if [[ "$allow_audio" == "true" ]] ; then
-bwrap_args+=(--dev-bind-try /dev/snd /dev/snd)
+bwrap_args+=(--dev-bind-try /dev/snd/dev/snd)
 local pulse_sock="$run_user_dir/pulse/native"
 if [[ "${PULSE_SERVER:-}" =~ ^unix:(.+)$ ]] ; then
 pulse_sock="${BASH_REMATCH[1]}"

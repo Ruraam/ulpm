@@ -84,7 +84,7 @@ local arg bind_value
 local -a sandbox_opts=()
 local -a app_args=()
 
-while (($#)); do
+while(($#)); do
 arg="$1"
 
 if (( explicit_app_args )); then

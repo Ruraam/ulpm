@@ -23,7 +23,7 @@ root="$(_repo_cache_root)"
 raw_arch="$(detect_arch)"
 host_arch="$(normalize_arch_name "$raw_arch")"
 
-shopt -s nullglob
+shopt-s nullglob
 local indexes=("$root"/*/index.json)
 shopt -u nullglob
 
@@ -41,7 +41,7 @@ fi
 
 for f in "${indexes[@]}"; do
 repo="$(basename "$(dirname "$f")")"
-[[ -n "$preferred" && "$repo" != "$preferred" ]] && continue
+[[ -n "$preferred" &&"$repo" != "$preferred" ]] && continue
 cfg="$(_repo_config "$repo")"
 key="$(_repo_key "$repo")"
 [[ -f "$cfg" && -f "$key" && "$(jq -r '.enabled // true' "$cfg" 2>/dev/null)" == true ]] || continue
@@ -151,12 +151,13 @@ sync_file "$db"
 fi
 
 if [[ -d "$history" && -f "$snap/history.before" ]] ; then
+local f base
 local tmp_hist_list
 tmp_hist_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/hist_rb.XXXXXX")" || failed=1
 if [[ -f "$tmp_hist_list" ]] ; then
 find "$history" -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null > "$tmp_hist_list"
 while IFS= read -r -d '' f; do
-base="$(basename -- "$f")"
+base="$(basename --"$f")"
 grep -Fqx -- "$base" "$snap/history.before" 2>/dev/null || rm -f -- "$f" || failed=1
 done < "$tmp_hist_list"
 rm -f -- "$tmp_hist_list"
@@ -274,8 +275,7 @@ fi
 
 acquire_lock 10 || return 1
 local work_root="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/transactions"
-local wal_dir
-wal_dir="$(_txn_wal_dir)"
+local wal_dir="$(_txn_wal_dir)"
 mkdir -p -- "$work_root" "$wal_dir" || { release_lock; return 1; }
 
 local work wal_file txn_uuid
@@ -328,8 +328,6 @@ for hf in "$history"/*; do
 done > "$work/snap/history.before"
 shopt -u nullglob
 
-# The dependency resolver accesses plan, visiting, and done_ids by name via namerefs.
-# shellcheck disable=SC2034
 local -a plan=() visiting=() done_ids=() TXN_IDS=() TXN_NAMES=() TXN_EXISTED=() PKG_FILES=() PKG_REPOS=() PKG_VERSIONS=()
 local root id selected repo row name version file hash base pkg got manifest_id manifest_version existing_name installed_version remote_version i
 
@@ -509,10 +507,10 @@ done
 # Durable WAL Manifest initialization
 local wal_meta='{"items":[]}'
 for ((i=0; i<${#TXN_IDS[@]}; i++)); do
-wal_meta="$(jq --arg id "${TXN_IDS[$i]}" --arg name "${TXN_NAMES[$i]}" --argjson ex "${TXN_EXISTED[$i]}" \
+wal_meta="$(jq --arg id"${TXN_IDS[$i]}" --arg name "${TXN_NAMES[$i]}" --argjson ex "${TXN_EXISTED[$i]}" \
 '.items += [{id:$id, name:$name, existed:$ex}]' <<< "$wal_meta")"
 done
-durable_write "$work/snap/meta.json" "$wal_meta" 600 || { rm -rf -- "$work"; release_lock; return 1; }
+durable_write "$work/snap/meta.json" "$wal_meta"600 || { rm -rf -- "$work"; release_lock; return 1; }
 durable_write "$wal_file" "$work/snap" 600 || { rm -rf -- "$work"; release_lock; return 1; }
 
 local txn_committed=0
@@ -522,7 +520,7 @@ _txn_handler() {
 local sig="$1"
 trap - INT TERM HUP EXIT
 if (( txn_committed == 0 )); then
-error "Transaction interrupted by $sig; executing atomicLIFO rollback..."
+error "Transaction interrupted by $sig; executing atomic LIFO rollback..."
 if _txn_rollback "$work/snap" "$apps_dir" "$db" "$history" "$data_home"; then
 rm -rf -- "$work" "$wal_file"
 sync_dir "$wal_dir"

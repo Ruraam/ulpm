@@ -128,7 +128,7 @@ if [[ -f "$(dirname "$f")/base-url" ]] ; then
 base_url="$(head -n 1 "$(dirname "$f")/base-url" | tr -d '\r\n')"
 fi
 
-jq -r --arg q "$query" --arg repo "$repo_name_check" --arg base "$base_url" '
+jq -r --argq "$query" --arg repo "$repo_name_check" --arg base "$base_url" '
 .packages[]
 | select(((.id + " " + .name + " " + (.description // ""))
 | ascii_downcase | contains($q | ascii_downcase)))
@@ -149,7 +149,7 @@ shopt -u nullglob
 if (( ${#configs[@]} == 0 )); then info 'No repositories configured.'; return 0; fi
 printf '%-18s %-8s%s\n' NAME STATUS URL
 for f in "${configs[@]}"; do
-name="$(basename -- "$f" .json)"
+name="$(basename-- "$f" .json)"
 url="$(jq -r '.url // "?"' "$f" 2>/dev/null || printf '?')"
 enabled="$(jq -r '.enabled // true' "$f" 2>/dev/null || printf false)"
 printf '%-18s %-8s %s\n' "$name" "$([[ "$enabled" == true ]] && printf enabled || printf disabled)" "$url"
@@ -201,7 +201,7 @@ if [[ -z "$fingerprint" ]] ; then
 fingerprint="$(openssl pkey -pubin -in "$(_repo_key "$name")" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
 fi
 
-if ! jq -n --arg name "$name" --arg url "${url%/}" --arg fingerprint "$fingerprint" \
+if ! jq -n --arg name "$name" --arg url "${url%/}"--arg fingerprint "$fingerprint" \
 '{schema:1, name:$name, url:$url, key_fingerprint_sha256:$fingerprint, enabled:true}' > "$dest.tmp"
 then
 rm -f -- "$dest.tmp" "$(_repo_key "$name")"
@@ -261,7 +261,7 @@ local requested="${1:-}" root f name count failures=0
 root="$(_repo_cache_root)"; mkdir -p -- "$root"
 shopt -s nullglob
 local indexes=("$root"/*/index.json)
-shopt -u nullglob
+shopt-u nullglob
 for f in "${indexes[@]}"; do
 name="$(basename "$(dirname "$f")")"
 [[ -z "$requested" || "$requested" == "$name" ]] || continue
@@ -310,33 +310,29 @@ else
 fetch_ok=0
 fi
 else
-_repo_fetch "$base/index.json" "$index_tmp" || fetch_ok=0
+_repo_fetch "$base/index.json" "$index_tmp" ||fetch_ok=0
 _repo_fetch "$base/index.json.sig" "$sig_tmp" || fetch_ok=0
 fi
 if (( fetch_ok == 0 )) || ! _repo_verify_index "$name" "$index_tmp" "$sig_tmp" "$(_repo_key "$name")"; then
 error "Could not update repository '$name'; keeping previous cached index."
-rm -f -- "$index_tmp" "$sig_tmp"
+rm -f --"$index_tmp" "$sig_tmp"
 failures=$((failures + 1))
 continue
 fi
 sync_file "$index_tmp"
 sync_file "$sig_tmp"
 mv -f -- "$index_tmp" "$cache/index.json" && \
-mv -f -- "$sig_tmp" "$cache/index.json.sig" || {
+mv -f --"$sig_tmp" "$cache/index.json.sig" || {
 rm -f -- "$index_tmp" "$sig_tmp"
 failures=$((failures + 1))
 continue
 }
-durable_write "$cache/base-url" "$base" 644 || {
-error "Could not save the base URL for repository '$name'."
-failures=$((failures + 1))
-continue
-}
+durable_write "$cache/base-url" "$base" 644
 info "Updated '$name': $(jq '.packages | length' "$cache/index.json") packages."
 updated=$((updated + 1))
 done
 (( failures == 0 )) || {
-error "$failures repository update(s) failed; $updated succeeded."
+error "$failuresrepository update(s) failed; $updated succeeded."
 return 1
 }
 ;;
@@ -363,7 +359,7 @@ search_matches="$(jq -r --arg q "$query" --arg repo "$repo_name_check" '
 |[.id, .name, .version, .arch, .file, $repo] | @tsv
 ' "$f" 2>/dev/null || true)"
 if [[ -n "$search_matches" ]] ; then
-while IFS=$'\t' read -r id name version arch file repo_name; do
+while IFS=$'\t' read -r id name versionarch file repo_name; do
 printf '%-32s %-22s %-12s %-8s[%s]\n' "$id" "$name" "$version" "$arch" "$repo_name"
 found=1
 done <<< "$search_matches"
@@ -393,9 +389,9 @@ error 'Index signing key must be an Ed25519 private key.'
 return 1
 }
 check_dependencies jq unsquashfs openssl sha256sum || return 1
-local out="$dir/index.json" tmp sig_tmp
+local out="$dir/index.json" tmp sigtmp
 tmp="$(mktemp "$dir/.index.XXXXXX")" || return 1
-sig_tmp="$(mktemp "$dir/.index.sig.XXXXXX")" || { rm -f -- "$tmp"; return 1; }
+sigtmp="$(mktemp "$dir/.index.sig.XXXXXX")" || { rm -f -- "$tmp"; return 1; }
 
 _cleanup_repo_index() {
 rm -f -- "$tmp" "$sig_tmp"
@@ -405,7 +401,7 @@ local packages='[]' pkg manifest id name version arch file hash desc deps \
 runtime runtime_abi abi
 shopt -s nullglob
 local lpk_files=("$dir"/*.lpk)
-shopt -u nullglob
+shopt-u nullglob
 for pkg in "${lpk_files[@]}"; do
 [[ -f "$pkg" ]] || continue
 manifest="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null)" || manifest=''
@@ -509,7 +505,7 @@ while IFS= read -r line || [[ -n "$line" ]] ; do
 [[ -n "$line" ]] && installed_entries+=("$line")
 done < "$db"
 
-local id name version _timestamp origin f repo cfg key row candidate_version best_version
+local id name version timestamp origin f repo cfg key row candidate_version best_version
 local -a repo_targets=()
 local raw_arch host_arch
 raw_arch="$(detect_arch)"
@@ -517,7 +513,7 @@ host_arch="$(normalize_arch_name "$raw_arch")"
 local updated_standalone=0
 
 for line in "${installed_entries[@]}"; do
-IFS='|' read -r id name version _timestamp origin <<< "$line"
+IFS='|' read -r id name version timestamp origin <<< "$line"
 [[ -n "$id" ]] || continue
 
 if [[ "$origin" =~ ^https?:// ]] ; then
