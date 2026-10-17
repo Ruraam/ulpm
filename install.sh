@@ -234,9 +234,9 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
 
         echo
         echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine (v5.3)${NC}"
-        echo "  1) Rootless installation (User: ~/.local/bin)"
-        echo "  2) System-wide installation (Root: /usr/local/bin)"
         if [ "$HAS_APT" = true ]; then
+            echo "  1) Rootless installation (User: ~/.local/bin)"
+            echo "  2) System-wide installation (Root: /usr/local/bin)"
             echo "  3) Official signed APT repository (Debian/Ubuntu system-wide)"
             echo "  4) Clean uninstallation"
             echo "  5) Exit"
@@ -455,32 +455,35 @@ fi
 
 PM=""
 for pm in apt-get pacman dnf zypper apk xbps-install; do
-    if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
+    if command -v "$pm" >/dev/null 2>&1; then
+        PM="$pm"
+        break
+    fi
 done
 
 pkg_for() {
     local cmd="$1"
     case "$cmd" in
-        flock)          echo "util-linux" ;;
-        squashfuse)     echo "squashfuse" ;;
+        flock)              echo "util-linux" ;;
+        squashfuse)         echo "squashfuse" ;;
         mksquashfs|unsquashfs)
             case "$PM" in
                 zypper) echo "squashfs" ;;
-                *) echo "squashfs-tools" ;;
+                *)      echo "squashfs-tools" ;;
             esac
             ;;
-        bwrap)          echo "bubblewrap" ;;
-        fuse3)          echo "fuse3" ;;
-        xdg-dbus-proxy) echo "xdg-dbus-proxy" ;;
-        cmp)            echo "diffutils" ;;
-        readelf)        echo "binutils" ;;
-        dpkg-deb)       echo "dpkg" ;;
+        bwrap)              echo "bubblewrap" ;;
+        fuse3)              echo "fuse3" ;;
+        xdg-dbus-proxy)     echo "xdg-dbus-proxy" ;;
+        cmp)                echo "diffutils" ;;
+        readelf)            echo "binutils" ;;
+        dpkg-deb)           echo "dpkg" ;;
         od|truncate|tail|head|dd|realpath|mktemp|sync) echo "coreutils" ;;
-        find)           echo "findutils" ;;
-        awk)            echo "gawk" ;;
-        tar)            echo "tar" ;;
-        sha256sum)      echo "coreutils" ;;
-        *)              echo "$cmd" ;;
+        find)               echo "findutils" ;;
+        awk)                echo "gawk" ;;
+        tar)                echo "tar" ;;
+        sha256sum)          echo "coreutils" ;;
+        *)                  echo "$cmd" ;;
     esac
 }
 
@@ -948,13 +951,13 @@ setup_desktop_integration() {
     cat <<'EOF' > "$mime_file"
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
-<mime-type type="application/x-lpk">
-<comment>ULPM Package Bundle</comment>
-<comment xml:lang="fr">Paquet d'application ULPM</comment>
-<icon name="package-x-generic"/>
-<glob pattern="*.lpk"/>
-<glob pattern="*.LPK"/>
-</mime-type>
+    <mime-type type="application/x-lpk">
+        <comment>ULPM Package Bundle</comment>
+        <comment xml:lang="fr">Paquet d'application ULPM</comment>
+        <icon name="package-x-generic"/>
+        <glob pattern="*.lpk"/>
+        <glob pattern="*.LPK"/>
+    </mime-type>
 </mime-info>
 EOF
 
@@ -1036,4 +1039,120 @@ if [ "$INTEGRATE" = "auto" ]; then
     if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
         setup_desktop_integration
     else
-        info "Desktop integration skipped. You can enable
+        info "Desktop integration skipped. You can enable it anytime via: ulpm integrate"
+    fi
+elif [ "$INTEGRATE" = true ]; then
+    setup_desktop_integration
+fi
+
+# ------------------------------------------------------------
+# Crypto Key Provisioning & State Setup (Ed25519 - ULPM v5 Standard)
+# ------------------------------------------------------------
+
+provision_default_keys() {
+    local target_user_home="$HOME"
+    local run_as_user=""
+
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        local detected_home
+        detected_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+        if [ -n "$detected_home" ] && [ -d "$detected_home" ]; then
+            target_user_home="$detected_home"
+            run_as_user="$SUDO_USER"
+        fi
+    fi
+
+    local config_dir="${target_user_home}/.config/ulpm"
+    local state_dir="${target_user_home}/.local/state/ulpm"
+    local keys_dir="$config_dir/keys"
+    local trusted_dir="$config_dir/trusted_keys"
+    local overrides_dir="$config_dir/overrides"
+    local wal_dir="$state_dir/wal"
+    local priv_key="$keys_dir/default.priv"
+    local pub_key="$keys_dir/default.pub"
+    local trusted_pub="$trusted_dir/default.pub"
+
+    info "Initializing ULPM v5.3 storage structures, WAL state & Ed25519 authority..."
+
+    if [ -n "$run_as_user" ] && [ "$(id -u)" -eq 0 ]; then
+        su - "$run_as_user" -s /bin/bash -c '
+overrides_dir="$1"
+wal_dir="$2"
+keys_dir="$3"
+trusted_dir="$4"
+priv_key="$5"
+pub_key="$6"
+trusted_pub="$7"
+
+mkdir -p "$overrides_dir" "$wal_dir"
+( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
+if command -v openssl >/dev/null 2>&1; then
+    if [ ! -f "$priv_key" ]; then
+        ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) || true
+    fi
+    if [ -f "$priv_key" ]; then
+        chmod 600 "$priv_key" 2>/dev/null || true
+        openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null || true
+        chmod 644 "$pub_key" 2>/dev/null || true
+        cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
+    fi
+fi
+' _ "$overrides_dir" "$wal_dir" "$keys_dir" "$trusted_dir" "$priv_key" "$pub_key" "$trusted_pub" 2>/dev/null || {
+            mkdir -p "$overrides_dir" "$wal_dir"
+            (umask 077 && mkdir -p "$keys_dir" "$trusted_dir")
+            if command -v openssl >/dev/null 2>&1; then
+                if [ ! -f "$priv_key" ]; then
+                    ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
+                        || warn "Failed to generate Ed25519 private key ($priv_key)."
+                fi
+                chmod 600 "$priv_key" 2>/dev/null || true
+                if [ -f "$priv_key" ]; then
+                    openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
+                        || warn "Failed to derive public key ($pub_key)."
+                    chmod 644 "$pub_key" 2>/dev/null || true
+                    cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
+                fi
+            fi
+            chown -R "$run_as_user":"$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
+        }
+    else
+        mkdir -p "$overrides_dir" "$wal_dir"
+        ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
+        if command -v openssl >/dev/null 2>&1; then
+            if [ ! -f "$priv_key" ]; then
+                ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
+                    || warn "Failed to generate Ed25519 private key ($priv_key)."
+            fi
+            chmod 600 "$priv_key" 2>/dev/null || true
+            if [ -f "$priv_key" ]; then
+                openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
+                    || warn "Failed to derive public key ($pub_key)."
+                chmod 644 "$pub_key" 2>/dev/null || true
+                cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
+provision_default_keys
+
+# ------------------------------------------------------------
+# Final Summary
+# ------------------------------------------------------------
+
+echo
+echo -e "${GREEN}✔ ULPM engine v5.3 successfully installed!${NC}"
+echo -e "  Binary:    ${BOLD}$BIN_DIR/ulpm${NC}"
+echo -e "  Libraries: ${GRAY}$LIB_DIR${NC}"
+
+if [ -n "$RELOAD_HINT" ]; then
+    echo
+    warn "$RELOAD_HINT"
+    case "$USER_SHELL_NAME" in
+        fish)  echo -e "  >> Run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
+        zsh)   echo -e "  >> Run: ${BOLD}source ~/.zshrc${NC} (or restart terminal)" ;;
+        *)     echo -e "  >> Run: ${BOLD}source ~/.bashrc${NC} (or restart terminal)" ;;
+    esac
+fi
+
+echo -e "\nGet started with: ${BOLD}ulpm help${NC}"
