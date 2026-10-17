@@ -140,8 +140,8 @@ _txn_rollback() {
     if [[ -f "$snap/installed.db" ]]; then
         mkdir -p -- "$(dirname -- "$db")" 2>/dev/null || true
         cp -a -- "$snap/installed.db" "$db.restore.$$" && \
-            sync_file "$db.restore.$$" && \
-            mv -f -- "$db.restore.$$" "$db" || failed=1
+        sync_file "$db.restore.$$" && \
+        mv -f -- "$db.restore.$$" "$db" || failed=1
         sync_dir "$(dirname -- "$db")"
     fi
 
@@ -470,7 +470,7 @@ cmd_transaction() {
             TXN_EXISTED+=(1)
         else
             TXN_EXISTED+=(0)
-        }
+        fi
         [[ ! -L "$data_home/icons/hicolor/256x256/apps/$id.png" ]] || {
             rm -rf -- "$work"
             release_lock
