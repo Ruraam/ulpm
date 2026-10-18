@@ -81,14 +81,15 @@ cmd_add() {
 
     mkdir -p "$PACKAGES_DIR"
 
+    local dest is_signed
     for pkg in "$@"; do
         [[ -f "$pkg" ]] || { warn "File not found: $pkg"; continue; }
 
-        local dest="$PACKAGES_DIR/$(basename "$pkg")"
+        dest="$PACKAGES_DIR/$(basename "$pkg")"
         cp -f -- "$pkg" "$dest"
         info "Copied: $(basename "$pkg")"
 
-        local is_signed=0
+        is_signed=0
         if ulpm inspect "$dest" 2>/dev/null | grep -qi "verified"; then
             is_signed=1
         elif ulpm verify "$dest" 2>/dev/null; then
