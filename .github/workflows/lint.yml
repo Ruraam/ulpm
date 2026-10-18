@@ -2,7 +2,8 @@ name: Lint
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -12,15 +13,8 @@ jobs:
   static-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Syntax (bash -n)
-        run: make syntax
-
-      - name: Whitespace-damage guard
-        run: make whitespace
-
-      - name: ShellCheck (warnings and above)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -x -S warning bin/ulpm install.sh lib/*.sh
+      - name: Run static checks (syntax, whitespace, shellcheck)
+        run: make check
