@@ -18,6 +18,8 @@
 >[!NOTE]
 > ### 🚀 Release Status: v6.0.0 Enterprise Architecture Engine
 >
+> You can test .lpk packages via [Github Releases](https://github.com/Ruraam/ulpm/releases/tag/v6.0.0).
+> 
 > **ULPM Engine v6.0.0** introduces a hardened multi-package transactional engine and dynamic dependency orchestration over the autonomous **`.lpk` Format v5** specification.
 >
 > * **Atomic Multi-Package Transactions & Crash-Resistant WAL:** All installation phases (dependency solving, downloads, SHA-256 and Ed25519 cryptographic checks) are pre-validated before any disk mutation. A persistent Write-Ahead Log (`~/.local/state/ulpm/wal/`) guarantees safe LIFO rollback and full crash recovery even across unexpected reboots or `SIGKILL`.
