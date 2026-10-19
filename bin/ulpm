@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# ULPM - Universal Linux Package Manager (v5.3 Architecture Engine)
+# ULPM - Universal Linux Package Manager (v6.0 Architecture Engine)
 # Main CLI entry point | rootless by default | no resident daemon
 # ============================================================================
 set -Eeuo pipefail
 
-export ULPM_VERSION="5.3.0"
+export ULPM_VERSION="6.0.0"
 export ULPM_FORMAT_VERSION="5"
 
 if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
@@ -102,8 +102,8 @@ export ULPM_RUNTIMES_DIR="$ULPM_DATA_HOME/runtimes"
 export ULPM_KEYS_DIR="$ULPM_CONFIG_HOME/keys"
 export ULPM_OVERRIDES_DIR="$ULPM_CONFIG_HOME/overrides"
 export ULPM_DB="$ULPM_DATA_HOME/installed.db"
-export ULPM_LOCK="$ULPM_DATA_HOME/installed.db.lock"
 export ULPM_LOCK_FILE="$ULPM_DATA_HOME/installed.db.lock"
+export ULPM_LOCK="$ULPM_LOCK_FILE"
 
 # Atomic directory creation with strict privacy on keychains and WAL.
 mkdir -p -- "$ULPM_DATA_HOME" "$ULPM_CONFIG_HOME" "$ULPM_CACHE_HOME" "$ULPM_STATE_HOME/wal" \
@@ -147,66 +147,69 @@ unset -f _auto_integrate
 
 show_help() {
     cat <<'EOF_HELP'
-ULPM - Universal Linux Package Manager (v5.3.0)
+ULPM - Universal Linux Package Manager (v6.0.0)
 
 Usage: ulpm <command> [options] [arguments]
 
+Application & Package Management:
+  install, -i [flags] <target>                 Install application from repo, URL or local .lpk
+      --repo <name>                            Filter search to a specific repository
+      --reinstall                              Force reinstallation if already present
+      --dry-run                                Simulate installation without applying changes
+  remove, -r [--purge] <app_name>              Uninstall an application (--purge removes sandbox data)
+  upgrade, -u [app-id]                         Upgrade tracked applications and repository packages
+  update, refresh [repo]                       Update package indexes from configured repositories
+  search, -s <query>                           Search across GitHub releases and configured repos
+  list, -l                                     List installed applications and package sizes
+  info <app-id|name>                           Show detailed package manifest metadata
+  inspect <package.lpk>                        Inspect package manifest, trailer and signature
+
 Execution & Sandbox:
-  run [flags] <target> [-- args...]            Run an application in a Bubblewrap sandbox
-  stream <url|repo> [flags] [-- args...]       Run ephemerally, using volatile RAM storage
-
-Sandbox Profiles & Overrides:
+  run [flags] <target> [-- args...]            Run an application in a hardened Bubblewrap sandbox
+  stream <url|repo> [flags] [-- args...]       Execute application ephemerally directly in RAM
   override <app> [options]                     Configure persistent permission overrides
-  permissions <app> [reset]                    Show or reset effective application permissions
-  runtime <list|install> [runtime.lpk]         Manage shared runtimes (4-axis matrix: ID/Ver/Arch/ABI)
+  permissions <app> [reset]                    Show or reset effective sandbox permissions
+  runtime <list|install> [runtime.lpk]         Manage shared runtime layers (ID/Ver/Arch/ABI)
 
-Packaging (Deterministic & Sealed):
-  pack [flags] <src> [name] [out.lpk] [ver]    Create a sealed LPK bundle (v5 schema, 104B signature)
-      --no-scan, --fast                        Bypass ELF dynamic dependency bundling
-      --shared                                 Mark bundle as shared runtime
-      --runtime <id>                           Specify shared runtime base requirement
-      --dependency <id[ >=ver]>                Declare runtime package dependencies
-  deb-pack <pkg|file.deb> [name]               Convert and bundle a Debian package into an LPK
-
-Application Management:
-  install, -i <source> [name]                  Install an application atomically
-  upgrade, -u [app-id]                         Upgrade tracked applications
-  remove, -r [--purge] <app_name>              Uninstall an application
-  list, -l                                     List installed applications
-  search, -s <query>                           Search available applications across GitHub & repos
-  repo <list|add|remove|enable|disable|update|verify|search|install|index>
+Packaging & Distribution:
+  pack [flags] <src> [name] [out.lpk] [ver]    Create a sealed LPK bundle (v5 format, 104B trailer)
+  deb-pack <pkg|file.deb> [name]               Convert Debian (.deb) or APT package into an LPK
+  repo <list|add|remove|enable|disable|verify|index>
                                                Manage signed repositories and static distribution
-  deps <check|resolve> <app-id|manifest.json>  Check dependencies / resolve topological install plan
-  transaction install <app-id> [app-id ...]    Atomic multi-package installation with persistent WAL
-  history [app-id]                             List locally retained previous versions
-  rollback <app-id>                            Restore the most recent retained version
-  inspect <package.lpk>                        Inspect package manifest and signature trailer
-  info <app-id|name>                           Show details of an installed package
-  clean                                        Clean ULPM cache, build leftovers and dangling sessions
-  integrate                                    Register desktop launchers and MIME associations
+  deps <check|resolve> <app-id|manifest.json>  Validate dependencies / resolve installation plan
+  transaction install <app-id> [app-id ...]    Atomic multi-package installation with WAL rollback
 
-Security and Cryptography (Ed25519):
+Security & Maintenance:
   keygen [name]                                Generate an Ed25519 keypair
   sign <file.lpk> [priv_key]                   Sign an LPK package with a 104-byte trailer
   trust <public_key.pub>                       Register and trust a publisher public key
-  token [PAT]                                  Configure a GitHub personal access token
+  token [PAT]                                  Set a GitHub personal access token for higher API limits
   doctor                                       Diagnose runtime, sandbox, portals, drivers & GPU
-  self-update [repo]                           Update ULPM from a release source
-  completion                                   Print shell completion configuration
+  history [app-id]                             List retained previous version snapshots
+  rollback <app-id>                            Restore previous application version snapshot
+  clean                                        Clean build leftovers and unmount dangling sessions
+  integrate                                    Register desktop launchers and MIME associations
+  self-update [repo]                           Update ULPM from upstream release
 
-Runtime Flags (run/stream/override):
+Runtime Flags (run / stream / override):
   --gaming                                     Apply gaming preset (DRI, Low-latency audio, Input, HID)
-  --strict                                     Apply hardened isolation profile (no network, seccomp BPF)
+  --strict                                     Apply hardened isolation profile (no network, seccomp)
   --offline, --no-net                          Disable network access
   --no-gpu                                     Disable GPU device access (/dev/dri, Vulkan, NVIDIA)
   --no-audio                                   Disable audio server access (PulseAudio/PipeWire)
   --no-gui                                     Disable graphical display access (X11 & Wayland)
   --no-input                                   Disable gamepad & host input devices
-  --bind <host>:<dest>                         Bind a host path into the sandbox
+  --bind <host>:<dest>                         Bind a host directory into the sandbox
 
 Global:
-  -h, --help                                   Show this help
-  -v, --version                                Show version
+  -h, --help                                   Show this help message
+  -v, --version                                Show version information
+
+Environment:
+  ULPM_STRICT_SIGNATURES=false                 Accept untrusted (not unsigned) packages
+  ULPM_ALLOW_UNSIGNED=1                        With strict mode off, accept unsigned packages
+  ULPM_ALLOW_KEY_ROTATION=1                    Acknowledge an expected publisher key rotation
+  ULPM_UNSAFE_NO_SANDBOX=1                     Run without bubblewrap isolation (dangerous)
 EOF_HELP
 }
 
@@ -249,29 +252,25 @@ main() {
         stream)           _dispatch cmd_stream stream "$@" ;;
         override)         _dispatch cmd_override override "$@" ;;
         permissions|perms)
-            _dispatch cmd_permissions permissions "$@" ;;
+                          _dispatch cmd_permissions permissions "$@" ;;
         runtime)          _dispatch cmd_runtime runtime "$@" ;;
         pack)             _dispatch cmd_pack pack "$@" ;;
         deb-pack|deb_pack)
-            _dispatch cmd_deb_pack deb-pack "$@" ;;
+                          _dispatch cmd_deb_pack deb-pack "$@" ;;
         install|-i|add|-a)
-            _dispatch cmd_install install "$@" ;;
+                          _dispatch cmd_install install "$@" ;;
         upgrade|-u)       _dispatch cmd_upgrade upgrade "$@" ;;
+        update|refresh)   _dispatch cmd_repo repo update "$@" ;;
         repo|repository|repositories)
-            _dispatch cmd_repo repo "$@" ;;
+                          _dispatch cmd_repo repo "$@" ;;
         deps|dependencies)
-            _dispatch cmd_deps deps "$@" ;;
+                          _dispatch cmd_deps deps "$@" ;;
         transaction|txn)
-            _dispatch cmd_transaction transaction "$@" ;;
+                          _dispatch cmd_transaction transaction "$@" ;;
         history)          _dispatch cmd_history history "$@" ;;
         rollback)         _dispatch cmd_rollback rollback "$@" ;;
         remove|-r|rm|uninstall)
-            if declare -F cmd_remove >/dev/null 2>&1; then
-                _dispatch cmd_remove remove "$@"
-            else
-                _dispatch cmd_uninstall uninstall "$@"
-            fi
-            ;;
+                          _dispatch cmd_remove remove "$@" ;;
         search|-s)        _dispatch cmd_search search "$@" ;;
         list|-l|ls)       _dispatch cmd_list list "$@" ;;
         inspect)          _dispatch cmd_inspect inspect "$@" ;;
@@ -283,7 +282,7 @@ main() {
         trust)            _dispatch cmd_trust trust "$@" ;;
         token|auth)       _dispatch cmd_token token "$@" ;;
         doctor|check|-d|--doctor)
-            _dispatch cmd_doctor doctor "$@" ;;
+                          _dispatch cmd_doctor doctor "$@" ;;
         self-update)      _dispatch cmd_self_update self-update "$@" ;;
         completion)       _dispatch cmd_completion completion "$@" ;;
         *)
