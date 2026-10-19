@@ -14,7 +14,7 @@ help:
 	@echo "make install    Install to \$$(PREFIX) (default /usr/local); honours DESTDIR"
 	@echo "make uninstall  Remove what 'make install' installed"
 
-check: syntax whitespace lint
+check: syntax whitespace ci
 
 syntax:
 	@for f in $(SCRIPTS); do bash -n "$$f" || exit 1; done; echo "bash -n: OK"
