@@ -10,7 +10,7 @@
 [![Sandbox](https://img.shields.io/badge/Sandbox-Bubblewrap-green.svg)](#security-model)
 [![Crypto](https://img.shields.io/badge/Signatures-Ed25519-purple.svg)](#cryptographic-verification)
 [![Tested Hardware](https://img.shields.io/badge/Validated%20On-Celeron%20N4000%20(%2450%20Box)-red.svg)](#performance-philosophy)
-[![Stream](https://img.shields.io/badge/Apps-Streaming-blue.svg)](LICENSE)
+[![Stream](https://img.shields.io/badge/Apps-Streaming-blue.svg)](#lpk-from-url)
 
 </div>
 
