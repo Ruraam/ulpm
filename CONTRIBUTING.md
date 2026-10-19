@@ -1,35 +1,97 @@
 # Contributing to ULPM
 
-Thanks for helping! ULPM is a Bash project; the guidelines below keep it boring, predictable, and reliable.
+Thanks for helping improve ULPM. This project is a rootless, daemonless package manager written in Bash. Contributions of all sizes are welcome: bug reports, documentation, tests, modules and packaging recipes.
 
-## Setup
+## Code of conduct
+
+Be respectful, assume good faith, stay technical. Harassment or hostile behavior is not tolerated.
+
+## Ways to contribute
+
+- Report bugs with a minimal reproduction
+- Improve documentation in `docs/`
+- Add or extend tests in `tests/run.sh`
+- Package applications and publish example repositories
+- Support another distribution or architecture
+- Review pull requests
+
+## Before opening an issue
+
+1. Run `ulpm doctor` and include the output.
+2. Search existing issues.
+3. Reproduce with the latest `main`.
+4. Include: distribution, kernel, architecture, ULPM version (`ulpm --version`), exact command, expected behavior and actual behavior.
+
+Do not include private keys, tokens, or personal paths you are not comfortable publishing.
+
+## Security issues
+
+Do not open a public issue for vulnerabilities. See [SECURITY.md](SECURITY.md).
+
+## Development setup
+
+Prerequisites:
+
 ```bash
-git clone https://github.com/Ruraam/ulpm && cd ulpm
-make check      # syntax + whitespace guard + shellcheck
-make test       # bats suites in tests/ (requires bats)
+# Debian/Ubuntu
+sudo apt install bash git shellcheck jq openssl curl util-linux bubblewrap \
+  squashfs-tools squashfuse file binutils python3 xdg-dbus-proxy
 ```
 
-## Layout
-| Path | Role |
-|------|------|
-| `bin/ulpm` | CLI entry point, versioning, and top-level command dispatch |
-| `lib/utils.sh` | Logging, locking, path validation, declarative overrides engine, doctor |
-| `lib/crypto.sh` | Ed25519 streaming keys, package signing, verification, trust management |
-| `lib/pack.sh`, `lib/deb.sh` | `.lpk` v5 bundle builder (directories, archives, offset-safe AppImage, `.deb`) |
-| `lib/sandbox.sh`, `lib/run.sh`, `lib/stream.sh` | Bubblewrap sandbox engine (App & RootFS), execution profiles (`--gaming`, `--strict`, `--desktop`), ephemeral RAM streaming |
-| `lib/manage.sh` | Lifecycle (`install`, `remove`, `list`, `search`, `upgrade`, `inspect`), declarative permissions, overrides management, shared runtimes |
-| `install.sh` | Universal dependency-aware installer, desktop/MIME integrator, and uninstaller |
+Run from a checkout, no build step:
 
-## Rules
-1. **Do not break public surface**: command names, flags, on-disk paths
-(`~/.local/share/ulpm`, `~/.var/app/<id>`, `~/.config/ulpm`, `~/.config/ulpm/overrides`, `~/.local/share/ulpm/runtimes`), and backward compatibility with `.lpk` v4 and v5 format manifests.
-2. **Treat package contents as hostile.** Anything read from a manifest or archive (id,name,
-paths, exec, D-Bus namespaces) must be validated (`is_safe_app_id`, `is_safe_app_name`, `_ulpm_valid_bind_dest`) before it reaches a path,
-the install database, or a command line. Never build shell code or `sed` scripts dynamically from it.
-3. **Bash robustness**: Scripts run under `set -euo pipefail`. Beware of `(( i++ ))` (fails when `i` is 0; use `(( i += 1 ))` or `i=$(( i + 1 ))`) and unguarded `shift`.
-4. **Code style**: Quote everything; keep functions small and single-purpose; prefer `local`. Indent with 4 spaces (see `.editorconfig`).
-5. **Traceability**: Security-relevant behavior changes, permission updates, or schema adjustments require anentry in `SECURITY.md` or `CHANGELOG.md`.
-6. **Testing**: Add or update abats test in `tests/` for every bug fix or new feature.
+```bash
+git clone <repository-url>
+cd ulpm
+./bin/ulpm --help
+./bin/ulpm doctor
+```
 
-## Pull requests
-Keep them focused, adhere to the POSIX/Bash core utils without adding heavy external dependencies, and ensure `make check` is completely green before submitting.
+## Tests and lint
+
+```bash
+bash tests/run.sh
+shellcheck -x bin/ulpm bin/ulrm lib/*.sh install.sh tests/*.sh
+```
+
+The test suite must pass and ShellCheck must be clean before review. CI runs both on every push and pull request.
+
+See [docs/development.md](docs/development.md) for architecture, conventions, test helpers and the release checklist.
+
+## Pull request guidelines
+
+- Keep changes focused; one logical change per pull request.
+- Add tests for behavior changes.
+- Update documentation when commands, flags, formats or environment variables change.
+- Never break the `set -Eeuo pipefail` assumptions or weaken fail-closed behavior.
+- Preserve the package format contract; schema changes require an `ULPM_FORMAT_VERSION` decision.
+- Do not include generated artifacts, local paths or secrets.
+
+### Commit messages
+
+- Use the imperative mood: `add repository verification test`.
+- Reference issues when applicable: `fix transaction rollback (#42)`.
+- Keep the summary under ~72 characters.
+
+### Pull request checklist
+
+- [ ] `bash -n` passes for changed shell files
+- [ ] `shellcheck -x` is clean
+- [ ] `bash tests/run.sh` passes
+- [ ] Documentation updated when needed
+- [ ] No secrets, keys or local artifacts committed
+
+## Adding commands, fields or modules
+
+- Commands are `cmd_<name>` functions dispatched from `bin/ulpm`.
+- Update `show_help`, the completion list and `docs/cli-reference.md`.
+- Manifest fields must be validated in `lib/pack.sh` and documented in `docs/lpk-format.md`.
+- Security-sensitive paths must keep the existing validation and symlink protections.
+
+## Documentation
+
+Documentation lives in `docs/`. Start at [docs/README.md](docs/README.md). Use GitHub-flavored Markdown, keep commands copy-pasteable and prefer concrete examples.
+
+## License
+
+By contributing, you agree that your contributions are licensed under the [GPLv3 License](LICENSE).
