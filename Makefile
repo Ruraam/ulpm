@@ -10,7 +10,7 @@ all: help
 
 help:
 	@echo "make check      Run syntax + whitespace guard + shellcheck"
-	@echo "make test       Run test suite (tests/run_tests.sh or bats)"
+	@echo "make test       Run test suite (tests/run.sh or bats)"
 	@echo "make install    Install to \$$(PREFIX) (default /usr/local); honours DESTDIR"
 	@echo "make uninstall  Remove what 'make install' installed"
 
@@ -29,12 +29,12 @@ lint:
 	@shellcheck -x -S warning $(SCRIPTS) && echo "shellcheck: OK"
 
 test:
-	@if [ -f tests/run_tests.sh ]; then \
-		bash tests/run_tests.sh; \
+	@if [ -f tests/run.sh ]; then \
+		bash tests/run.sh; \
 	elif command -v bats >/dev/null 2>&1; then \
 		bats tests/; \
 	else \
-		echo "No test runner found (create tests/run_tests.sh or install bats)"; exit 1; \
+		echo "No test runner found (create tests/run.sh or install bats)"; exit 1; \
 	fi
 
 # ULPM resolves lib/ relative to the real path of bin/ulpm, so keep both under one root
