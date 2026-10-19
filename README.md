@@ -1,4 +1,4 @@
-v6.0.0 STAGING VERSION WITH REPOSTIROTIES INTEGRATION
+v6.0.0 STAGING VERSION WITH REPOSTIROTIES MANAGEMENT INTEGRATION
 
 <div align="center">
 <img src="assets/ulpm-logo.svg" width="225" alt="ulpm logo" />
