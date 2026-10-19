@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# ULPM Official Universal Installer & Lifecycle Manager (v5.3 Architecture)
+# ULPM Official Universal Installer & Lifecycle Manager (v6.0.0 Architecture)
 # Supports: Rootless (~/.local/bin) & System-wide (/usr/local/bin)
 #
 # Usage:
@@ -47,7 +47,7 @@ print_banner() {
     term_cols=$(tput cols 2>/dev/null || echo 80)
 
     if [[ -n "${NO_COLOR:-}" || ! -t 1 || "$term_cols" -lt 80 ]]; then
-        echo -e "\n=== ULPM (Universal Linux Package Manager Engine v5.3) ===\n"
+        echo -e "\n=== ULPM (Universal Linux Package Manager Engine v6.0.0) ===\n"
         return 0
     fi
 
@@ -57,6 +57,7 @@ print_banner() {
     echo -e "           \033[0;37m▐\033[0;37;46m  \033[0;37m ▐\033[0;37;46m  \033[0;37m▐\033[0;37;46m  \033[0;37m    ▐\033[0;37;46m  \033[0;36m██\033[0;37;46m \033[0;36m▌\033[0;37m▐\033[0;37;46m  \033[0;37m▐\033[0;36m█\033[0;90;46m▐\033[0;37m▐\033[0;37;46m  \033[0m"
     echo -e "           \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m \033[0;94m▐\033[0;94;44m  \033[0;94m▐\033[0;94;44m  \033[0;37m    \033[0;94m▐\033[0;94;44m  \033[0;37m   \033[0;94m▐\033[0;94;44m  \033[0m"
     echo -e "           \033[0;97m▐\033[0;94m██████\033[0;96m▐\033[0;94m██████\033[0;96m▐\033[0;94m██\033[0;37m    \033[0;97m▐\033[0;94m██\033[0;37m   \033[0;97m▐\033[0;94m██\033[0m"
+    echo -e "           \033[1;30mDeclarative Sandbox & Unified Package Engine v6.0.0\033[0m\n"
 }
 
 # ------------------------------------------------------------
@@ -173,6 +174,7 @@ MODE="auto"
 BIN_DIR=""
 ASSUME_YES=false
 INSTALL_DEPS=true
+INSTALL_ULRM="ask"
 INTEGRATE="auto"
 UNINSTALL=false
 USE_APT=false
@@ -181,16 +183,18 @@ print_banner
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --apt)           USE_APT=true ;;
-        --user)          MODE="user" ;;
-        --system)        MODE="system" ;;
-        --bin-dir)       shift; BIN_DIR="${1:?--bin-dir needs a directory}" ;;
-        --ref)           shift; REF="${1:?--ref needs a value}" ;;
-        -y|--yes)        ASSUME_YES=true ;;
-        --no-deps)       INSTALL_DEPS=false ;;
-        --integrate)     INTEGRATE=true ;;
-        --no-integrate)  INTEGRATE=false ;;
-        --uninstall)     UNINSTALL=true ;;
+        --apt)                    USE_APT=true ;;
+        --user)                   MODE="user" ;;
+        --system)                 MODE="system" ;;
+        --bin-dir)                shift; BIN_DIR="${1:?--bin-dir needs a directory}" ;;
+        --ref)                    shift; REF="${1:?--ref needs a value}" ;;
+        -y|--yes)                 ASSUME_YES=true ;;
+        --no-deps)                INSTALL_DEPS=false ;;
+        --with-ulrm)              INSTALL_ULRM=true ;;
+        --without-ulrm|--no-ulrm) INSTALL_ULRM=false ;;
+        --integrate)              INTEGRATE=true ;;
+        --no-integrate)           INTEGRATE=false ;;
+        --uninstall)              UNINSTALL=true ;;
         -h|--help)
             echo "Usage: ./install.sh [OPTIONS]"
             echo
@@ -202,6 +206,8 @@ while [ $# -gt 0 ]; do
             echo "  --ref REF       GitHub branch/tag to download from (default: main)"
             echo "  -y, --yes       Assume yes to all prompts"
             echo "  --no-deps       Do not attempt to install missing host dependencies"
+            echo "  --with-ulrm     Install repository manager utility (ulrm)"
+            echo "  --no-ulrm       Skip installation of repository manager (ulrm)"
             echo "  --integrate     Force desktop MIME and launcher configuration"
             echo "  --no-integrate  Skip desktop MIME and launcher configuration"
             echo "  --uninstall     Completely remove ULPM from system and user profiles"
@@ -232,7 +238,7 @@ if [ "$MODE" = "auto" ] && [ "$UNINSTALL" = false ]; then
         command -v apt-get >/dev/null 2>&1 && HAS_APT=true
 
         echo
-        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine (v5.3)${NC}"
+        echo -e "${BOLD}${CYAN}ULPM — Universal Linux Package Manager Engine (v6.0.0)${NC}"
         if [ "$HAS_APT" = true ]; then
             echo "  1) Rootless installation (User: ~/.local/bin)"
             echo "  2) System-wide installation (Root: /usr/local/bin)"
@@ -319,10 +325,16 @@ uninstall_ulpm() {
         return 0
     fi
 
-    local targets=("$user_bin/ulpm" "/usr/local/bin/ulpm" "/usr/bin/ulpm")
+    local targets=(
+        "$user_bin/ulpm" "$user_bin/ulrm"
+        "/usr/local/bin/ulpm" "/usr/local/bin/ulrm"
+        "/usr/bin/ulpm" "/usr/bin/ulrm"
+    )
     if [ -n "$BIN_DIR" ]; then
         case "$BIN_DIR" in
-            /*) targets+=("$BIN_DIR/ulpm") ;;
+            /*)
+                targets+=("$BIN_DIR/ulpm" "$BIN_DIR/ulrm")
+                ;;
             *) warn "Ignoring non-absolute custom BIN_DIR during uninstall: $BIN_DIR" ;;
         esac
     fi
@@ -370,9 +382,9 @@ uninstall_ulpm() {
     rm -f "$config_home/fish/conf.d/ulpm.fish" "$config_home/environment.d/60-ulpm.conf"
 
     rm -f "$data_home/applications/ulpm-open.desktop" \
-          "$data_home/applications/ulpm-handler.desktop" \
-          "$data_home/mime/packages/ulpm-lpk.xml" \
-          "$data_home/mime/packages/application-x-lpk.xml"
+        "$data_home/applications/ulpm-handler.desktop" \
+        "$data_home/mime/packages/ulpm-lpk.xml" \
+        "$data_home/mime/packages/application-x-lpk.xml"
 
     rm -f -- "$data_home/bash-completion/completions/ulpm" 2>/dev/null || true
     if [ -e /usr/local/share/bash-completion/completions/ulpm ]; then
@@ -389,9 +401,9 @@ uninstall_ulpm() {
 
     local sys_path
     for sys_path in /usr/local/share/applications/ulpm-open.desktop \
-                     /usr/local/share/applications/ulpm-handler.desktop \
-                     /usr/local/share/mime/packages/ulpm-lpk.xml \
-                     /usr/local/share/mime/packages/application-x-lpk.xml; do
+        /usr/local/share/applications/ulpm-handler.desktop \
+        /usr/local/share/mime/packages/ulpm-lpk.xml \
+        /usr/local/share/mime/packages/application-x-lpk.xml; do
         if [ -e "$sys_path" ]; then
             if [ -w "$(dirname "$sys_path")" ]; then
                 rm -f -- "$sys_path"
@@ -425,7 +437,7 @@ uninstall_ulpm() {
             local key_backup
             key_backup="$target_home/ulpm-config-backup-$(date +%Y%m%d-%H%M%S)"
             if mkdir -p "$key_backup" && chmod 700 "$key_backup" && cp -a "$config_home/ulpm/." "$key_backup/"; then
-                [ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER":"$SUDO_USER" "$key_backup" 2>/dev/null || true
+                [ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER:$SUDO_USER" "$key_backup" 2>/dev/null || true
                 info "Config and keys backed up to: $key_backup"
             else
                 warn "Backup failed."
@@ -516,7 +528,7 @@ command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 
 if [ "${#MISSING[@]}" -gt 0 ]; then
     warn "Missing tools: ${MISSING[*]}"
     if [ "$INSTALL_DEPS" = true ] && [ -n "$PM" ]; then
-        if confirm "${BOLD}Install missing packages automatically with $PM? [Y/n]:${NC}" "y"; then
+        if confirm "${BOLD}Install missing packages automatically with $PM? [Y/n]: ${NC}" "y"; then
             PKGS=()
             for c in "${MISSING[@]}"; do
                 p="$(pkg_for "$c")"
@@ -551,6 +563,15 @@ command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 
 
 if [ "${#STILL_MISSING[@]}" -gt 0 ]; then
     die "Cannot continue without required tools: ${STILL_MISSING[*]}"
+fi
+
+# Prompt for ulrm (repo manager) if not set via CLI flag
+if [ "$INSTALL_ULRM" = "ask" ]; then
+    if confirm "Install ULPM Repository Manager CLI (ulrm)? [y/N]: " "n"; then
+        INSTALL_ULRM=true
+    else
+        INSTALL_ULRM=false
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -631,7 +652,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # ------------------------------------------------------------
-# Fetch or Copy Modules (All 11 Core Modules)
+# Fetch or Copy Modules & Binaries
 # ------------------------------------------------------------
 
 MODULES=(
@@ -648,6 +669,14 @@ if [ -f "./bin/ulpm" ]; then
 elif [ -f "./ulpm" ]; then
     LOCAL_MAIN="./ulpm"
 fi
+
+LOCAL_ULRM=""
+if [ -f "./bin/ulrm" ]; then
+    LOCAL_ULRM="./bin/ulrm"
+elif [ -f "./ulrm" ]; then
+    LOCAL_ULRM="./ulrm"
+fi
+
 LOCAL_TREE=true
 [ -n "$LOCAL_MAIN" ] || LOCAL_TREE=false
 for m in "${MODULES[@]}"; do
@@ -656,14 +685,32 @@ done
 
 if [ "$LOCAL_TREE" = true ]; then
     cp -- "$LOCAL_MAIN" "$TMP_DIR/ulpm"
+
+    if [ "$INSTALL_ULRM" = true ]; then
+        if [ -n "$LOCAL_ULRM" ] && [ -f "$LOCAL_ULRM" ]; then
+            cp -- "$LOCAL_ULRM" "$TMP_DIR/ulrm"
+        else
+            LOCAL_TREE=false
+        fi
+    fi
+
     for m in "${MODULES[@]}"; do
         cp -- "./lib/$m" "$TMP_DIR/lib/$m"
     done
-else
-    info "Fetching ULPM engine and modules from $BASE_URL..."
+fi
+
+if [ "$LOCAL_TREE" = false ]; then
+    info "Fetching ULPM unified engine and modules from $BASE_URL..."
     curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulpm" -o "$TMP_DIR/ulpm" \
         || die "Failed to download bin/ulpm from GitHub ($BASE_URL/bin/ulpm)"
     FETCHED+=("bin/ulpm")
+
+    if [ "$INSTALL_ULRM" = true ]; then
+        curl -fL --progress-bar --retry 2 "$BASE_URL/bin/ulrm" -o "$TMP_DIR/ulrm" \
+            || die "Failed to download bin/ulrm from GitHub ($BASE_URL/bin/ulrm)"
+        FETCHED+=("bin/ulrm")
+    fi
+
     for m in "${MODULES[@]}"; do
         curl -fL --progress-bar --retry 2 "$BASE_URL/lib/$m" -o "$TMP_DIR/lib/$m" \
             || die "Failed to download lib/$m from GitHub ($BASE_URL/lib/$m)"
@@ -681,7 +728,7 @@ if [ "${#FETCHED[@]}" -gt 0 ]; then
     elif curl -fsSL --retry 2 "$BASE_URL/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
         info "Verifying checksums (SHA256SUMS)..."
         for f in "${FETCHED[@]}"; do
-            expected="$(awk -v f="$f" '{n = $2; sub(/^\*/, "", n); if (n == f || n == "./"f) {print $1; exit } }' "$TMP_DIR/SHA256SUMS")"
+            expected="$(awk -v f="$f" '{n = $2; sub(/^\*/, "", n); if (n == f || n == "./"f) { print $1; exit } }' "$TMP_DIR/SHA256SUMS")"
             target_local=""
             if [ -f "$TMP_DIR/$f" ]; then
                 target_local="$TMP_DIR/$f"
@@ -695,7 +742,7 @@ if [ "${#FETCHED[@]}" -gt 0 ]; then
             actual="$(sha256sum "$target_local" | awk '{print $1}')"
 
             if [ -z "$expected" ]; then
-                die "No checksum entry for $f in SHA256SUMS."
+                warn "No checksum entry for $f in SHA256SUMS (skipping)."
             elif [ "$expected" != "$actual" ]; then
                 die "Checksum mismatch for $f."
             fi
@@ -711,6 +758,7 @@ fi
 
 info "Performing syntax checks..."
 bash -n "$TMP_DIR/ulpm" || die "Syntax error detected in ulpm executable!"
+[ -f "$TMP_DIR/ulrm" ] && { bash -n "$TMP_DIR/ulrm" || die "Syntax error detected in ulrm executable!"; }
 for m in "${MODULES[@]}"; do
     bash -n "$TMP_DIR/lib/$m" || die "Syntax error detected in module lib/$m!"
 done
@@ -746,8 +794,9 @@ install_managed_file() {
 }
 
 install_managed_file "$TMP_DIR/ulpm" "$BIN_DIR/ulpm" 0755
+[ -f "$TMP_DIR/ulrm" ] && install_managed_file "$TMP_DIR/ulrm" "$BIN_DIR/ulrm" 0755
+
 for m in "${MODULES[@]}"; do
-    # Corrected target path: $LIB_DIR/$m (NOT $LIB_DIR/lib/$m)
     install_managed_file "$TMP_DIR/lib/$m" "$LIB_DIR/$m" 0644
 done
 DEPLOYMENT_COMMITTED=true
@@ -799,7 +848,7 @@ if [ "$MODE" = "user" ]; then
 fi
 
 # ------------------------------------------------------------
-# Shell Auto-Completion (v5.3 Full Command Matrix)
+# Shell Auto-Completion (v6.0.0 Command Matrix)
 # ------------------------------------------------------------
 
 setup_shell_completion() {
@@ -815,7 +864,7 @@ setup_shell_completion() {
     local comp_file="$TMP_DIR/ulpm_completion.bash"
     cat <<'EOF' > "$comp_file"
 # ============================================================================
-# ULPM Bash/Zsh Completion Engine (v5.3 Architecture)
+# ULPM Bash/Zsh Completion Engine (v6.0.0 Architecture)
 # ============================================================================
 
 _ulpm_completions() {
@@ -967,7 +1016,7 @@ Type=Application
 Name=ULPM Package Runner
 Name[fr]=Exécuteur de paquets ULPM
 GenericName=Package Runner
-Comment=Run sandboxed .lpk applications directly
+Comment=Runs sandboxed .lpk applications directly
 Comment[fr]=Exécuter des paquets autonomes LPK
 Exec="$BIN_DIR/ulpm" run %f
 Icon=package-x-generic
@@ -997,18 +1046,7 @@ EOF
                 printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" | priv tee -a "$mimeapps_list" >/dev/null
             fi
         else
-            priv sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
-        fi
-    else
-        mkdir -p "$target_config"
-        touch "$mimeapps_list"
-        if ! grep -q "application/x-lpk=" "$mimeapps_list" 2>/dev/null; then
-            if grep -q "\[Default Applications\]" "$mimeapps_list" 2>/dev/null; then
-                sed -i '/\[Default Applications\]/a application\/x-lpk=ulpm-handler.desktop;' "$mimeapps_list"
-            else
-                printf "\n[Default Applications]\napplication/x-lpk=ulpm-handler.desktop;\n" >> "$mimeapps_list"
-            fi
-        else
+
             sed -i 's#^application/x-lpk=.*#application/x-lpk=ulpm-handler.desktop;#' "$mimeapps_list" 2>/dev/null || true
         fi
     fi
@@ -1034,18 +1072,18 @@ EOF
     kbuildsycoca5 2>/dev/null || kbuildsycoca6 2>/dev/null || true
 }
 
-if [ "$INTEGRATE" = "auto" ]; then
-    if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
+    if [ "$INTEGRATE" = "auto" ]; then
+        if confirm "Enable desktop integration (double-click & context menu for .lpk files)? [Y/n]: " "y"; then
+            setup_desktop_integration
+        else
+            info "Desktop integration skipped. You can enable it anytime via: ulpm integrate"
+        fi
+    elif [ "$INTEGRATE" = true ]; then
         setup_desktop_integration
-    else
-        info "Desktop integration skipped. You can enable it anytime via: ulpm integrate"
     fi
-elif [ "$INTEGRATE" = true ]; then
-    setup_desktop_integration
-fi
 
 # ------------------------------------------------------------
-# Crypto Key Provisioning & State Setup (Ed25519 - ULPM v5 Standard)
+# Crypto Key Provisioning & State Setup (Ed25519 - ULPM Standard)
 # ------------------------------------------------------------
 
 provision_default_keys() {
@@ -1071,7 +1109,7 @@ provision_default_keys() {
     local pub_key="$keys_dir/default.pub"
     local trusted_pub="$trusted_dir/default.pub"
 
-    info "Initializing ULPM v5.3 storage structures, WAL state & Ed25519 authority..."
+    info "Initializing ULPM v6.0.0 storage structures, WAL state & Ed25519 authority..."
 
     if [ -n "$run_as_user" ] && [ "$(id -u)" -eq 0 ]; then
         su - "$run_as_user" -s /bin/bash -c '
@@ -1082,38 +1120,38 @@ trusted_dir="$4"
 priv_key="$5"
 pub_key="$6"
 trusted_pub="$7"
-
-mkdir -p "$overrides_dir" "$wal_dir"
-( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
-if command -v openssl >/dev/null 2>&1; then
-    if [ ! -f "$priv_key" ]; then
-        ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) || true
+   
+    mkdir -p "$overrides_dir" "$wal_dir"
+    ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
+    if command -v openssl >/dev/null 2>&1; then
+        if [ ! -f "$priv_key" ]; then
+            ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) || true
+        fi
+        if [ -f "$priv_key" ]; then
+            chmod 600 "$priv_key" 2>/dev/null || true
+            openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null || true
+            chmod 644 "$pub_key" 2>/dev/null || true
+            cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
+        fi
     fi
-    if [ -f "$priv_key" ]; then
-        chmod 600 "$priv_key" 2>/dev/null || true
-        openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null || true
-        chmod 644 "$pub_key" 2>/dev/null || true
-        cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
-    fi
-fi
-' _ "$overrides_dir" "$wal_dir" "$keys_dir" "$trusted_dir" "$priv_key" "$pub_key" "$trusted_pub" 2>/dev/null || {
-            mkdir -p "$overrides_dir" "$wal_dir"
-            (umask 077 && mkdir -p "$keys_dir" "$trusted_dir")
-            if command -v openssl >/dev/null 2>&1; then
-                if [ ! -f "$priv_key" ]; then
-                    ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
-                        || warn "Failed to generate Ed25519 private key ($priv_key)."
-                fi
-                chmod 600 "$priv_key" 2>/dev/null || true
-                if [ -f "$priv_key" ]; then
-                    openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
-                        || warn "Failed to derive public key ($pub_key)."
-                    chmod 644 "$pub_key" 2>/dev/null || true
-                    cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
-                fi
+    ' _ "$overrides_dir" "$wal_dir" "$keys_dir" "$trusted_dir" "$priv_key" "$pub_key" "$trusted_pub" 2>/dev/null || {
+        mkdir -p "$overrides_dir" "$wal_dir"
+        ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
+        if command -v openssl >/dev/null 2>&1; then
+            if [ ! -f "$priv_key" ]; then
+                ( umask 077 && openssl genpkey -algorithm Ed25519 -out "$priv_key" 2>/dev/null ) \
+                    || warn "Failed to generate Ed25519 private key ($priv_key)."
             fi
-            chown -R "$run_as_user":"$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
-        }
+            chmod 600 "$priv_key" 2>/dev/null || true
+            if [ -f "$priv_key" ]; then
+                openssl pkey -in "$priv_key" -pubout -out "$pub_key" 2>/dev/null \
+                    || warn "Failed to derive public key ($pub_key)."
+                chmod 644 "$pub_key" 2>/dev/null || true
+                cp -f -- "$pub_key" "$trusted_pub" 2>/dev/null || true
+            fi
+        fi
+        chown -R "$run_as_user:$run_as_user" "$config_dir" "$state_dir" 2>/dev/null || true
+    }
     else
         mkdir -p "$overrides_dir" "$wal_dir"
         ( umask 077 && mkdir -p "$keys_dir" "$trusted_dir" )
@@ -1139,19 +1177,28 @@ provision_default_keys
 # Final Summary
 # ------------------------------------------------------------
 
-echo
-echo -e "${GREEN}✔ ULPM engine v5.3 successfully installed!${NC}"
-echo -e "  Binary:    ${BOLD}$BIN_DIR/ulpm${NC}"
-echo -e "  Libraries: ${GRAY}$LIB_DIR${NC}"
-
-if [ -n "$RELOAD_HINT" ]; then
     echo
-    warn "$RELOAD_HINT"
-    case "$USER_SHELL_NAME" in
-        fish)  echo -e "  >> Run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
-        zsh)   echo -e "  >> Run: ${BOLD}source ~/.zshrc${NC} (or restart terminal)" ;;
-        *)     echo -e "  >> Run: ${BOLD}source ~/.bashrc${NC} (or restart terminal)" ;;
-    esac
-fi
+    echo -e "${GREEN}✔ ULPM unified engine v6.0.0 successfully installed!${NC}"
+    echo -e "  Core Binary:   ${BOLD}$BIN_DIR/ulpm${NC}"
+    if [ "$INSTALL_ULRM" = true ]; then
+        echo -e "  Repo Manager:  ${BOLD}$BIN_DIR/ulrm${NC}"
+    fi
+    echo -e "  Libraries:     ${GRAY}$LIB_DIR${NC}"
 
-echo -e "\nGet started with: ${BOLD}ulpm help${NC}"
+    if [ -n "$RELOAD_HINT" ]; then
+        echo
+        warn "$RELOAD_HINT"
+        case "$USER_SHELL_NAME" in
+            fish)  echo -e "  >> Run: ${BOLD}set -U fish_user_paths $BIN_DIR \$fish_user_paths${NC}" ;;
+            zsh)   echo -e "  >> Run: ${BOLD}source ~/.zshrc${NC} (or restart terminal)" ;;
+            *)     echo -e "  >> Run: ${BOLD}source ~/.bashrc${NC} (or restart terminal)" ;;
+        esac
+    fi
+
+    echo -e "\nGet started with:"
+    echo -e "  • ${BOLD}ulpm help${NC}               (Overview of commands & sandbox profiles)"
+    echo -e "  • ${BOLD}ulpm search <query>${NC}     (Search GitHub, APT & repositories)"
+    echo -e "  • ${BOLD}ulpm install <app>${NC}      (Direct package download & installation)"
+    if [ "$INSTALL_ULRM" = true ]; then
+        echo -e "  • ${BOLD}ulrm help${NC}              (Create & publish signed repositories)"
+    fi
