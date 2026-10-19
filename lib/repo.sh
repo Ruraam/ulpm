@@ -1,21 +1,58 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/repo.sh - Signed repository indexes, mirrors and package distribution
-# ULPM v5.3 Architecture Engine (Hardened Verification & Pinned Signatures)
+# ULPM v6.0.0 Architecture Engine (v5.3 Hardened Verification & Pinned Signatures)
 # ==============================================================================
 
-_repo_name_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && "${1:-}" != *..* ]]; }
-_repo_root() { printf '%s\n' "${ULPM_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ulpm}/repos"; }
+_repo_name_ok()    { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && "${1:-}" != *..* ]]; }
+_repo_root()       { printf '%s\n' "${ULPM_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ulpm}/repos"; }
 _repo_cache_root() { printf '%s\n' "${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/repos"; }
-_repo_config() { printf '%s/%s.json\n' "$(_repo_root)" "$1"; }
-_repo_key() { printf '%s/%s.pub\n' "$(_repo_root)" "$1"; }
-_repo_cache() { printf '%s/%s\n' "$(_repo_cache_root)" "$1"; }
+_repo_config()     { printf '%s/%s.json\n' "$(_repo_root)" "$1"; }
+_repo_key()        { printf '%s/%s.pub\n' "$(_repo_root)" "$1"; }
+_repo_cache()      { printf '%s/%s\n' "$(_repo_cache_root)" "$1"; }
+
+_repo_type_from_url() {
+    local u="$1"
+    case "$u" in
+        https://*|http://*)   printf 'https\n' ;;
+        file://*|/*|./*|../*) printf 'local\n' ;;
+        *)                    printf 'unknown\n' ;;
+    esac
+}
+
+repo_version_gt() {
+    local a="$1" b="$2"
+    if declare -F semver_compare >/dev/null 2>&1; then
+        local cmp=0
+        semver_compare "$a" "$b" || cmp=$?
+        (( cmp == 1 ))
+        return $?
+    elif command -v dpkg >/dev/null 2>&1; then
+        dpkg --compare-versions "$a" gt "$b" 2>/dev/null
+        return $?
+    fi
+    [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n 1)" == "$a" && "$a" != "$b" ]]
+}
+
+_repo_get_fingerprint() {
+    local key_file="$1"
+    if declare -F crypto_fingerprint >/dev/null 2>&1; then
+        crypto_fingerprint "$key_file" 2>/dev/null || true
+    else
+        openssl pkey -pubin -in "$key_file" -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
+    fi
+}
 
 _repo_fetch() {
     local url="$1" dest="$2"
     case "$url" in
         https://*|http://*)
-            check_dependencies curl || return 1
+            if declare -F check_dependencies >/dev/null 2>&1; then
+                check_dependencies curl || return 1
+            elif ! command -v curl >/dev/null 2>&1; then
+                error "curl is required for remote repositories."
+                return 1
+            fi
             curl -fsSL --connect-timeout 15 --max-time 180 --retry 2 "$url" -o "$dest" || return 1
             ;;
         file://*)
@@ -41,16 +78,48 @@ _repo_base_url() {
     printf '%s\n' "$base"
 }
 
+repo_download_payload() {
+    local base="$1" file="$2" dest="$3" expected_sha="${4:-}"
+    local p_type
+    p_type="$(_repo_type_from_url "$base")"
+
+    case "$p_type" in
+        local)
+            local clean_path="${base#file://}"
+            [[ -f "$clean_path/$file" ]] || return 1
+            cp -f -- "$clean_path/$file" "$dest" || return 1
+            ;;
+        https)
+            _repo_fetch "${base%/}/$file" "$dest" || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    if [[ -n "$expected_sha" ]]; then
+        local got
+        got="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')"
+        if [[ "$got" != "$expected_sha" ]]; then
+            rm -f -- "$dest"
+            return 2
+        fi
+    fi
+    return 0
+}
+
 _repo_verify_index() {
     local name="$1" index="$2" sig="$3" pub="$4"
     [[ -f "$index" && -s "$index" && -f "$sig" && -s "$sig" && -f "$pub" && -r "$pub" ]] || {
         error "Repository index, signature, or pinned key missing for '$name'."
         return 1
     }
-    _crypto_is_ed25519_key "$pub" public || {
-        error "Invalid pinned repository key for '$name'."
-        return 1
-    }
+    if declare -F _crypto_is_ed25519_key >/dev/null 2>&1; then
+        _crypto_is_ed25519_key "$pub" public || {
+            error "Invalid pinned repository key for '$name'."
+            return 1
+        }
+    fi
 
     local pinned_key
     pinned_key="$(_repo_key "$name")"
@@ -63,12 +132,7 @@ _repo_verify_index() {
 
     local expected_fingerprint actual_fingerprint
     expected_fingerprint="$(jq -r '.key_fingerprint_sha256 // empty' "$(_repo_config "$name")" 2>/dev/null || true)"
-    if declare -F crypto_fingerprint >/dev/null 2>&1; then
-        actual_fingerprint="$(crypto_fingerprint "$pub" 2>/dev/null || true)"
-    fi
-    if [[ -z "$actual_fingerprint" ]]; then
-        actual_fingerprint="$(openssl pkey -pubin -in "$pub" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-    fi
+    actual_fingerprint="$(_repo_get_fingerprint "$pub")"
 
     if [[ -n "$expected_fingerprint" ]]; then
         [[ -n "$actual_fingerprint" && "$actual_fingerprint" == "$expected_fingerprint" ]] || {
@@ -77,7 +141,7 @@ _repo_verify_index() {
         }
     fi
 
-    openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -sigfile "$sig" -in "$index" > /dev/null 2>&1 || {
+    openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -sigfile "$sig" -in "$index" >/dev/null 2>&1 || {
         error "Repository index signature verification failed for '$name'."
         return 1
     }
@@ -112,6 +176,120 @@ _repo_verify_index() {
     }
 }
 
+repo_build_and_sign_index() {
+    local dir="${1:-}" priv="${2:-}"
+    [[ -n "$dir" && -d "$dir" && -n "$priv" && -f "$priv" && -r "$priv" ]] || {
+        error 'Usage: repo_build_and_sign_index <package-directory> <publisher-private-key>'
+        return 2
+    }
+
+    if declare -F _crypto_is_ed25519_key >/dev/null 2>&1; then
+        _crypto_is_ed25519_key "$priv" private || {
+            error 'Index signing key must be an Ed25519 private key.'
+            return 1
+        }
+    fi
+
+    check_dependencies jq unsquashfs openssl sha256sum || return 1
+
+    local out="$dir/index.json" tmp sig_tmp
+    tmp="$(mktemp "$dir/.index.XXXXXX")" || return 1
+    sig_tmp="$(mktemp "$dir/.index.sig.XXXXXX")" || { rm -f -- "$tmp"; return 1; }
+
+    _cleanup_repo_index() {
+        rm -f -- "$tmp" "$sig_tmp"
+    }
+
+    local packages='[]' pkg manifest id name version arch file hash desc deps \
+        runtime runtime_abi abi
+    shopt -s nullglob
+    local lpk_files=("$dir"/*.lpk)
+    shopt -u nullglob
+
+    for pkg in "${lpk_files[@]}"; do
+        [[ -f "$pkg" ]] || continue
+        if declare -F read_package_manifest >/dev/null 2>&1; then
+            manifest="$(read_package_manifest "$pkg" 2>/dev/null || true)"
+        else
+            manifest="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null || unsquashfs -cat "$pkg" lpk.json 2>/dev/null || true)"
+        fi
+        if [[ -z "$manifest" ]] || ! jq -e 'type == "object"' <<< "$manifest" >/dev/null 2>&1; then
+            warn "Skipping invalid LPK: $(basename "$pkg")"
+            continue
+        fi
+
+        id="$(jq -r '.id // empty' <<< "$manifest")"
+        name="$(jq -r '.name // empty' <<< "$manifest")"
+        version="$(jq -r '.version // "1.0.0"' <<< "$manifest")"
+        arch="$(jq -r '.arch // "all"' <<< "$manifest")"
+        desc="$(jq -r '.description // ""' <<< "$manifest")"
+        deps="$(jq -c '.dependencies // []' <<< "$manifest")"
+        runtime="$(jq -r '.runtime // ""' <<< "$manifest")"
+        runtime_abi="$(jq -r '.runtime_abi // ""' <<< "$manifest")"
+        abi="$(jq -r '.abi // ""' <<< "$manifest")"
+
+        if declare -F is_safe_app_id >/dev/null 2>&1; then
+            if ! is_safe_app_id "$id" || [[ -z "$name" ]]; then
+                warn "Skipping manifest with invalid id/name: $(basename "$pkg")"
+                continue
+            fi
+        fi
+
+        file="$(basename "$pkg")"
+        [[ "$file" != *..* ]] || continue
+        hash="$(sha256sum "$pkg" | awk '{print $1}')"
+
+        packages="$(jq -c \
+            --arg id "$id" --arg name "$name" --arg version "$version" \
+            --arg arch "$arch" --arg file "$file" --arg sha256 "$hash" \
+            --arg description "$desc" --argjson dependencies "$deps" \
+            --arg runtime "$runtime" --arg runtime_abi "$runtime_abi" \
+            --arg abi "$abi" \
+            '. + [{
+                id: $id, name: $name, version: $version, arch: $arch,
+                file: $file, sha256: $sha256, description: $description,
+                dependencies: $dependencies,
+                runtime: (if $runtime == "" then null else $runtime end),
+                runtime_abi: (if $runtime_abi == "" then null else $runtime_abi end),
+                abi: (if $abi == "" then null else $abi end)
+            }]' <<< "$packages")" || { _cleanup_repo_index; return 1; }
+    done
+
+    if ! jq -e '([.[] | (.id + "|" + .arch)] | unique | length) == length' <<< "$packages" >/dev/null; then
+        _cleanup_repo_index
+        error 'Repository directory contains multiple versions for the same package ID and architecture; publish one current version per ID/architecture.'
+        return 1
+    fi
+
+    local gen_time
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        gen_time="$(date -u -d"@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    else
+        gen_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+
+    if ! jq -nS --arg generated "$gen_time" --argjson packages "$packages" \
+        '{format: "ulpm-repository-v1", generated: $generated, packages: ($packages | sort_by(.id, .arch))}' > "$tmp"; then
+        _cleanup_repo_index
+        return 1
+    fi
+
+    if ! openssl pkeyutl -sign -rawin -inkey "$priv" -in "$tmp" -out "$sig_tmp"; then
+        _cleanup_repo_index
+        return 1
+    fi
+
+    chmod 644 "$tmp" "$sig_tmp"
+    sync_file "$tmp" 2>/dev/null || true
+    sync_file "$sig_tmp" 2>/dev/null || true
+    if ! mv -f -- "$tmp" "$out" || ! mv -f -- "$sig_tmp" "$dir/index.json.sig"; then
+        _cleanup_repo_index
+        return 1
+    fi
+    sync_dir "$dir" 2>/dev/null || true
+    return 0
+}
+
 repo_search_entries() {
     local query="${1:-}"
     [[ -n "$query" ]] || return 0
@@ -130,12 +308,13 @@ repo_search_entries() {
         if [[ -f "$(dirname "$f")/base-url" ]]; then
             base_url="$(head -n 1 "$(dirname "$f")/base-url" | tr -d '\r\n')"
         fi
+        [[ -n "$base_url" ]] || base_url="$(jq -r '.url // empty' "$(_repo_config "$repo_name_check")" 2>/dev/null || true)"
 
         jq -r --arg q "$query" --arg repo "$repo_name_check" --arg base "$base_url" '
             .packages[]
             | select(((.id + " " + .name + " " + (.description // ""))
             | ascii_downcase | contains($q | ascii_downcase)))
-            | [.id, .name, .version, (if $base != "" then ($base + "/" + .file) else .file end)] | @tsv
+            | [.id, .name, .version, (if $base != "" then ($base + "/" + .file) else .file end), $repo] | @tsv
         ' "$f" 2>/dev/null || true
     done
 }
@@ -172,10 +351,12 @@ cmd_repo() {
                 error 'A repository URL and readable Ed25519 public key file are required.'
                 return 2
             }
-            _crypto_is_ed25519_key "$pub" public || {
-                error 'Repository key must be an Ed25519 public key.'
-                return 1
-            }
+            if declare -F _crypto_is_ed25519_key >/dev/null 2>&1; then
+                _crypto_is_ed25519_key "$pub" public || {
+                    error 'Repository key must be an Ed25519 public key.'
+                    return 1
+                }
+            fi
             case "$url" in
                 https://*|http://*) ;;
                 /*|./*|../*|file://*)
@@ -204,47 +385,40 @@ cmd_repo() {
                 rm -f -- "$key_tmp"
                 return 1
             fi
-            sync_file "$key_tmp"
+            sync_file "$key_tmp" 2>/dev/null || true
             mv -- "$key_tmp" "$(_repo_key "$name")" || { rm -f -- "$key_tmp"; return 1; }
-            sync_dir "$root"
+            sync_dir "$root" 2>/dev/null || true
 
-            if declare -F crypto_fingerprint >/dev/null 2>&1; then
-                fingerprint="$(crypto_fingerprint "$(_repo_key "$name")" 2>/dev/null || true)"
-            fi
-            if [[ -z "$fingerprint" ]]; then
-                fingerprint="$(openssl pkey -pubin -in "$(_repo_key "$name")" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-            fi
+            fingerprint="$(_repo_get_fingerprint "$(_repo_key "$name")")"
 
             if ! jq -n --arg name "$name" --arg url "${url%/}" --arg fingerprint "$fingerprint" \
-                '{schema:1, name:$name, url:$url, key_fingerprint_sha256:$fingerprint, enabled:true}' > "$dest.tmp"
-            then
+                '{schema: 1, name: $name, url: $url, key_fingerprint_sha256: $fingerprint, enabled: true}' > "$dest.tmp"; then
                 rm -f -- "$dest.tmp" "$(_repo_key "$name")"
                 return 1
             fi
             chmod 600 "$dest.tmp"
-            sync_file "$dest.tmp"
+            sync_file "$dest.tmp" 2>/dev/null || true
             mv -f -- "$dest.tmp" "$dest" || {
                 rm -f -- "$dest.tmp" "$(_repo_key "$name")"
                 return 1
             }
-            sync_dir "$root"
+            sync_dir "$root" 2>/dev/null || true
 
             info "Repository '$name' configured. Pinned publisher-key SHA-256: $fingerprint"
             if ! cmd_repo update "$name"; then
                 warn "Repository remains configured but its index could not be verified."
                 return 1
             fi
-            cmd_trust "$pub" || {
-                error "Repository index is valid, but the publisher key could not be added to the LPK trust store."
-                return 1
-            }
+            if declare -F cmd_trust >/dev/null 2>&1; then
+                cmd_trust "$pub" || {
+                    error "Repository index is valid, but the publisher key could not be added to the LPK trust store."
+                    return 1
+                }
+            fi
             ;;
         remove|rm)
             local name="${1:-}"
-            _repo_name_ok "$name" || {
-                error 'Usage: ulpm repo remove <name>'
-                return 2
-            }
+            _repo_name_ok "$name" || { error 'Usage: ulpm repo remove <name>'; return 2; }
             local cfg key cache root
             cfg="$(_repo_config "$name")"
             key="$(_repo_key "$name")"
@@ -253,27 +427,24 @@ cmd_repo() {
             [[ -f "$cfg" ]] || { error "Repository not found: $name"; return 1; }
             rm -f -- "$cfg" "$key" || return 1
             rm -rf -- "$cache"
-            sync_dir "$root"
+            sync_dir "$root" 2>/dev/null || true
             info "Repository '$name' removed."
             ;;
         enable|disable)
             local name="${1:-}" cfg state tmp
-            _repo_name_ok "$name" || {
-                error "Usage: ulpm repo $action <name>"
-                return 2
-            }
+            _repo_name_ok "$name" || { error "Usage: ulpm repo $action <name>"; return 2; }
             cfg="$(_repo_config "$name")"
             [[ -f "$cfg" ]] || { error "Repository not found: $name"; return 1; }
             state=true; [[ "$action" == disable ]] && state=false
             tmp="$(mktemp "$(dirname "$cfg")/.${name}.XXXXXX")" || return 1
-            if jq --argjson enabled "$state" '.enabled=$enabled' "$cfg" > "$tmp" && \
-                chmod 600 "$tmp" && sync_file "$tmp" && mv -f -- "$tmp" "$cfg"; then
+            if jq --argjson enabled "$state" '.enabled = $enabled' "$cfg" > "$tmp" && \
+                chmod 600 "$tmp" && { sync_file "$tmp" 2>/dev/null || true; } && mv -f -- "$tmp" "$cfg"; then
                 :
             else
                 rm -f -- "$tmp"
                 return 1
             fi
-            sync_dir "$(dirname "$cfg")"
+            sync_dir "$(dirname "$cfg")" 2>/dev/null || true
             info "Repository '$name' $action."
             ;;
         verify)
@@ -339,14 +510,19 @@ cmd_repo() {
                     failures=$((failures + 1))
                     continue
                 fi
-                sync_file "$index_tmp"
-                sync_file "$sig_tmp"
+                sync_file "$index_tmp" 2>/dev/null || true
+                sync_file "$sig_tmp" 2>/dev/null || true
                 if ! mv -f -- "$index_tmp" "$cache/index.json" || ! mv -f -- "$sig_tmp" "$cache/index.json.sig"; then
                     rm -f -- "$index_tmp" "$sig_tmp"
                     failures=$((failures + 1))
                     continue
                 fi
-                durable_write "$cache/base-url" "$base" 644
+                if declare -F durable_write >/dev/null 2>&1; then
+                    durable_write "$cache/base-url" "$base" 644
+                else
+                    printf '%s\n' "$base" > "$cache/base-url"
+                    chmod 644 "$cache/base-url"
+                fi
                 info "Updated '$name': $(jq '.packages | length' "$cache/index.json") packages."
                 updated=$((updated + 1))
             done
@@ -408,97 +584,12 @@ cmd_repo() {
                 error 'Usage: ulpm repo index <package-directory> <publisher-private-key>'
                 return 2
             }
-            _crypto_is_ed25519_key "$priv" private || {
-                error 'Index signing key must be an Ed25519 private key.'
-                return 1
-            }
-            check_dependencies jq unsquashfs openssl sha256sum || return 1
-            local out="$dir/index.json" tmp sig_tmp
-            tmp="$(mktemp "$dir/.index.XXXXXX")" || return 1
-            sig_tmp="$(mktemp "$dir/.index.sig.XXXXXX")" || { rm -f -- "$tmp"; return 1; }
-
-            _cleanup_repo_index() {
-                rm -f -- "$tmp" "$sig_tmp"
-            }
-
-            local packages='[]' pkg manifest id name version arch file hash desc deps \
-                runtime runtime_abi abi
-            shopt -s nullglob
-            local lpk_files=("$dir"/*.lpk)
-            shopt -u nullglob
-            for pkg in "${lpk_files[@]}"; do
-                [[ -f "$pkg" ]] || continue
-                manifest="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null)" || manifest=''
-                if [[ -z "$manifest" ]] || ! jq -e 'type == "object"' <<< "$manifest" >/dev/null 2>&1; then
-                    warn "Skipping invalid LPK: $(basename "$pkg")"
-                    continue
-                fi
-                id="$(jq -r '.id // empty' <<< "$manifest")"
-                name="$(jq -r '.name // empty' <<< "$manifest")"
-                version="$(jq -r '.version // "1.0.0"' <<< "$manifest")"
-                arch="$(jq -r '.arch // "all"' <<< "$manifest")"
-                desc="$(jq -r '.description // ""' <<< "$manifest")"
-                deps="$(jq -c '.dependencies // []' <<< "$manifest")"
-                runtime="$(jq -r '.runtime // ""' <<< "$manifest")"
-                runtime_abi="$(jq -r '.runtime_abi // ""' <<< "$manifest")"
-                abi="$(jq -r '.abi // ""' <<< "$manifest")"
-                if ! is_safe_app_id "$id" || [[ -z "$name" ]]; then
-                    warn "Skipping manifest with invalid id/name: $(basename "$pkg")"
-                    continue
-                fi
-                file="$(basename "$pkg")"
-                [[ "$file" != *..* ]] || continue
-                hash="$(sha256sum "$pkg" | awk '{print $1}')"
-                packages="$(jq -c \
-                    --arg id "$id" --arg name "$name" --arg version "$version" \
-                    --arg arch "$arch" --arg file "$file" --arg sha256 "$hash" \
-                    --arg description "$desc" --argjson dependencies "$deps" \
-                    --arg runtime "$runtime" --arg runtime_abi "$runtime_abi" \
-                    --arg abi "$abi" \
-                    '. + [{
-                        id: $id, name: $name, version: $version, arch: $arch,
-                        file: $file, sha256: $sha256, description: $description,
-                        dependencies: $dependencies,
-                        runtime: (if $runtime == "" then null else $runtime end),
-                        runtime_abi: (if $runtime_abi == "" then null else $runtime_abi end),
-                        abi: (if $abi == "" then null else $abi end)
-                    }]' <<< "$packages")" || { _cleanup_repo_index; return 1; }
-            done
-            if ! jq -e '([.[] | (.id + "|" + .arch)] | unique | length) == length' \
-                <<< "$packages" >/dev/null
-            then
-                _cleanup_repo_index
-                error 'Repository directory contains multiple versions for the same package ID and architecture; publish one current version per ID/architecture.'
-                return 1
-            fi
-
-            local gen_time
-            if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
-                gen_time="$(date -u -d"@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if repo_build_and_sign_index "$dir" "$priv"; then
+                info "Signed deterministic repository index created: $dir/index.json ($(jq '.packages | length' "$dir/index.json") packages)."
             else
-                gen_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            fi
-
-            if ! jq -nS --arg generated "$gen_time" --argjson packages "$packages" \
-                '{format:"ulpm-repository-v1", generated:$generated, packages:($packages | sort_by(.id, .arch))}' > "$tmp"; then
-                _cleanup_repo_index
+                error "Failed to create repository index for: $dir"
                 return 1
             fi
-
-            if ! openssl pkeyutl -sign -rawin -inkey "$priv" -in "$tmp" -out "$sig_tmp"; then
-                _cleanup_repo_index
-                return 1
-            fi
-            chmod 644 "$tmp" "$sig_tmp"
-            sync_file "$tmp"
-            sync_file "$sig_tmp"
-            if ! mv -f -- "$tmp" "$out" || ! mv -f -- "$sig_tmp" "$dir/index.json.sig"; then
-                _cleanup_repo_index
-                return 1
-            fi
-            sync_dir "$dir"
-
-            info "Signed deterministic repository index created: $out ($(jq '.packages | length' "$out") packages)."
             ;;
         *)
             error 'Usage: ulpm repo <list|add|remove|enable|disable|update|verify|search|install|index> ...'
@@ -510,10 +601,12 @@ cmd_repo() {
 cmd_upgrade() {
     local target="${1:-}"; shift 2>/dev/null || shift $#
     if [[ -n "$target" ]]; then
-        is_safe_app_id "$target" || {
-            error "Targeted upgrade expects a package ID: $target"
-            return 2
-        }
+        if declare -F is_safe_app_id >/dev/null 2>&1; then
+            is_safe_app_id "$target" || {
+                error "Targeted upgrade expects a package ID: $target"
+                return 2
+            }
+        fi
         if declare -F cmd_transaction >/dev/null 2>&1; then
             cmd_transaction install "$target"
             return $?
@@ -539,7 +632,7 @@ cmd_upgrade() {
     local updated_standalone=0
 
     for line in "${installed_entries[@]}"; do
-        IFS='|' read -r id name version _ origin <<< "$line"
+        IFS='|' read -r id name version _ origin _fingerprint <<< "$line"
         [[ -n "$id" ]] || continue
 
         if [[ "$origin" =~ ^https?:// ]]; then
@@ -591,7 +684,7 @@ cmd_upgrade() {
 
         local upgrade_cmp=0
         semver_compare "$best_version" "$version" || upgrade_cmp=$?
-        if [[ -n "$best_version" ]] && (( upgrade_cmp == 1 )); then
+        if [[ -n "$best_version" && "$upgrade_cmp" -eq 1 ]]; then
             repo_targets+=("$id")
         fi
     done

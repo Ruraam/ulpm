@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/deps.sh - ULPM Dependency Resolution & Transaction Planning Engine
-# ULPM v5.3 Architecture Engine (DAG Resolver, Cycle Detection & SemVer Guard)
+# ULPM v6.0.0 Architecture Engine (v5.3 Deterministic DAG & SemVer Resolution)
 # ==============================================================================
+
+_deps_split_spec() {
+    local spec="${1:-}"
+    local op="=" wanted="$spec"
+    if [[ "$spec" =~ ^([>=<]+)(.*)$ ]]; then
+        op="${BASH_REMATCH[1]}"
+        wanted="${BASH_REMATCH[2]}"
+        [[ "$op" == "==" ]] && op="="
+    fi
+    printf '%s\t%s\n' "$op" "$wanted"
+}
 
 _deps_compare() {
     local have="${1:-0}" op="${2:-=}" want="${3:-0}"
@@ -24,7 +35,11 @@ _deps_compare() {
         esac
     else
         local cmp=0
-        semver_compare "$have" "$want" || cmp=$?
+        if declare -F semver_compare >/dev/null 2>&1; then
+            semver_compare "$have" "$want" || cmp=$?
+        else
+            [[ "$have" == "$want" ]] && cmp=0 || cmp=2
+        fi
         case "$op" in
             '='|'==') (( cmp == 0 )) ;;
             '>=')     (( cmp == 0 || cmp == 1 )) ;;
@@ -52,6 +67,28 @@ _deps_parse_requirement() {
     printf '%s\t%s\n' "$dep_id" "$spec"
 }
 
+_deps_normalize_item() {
+    local item="$1"
+    local id="" spec=""
+    if [[ "$item" == '"'* ]]; then
+        local raw parsed
+        raw="$(jq -r '.' <<< "$item")"
+        parsed="$(_deps_parse_requirement "$raw")" || return 1
+        id="${parsed%%$'\t'*}"
+        spec="${parsed#*$'\t'}"
+    else
+        id="$(jq -r '.id // empty' <<< "$item")"
+        spec="$(jq -r '.version // empty' <<< "$item")"
+        [[ "$id" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && "$id" != *..* ]] || return 1
+        if [[ "$spec" =~ ^(>=|<=|==|=|>|<)(.+)$ ]]; then
+            spec="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        elif [[ -n "$spec" ]]; then
+            spec="=$spec"
+        fi
+    fi
+    printf '%s\t%s\n' "$id" "$spec"
+}
+
 _deps_check_manifest() {
     local manifest="$1" dependencies count i item id spec installed missing=0
     jq -e 'type == "object" and ((.dependencies // []) | type == "array")' "$manifest" >/dev/null 2>&1 || {
@@ -63,30 +100,14 @@ _deps_check_manifest() {
 
     for ((i=0; i<count; i++)); do
         item="$(jq -c ".[$i]" <<< "$dependencies")"
-        if [[ "$item" == '"'* ]]; then
-            local raw parsed
-            raw="$(jq -r '.' <<< "$item")"
-            parsed="$(_deps_parse_requirement "$raw")" || {
-                error "Invalid dependency declaration: $raw"
-                missing=$((missing + 1))
-                continue
-            }
-            id="${parsed%%$'\t'*}"
-            spec="${parsed#*$'\t'}"
-        else
-            id="$(jq -r '.id // empty' <<< "$item")"
-            spec="$(jq -r '.version // empty' <<< "$item")"
-            [[ "$id" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && "$id" != *..* ]] || {
-                error "Invalid dependency declaration: $item"
-                missing=$((missing + 1))
-                continue
-            }
-            if [[ "$spec" =~ ^(>=|<=|==|=|>|<)(.+)$ ]]; then
-                spec="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-            elif [[ -n "$spec" ]]; then
-                spec="=$spec"
-            fi
-        fi
+        local norm
+        norm="$(_deps_normalize_item "$item")" || {
+            error "Invalid dependency declaration: $item"
+            missing=$((missing + 1))
+            continue
+        }
+        id="${norm%%$'\t'*}"
+        spec="${norm#*$'\t'}"
 
         installed="$(_deps_installed_version "$id" 2>/dev/null || true)"
         if [[ -z "$installed" ]]; then
@@ -96,12 +117,10 @@ _deps_check_manifest() {
         fi
 
         if [[ -n "$spec" ]]; then
-            local op="=" wanted="$spec"
-            if [[ "$spec" =~ ^([>=<]+)(.*)$ ]]; then
-                op="${BASH_REMATCH[1]}"
-                wanted="${BASH_REMATCH[2]}"
-                [[ "$op" == "==" ]] && op="="
-            fi
+            local split op wanted
+            split="$(_deps_split_spec "$spec")"
+            op="${split%%$'\t'*}"
+            wanted="${split#*$'\t'}"
             if ! _deps_compare "$installed" "$op" "$wanted"; then
                 error "Dependency version mismatch: $id (installed=$installed, required=$spec)"
                 missing=$((missing + 1))
@@ -114,7 +133,7 @@ _deps_check_manifest() {
 }
 
 cmd_deps() {
-    local action="${1:-}" target="${2:-}" manifest='' tmp='' app_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
+    local action="${1:-}" target="${2:-}" manifest='' tmp=''
     case "$action" in
         check)
             [[ -n "$target" ]] || {
@@ -124,30 +143,53 @@ cmd_deps() {
             if [[ -f "$target" ]]; then
                 manifest="$target"
             else
-                local db="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}" id name rest candidate found=''
-                while IFS='|' read -r id name rest; do
-                    if [[ "$id" == "$target" || "$name" == "$target" ]]; then
-                        for candidate in "$app_dir/$name/$name.lpk" "$app_dir/$name.lpk"; do
-                            [[ -f "$candidate" ]] && { found="$candidate"; break; }
-                        done
-                        break
-                    fi
-                done < "$db"
+                local found=""
+                if declare -F _manage_resolve_installed_lpk >/dev/null 2>&1; then
+                    found="$(_manage_resolve_installed_lpk "$target" 2>/dev/null || true)"
+                fi
 
-                [[ -n "$found" ]] || {
+                # Fallback v5.3 direct scan
+                if [[ -z "$found" || ! -f "$found" ]]; then
+                    local app_dir="${ULPM_APPS_DIR:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/apps}"
+                    local db="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
+                    if [[ -f "$db" ]]; then
+                        local entry_id entry_name rest candidate
+                        while IFS='|' read -r entry_id entry_name rest; do
+                            if [[ "$entry_id" == "$target" || "$entry_name" == "$target" ]]; then
+                                for candidate in "$app_dir/$entry_name/$entry_name.lpk" "$app_dir/$entry_name.lpk"; do
+                                    [[ -f "$candidate" ]] && { found="$candidate"; break; }
+                                done
+                                break
+                            fi
+                        done < "$db"
+                    fi
+                fi
+
+                [[ -n "$found" && -f "$found" ]] || {
                     error "No manifest or installed package found for '$target'."
                     return 1
                 }
+
                 check_dependencies unsquashfs jq || return 1
                 manifest="$(mktemp "${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/deps-manifest.XXXXXX.json")" || return 1
                 tmp="$manifest"
-                if ! unsquashfs -cat "$found" meta/manifest.json > "$manifest" 2>/dev/null && \
-                   ! unsquashfs -cat "$found" lpk.json > "$manifest" 2>/dev/null; then
+
+                local m_content=""
+                if declare -F read_package_manifest >/dev/null 2>&1; then
+                    m_content="$(read_package_manifest "$found" 2>/dev/null || true)"
+                fi
+                if [[ -z "$m_content" ]]; then
+                    m_content="$(unsquashfs -cat "$found" meta/manifest.json 2>/dev/null || unsquashfs -cat "$found" lpk.json 2>/dev/null || true)"
+                fi
+
+                if [[ -z "$m_content" ]]; then
                     rm -f -- "$manifest"
                     error 'Could not read installed package manifest.'
                     return 1
                 fi
+                printf '%s' "$m_content" > "$manifest"
             fi
+
             local rc=0
             _deps_check_manifest "$manifest" || rc=$?
             [[ -n "$tmp" && -f "$tmp" ]] && rm -f -- "$tmp"
@@ -204,12 +246,10 @@ _deps_resolve_visit() {
     installed="$(_deps_installed_version "$id" 2>/dev/null || true)"
     if [[ -n "$installed" && "$force" != 1 ]]; then
         if [[ -n "$requirement" ]]; then
-            local req_op="=" req_version="$requirement"
-            if [[ "$requirement" =~ ^([>=<]+)(.*)$ ]]; then
-                req_op="${BASH_REMATCH[1]}"
-                req_version="${BASH_REMATCH[2]}"
-                [[ "$req_op" == "==" ]] && req_op="="
-            fi
+            local split_req req_op req_version
+            split_req="$(_deps_split_spec "$requirement")"
+            req_op="${split_req%%$'\t'*}"
+            req_version="${split_req#*$'\t'}"
             if _deps_compare "$installed" "$req_op" "$req_version"; then
                 __ulpm_done_ref+=("$id")
                 return 0
@@ -270,13 +310,11 @@ _deps_resolve_visit() {
             [[ -n "$row" ]] || continue
             candidate_version="$(jq -r '.version' <<< "$row")"
             if [[ -n "$requirement" ]]; then
-                local candidate_op="=" candidate_wanted="$requirement"
-                if [[ "$requirement" =~ ^([>=<]+)(.*)$ ]]; then
-                    candidate_op="${BASH_REMATCH[1]}"
-                    candidate_wanted="${BASH_REMATCH[2]}"
-                    [[ "$candidate_op" == "==" ]] && candidate_op="="
-                fi
-                _deps_compare "$candidate_version" "$candidate_op" "$candidate_wanted" || continue
+                local split_cand cand_op cand_wanted
+                split_cand="$(_deps_split_spec "$requirement")"
+                cand_op="${split_cand%%$'\t'*}"
+                cand_wanted="${split_cand#*$'\t'}"
+                _deps_compare "$candidate_version" "$cand_op" "$cand_wanted" || continue
             fi
 
             if [[ -n "$preferred_repo" ]]; then
@@ -298,13 +336,11 @@ _deps_resolve_visit() {
     }
 
     if [[ -n "$requirement" ]]; then
-        local sel_v req_op="=" req_version="$requirement"
+        local sel_v split_req req_op req_version
         sel_v="$(jq -r '.version' <<< "$selected")"
-        if [[ "$requirement" =~ ^([>=<]+)(.*)$ ]]; then
-            req_op="${BASH_REMATCH[1]}"
-            req_version="${BASH_REMATCH[2]}"
-            [[ "$req_op" == "==" ]] && req_op="="
-        fi
+        split_req="$(_deps_split_spec "$requirement")"
+        req_op="${split_req%%$'\t'*}"
+        req_version="${split_req#*$'\t'}"
         _deps_compare "$sel_v" "$req_op" "$req_version" || {
             error "Available dependency '$id' version $sel_v does not satisfy $requirement."
             return 1
@@ -318,26 +354,13 @@ _deps_resolve_visit() {
     if [[ -n "$dep_entries" ]]; then
         while IFS= read -r dep; do
             [[ -n "$dep" ]] || continue
-            dep_spec=''
-            if [[ "$dep" == '{'* ]]; then
-                dep_id="$(jq -r '.id // empty' <<< "$dep")"
-                dep_spec="$(jq -r '.version // empty' <<< "$dep")"
-                if [[ -n "$dep_spec" && ! "$dep_spec" =~ ^(>=|<=|==|=|>|<) ]]; then
-                    dep_spec="=$dep_spec"
-                fi
-            else
-                local parsed_dep
-                parsed_dep="$(_deps_parse_requirement "$(jq -r '.' <<< "$dep")")" || {
-                    error "Invalid dependency metadata for '$id'."
-                    return 1
-                }
-                dep_id="${parsed_dep%%$'\t'*}"
-                dep_spec="${parsed_dep#*$'\t'}"
-            fi
-            [[ -n "$dep_id" ]] || {
+            local norm_dep
+            norm_dep="$(_deps_normalize_item "$dep")" || {
                 error "Invalid dependency metadata for '$id'."
                 return 1
             }
+            dep_id="${norm_dep%%$'\t'*}"
+            dep_spec="${norm_dep#*$'\t'}"
             _deps_resolve_visit "$dep_id" "$root" "$db" "$plan_name" "$visiting_name" "$done_name" "$dep_spec" || return 1
         done <<< "$dep_entries"
     fi

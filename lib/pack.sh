@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/pack.sh - Deterministic LPK Packaging & Dynamic ELF Library Bundler
-# ULPM v5.3 Architecture Engine (Schema v5, Reproducible Builds & Sandboxing)
+# ULPM v6.0.0 Architecture Engine (v5.3 Deterministic Packaging & Robust Bundler)
 # ==============================================================================
 
 validate_manifest() {
@@ -110,7 +110,7 @@ bundle_elf_libraries() {
 appimage_squashfs_offset() {
     local f="$1" hdr shoff shentsize shnum
     hdr="$(readelf -h "$f" 2>/dev/null)" || return 1
-    shoff="$(sed -nE 's/^ *Start of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
+    shoff="$(sed -nE 's/^ *Start of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n1)"
     shentsize="$(sed -nE 's/^ *Size of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
     shnum="$(sed -nE 's/^ *Number of section headers: *([0-9]+).*/\1/p' <<< "$hdr" | head -n 1)"
     [[ "$shoff" =~ ^[0-9]+$ && "$shentsize" =~ ^[0-9]+$ && "$shnum" =~ ^[0-9]+$ ]] || return 1
@@ -160,7 +160,7 @@ try:
             if stat.S_ISLNK(mode) or (kind and kind not in (stat.S_IFREG, stat.S_IFDIR)):
                 raise ValueError("symlink/special ZIP entry is forbidden: " + item.filename)
             prepared.append((item, target, mode))
-        for item, target, _mode in prepared:
+        for item, target, mode in prepared:
             if item.is_dir():
                 os.makedirs(target, exist_ok=True)
         written_total = 0
@@ -308,7 +308,6 @@ except Exception as exc:
     sys.exit(1)
 PY
         else
-            # Resilient POSIX native tar fallback
             tar -xf "$src" -C "$dest" --no-same-owner 2>/dev/null || tar -xf "$src" -C "$dest" || return 1
         fi
         chmod -R u+w -- "$dest" 2>/dev/null || true
@@ -351,6 +350,52 @@ normalize_tree_for_reproducibility() {
     find "$dir" -type d -exec chmod 0755 {} + 2>/dev/null || true
     find "$dir" -type f -perm -0100 -exec chmod 0755 {} + 2>/dev/null || true
     find "$dir" -type f ! -perm -0100 -exec chmod 0644 {} + 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
+# Factored SquashFS Creation & Cryptographic Sealing Helper
+# ------------------------------------------------------------------------------
+
+_pack_and_seal() {
+    local stage_dir="$1"
+    local out_lpk="$2"
+    local zstd_level="$3"
+
+    normalize_tree_for_reproducibility "$stage_dir"
+
+    log "Generating deterministic SquashFS archive ($out_lpk)..."
+    rm -f -- "$out_lpk"
+
+    local mkfs_epoch="${SOURCE_DATE_EPOCH:-0}"
+    local mksq_args=(
+        "$stage_dir"
+        "$out_lpk"
+        -comp zstd
+        -Xcompression-level "$zstd_level"
+        -noappend
+        -all-root
+        -mkfs-time "$mkfs_epoch"
+        -no-xattrs
+        -quiet
+    )
+    if mksquashfs -help 2>&1 | grep -q -- '-reproducible'; then
+        mksq_args+=(-reproducible)
+    fi
+
+    if ! mksquashfs "${mksq_args[@]}"; then
+        error "Failed to create SquashFS archive."
+        rm -f -- "$out_lpk"
+        return 1
+    fi
+
+    log "Sealing package with Ed25519 signature..."
+    if ! cmd_sign "$out_lpk" ""; then
+        error "Package created but cryptographic signature failed: $out_lpk"
+        rm -f -- "$out_lpk"
+        return 1
+    fi
+
+    return 0
 }
 
 cmd_pack() {
@@ -438,40 +483,41 @@ cmd_pack() {
     local arch
     arch="$(normalize_arch_name "$(detect_arch)")" || arch="amd64"
 
+    local cache_base build_stage
+    cache_base="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
+    mkdir -p -- "$cache_base" || return 1
+    build_stage="$(mktemp -d "$cache_base/pack_stage_XXXXXX")" || return 1
+
+    _cleanup_pack_stage() {
+        [[ -n "${build_stage:-}" && -d "$build_stage" ]] && rm -rf -- "$build_stage"
+    }
+
     # ==========================================================================
     # CASE 1: PRE-STRUCTURED DIRECTORY
     # ==========================================================================
     if [[ -d "$src" ]] && [[ -f "$src/meta/manifest.json" || -f "$src/manifest.json" ]]; then
         info "Pre-structured package directory detected ($src)."
 
-        local structured_source="$src" structured_stage="" structured_cache="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
-        mkdir -p -- "$structured_cache" || return 1
-        structured_stage="$(mktemp -d "$structured_cache/structured_XXXXXX")" || return 1
-
-        _cleanup_structured() {
-            [[ -n "${structured_stage:-}" && -d "$structured_stage" ]] && rm -rf -- "$structured_stage"
-        }
-
-        if ! cp -a -- "$structured_source/." "$structured_stage/"; then
-            _cleanup_structured
+        if ! cp -a -- "$src/." "$build_stage/"; then
+            _cleanup_pack_stage
             return 1
         fi
-        src="$structured_stage"
-        local manifest_path="$src/meta/manifest.json"
-        [[ -f "$manifest_path" ]] || manifest_path="$src/manifest.json"
+
+        local manifest_path="$build_stage/meta/manifest.json"
+        [[ -f "$manifest_path" ]] || manifest_path="$build_stage/manifest.json"
 
         if [[ "$dependencies_json" != '[]' || -n "$runtime_ref" || "$shared_runtime" == true ]]; then
             local merged_manifest
-            merged_manifest="$(mktemp "$structured_cache/manifest.XXXXXX.json")" || { _cleanup_structured; return 1; }
+            merged_manifest="$(mktemp "$cache_base/manifest.XXXXXX.json")" || { _cleanup_pack_stage; return 1; }
             jq --arg runtime "$runtime_ref" --argjson shared "$shared_runtime" --argjson deps "$dependencies_json" \
                 '.dependencies = (((.dependencies // []) + $deps) | unique_by(if type == "string" then . else .id end))
                 | .runtime = (if $runtime != "" then $runtime else .runtime end)
                 | .shared = ((.shared // false) or $shared)' \
-                "$manifest_path" > "$merged_manifest" || { rm -f -- "$merged_manifest"; _cleanup_structured; return 1; }
-            cat -- "$merged_manifest" > "$manifest_path" || { rm -f -- "$merged_manifest"; _cleanup_structured; return 1; }
+                "$manifest_path" > "$merged_manifest" || { rm -f -- "$merged_manifest"; _cleanup_pack_stage; return 1; }
+            cat -- "$merged_manifest" > "$manifest_path" || { rm -f -- "$merged_manifest"; _cleanup_pack_stage; return 1; }
             rm -f -- "$merged_manifest"
         fi
-        validate_manifest "$manifest_path" || { _cleanup_structured; return 1; }
+        validate_manifest "$manifest_path" || { _cleanup_pack_stage; return 1; }
 
         local app_name pkg_type
         app_name="$(jq -r '.name // .id // empty' "$manifest_path" 2>/dev/null || true)"
@@ -484,60 +530,30 @@ cmd_pack() {
         [[ "$out_lpk" == *.lpk ]] || out_lpk="${out_lpk}.lpk"
         local out_parent
         out_parent="$(dirname -- "$out_lpk")"
-        mkdir -p -- "$out_parent" || { _cleanup_structured; return 1; }
-        out_lpk="$(realpath -m -- "$out_lpk")" || { _cleanup_structured; return 1; }
+        mkdir -p -- "$out_parent" || { _cleanup_pack_stage; return 1; }
+        out_lpk="$(realpath -m -- "$out_lpk")" || { _cleanup_pack_stage; return 1; }
 
         local is_system_rootfs=false
-        if [[ "$pkg_type" =~ ^(rootfs|os|distro)$ ]] || \
-           [[ -d "$src/recalbox" || -d "$src/root/recalbox" || -d "$src/root/etc" || (-d "$src/etc" && -d "$src/usr") ]]; then
+        if [[ "$pkg_type" =~ ^(rootfs|os|distro)$ ]] ||
+           [[ -d "$build_stage/recalbox" || -d "$build_stage/root/recalbox" || -d "$build_stage/root/etc" || (-d "$build_stage/etc" && -d "$build_stage/usr") ]]; then
             is_system_rootfs=true
         fi
 
         if [[ "$no_scan" == "true" || "$is_system_rootfs" == "true" || "${ULPM_NO_SCAN:-0}" == "1" ]]; then
             info "RootFS / Recalbox or fast-mode: skipping library scan."
         else
-            local target_payload="$src"
-            [[ -d "$src/root" ]] && target_payload="$src/root"
+            local target_payload="$build_stage"
+            [[ -d "$build_stage/root" ]] && target_payload="$build_stage/root"
             bundle_elf_libraries "$target_payload" ""
         fi
 
-        normalize_tree_for_reproducibility "$src"
-
-        log "Generating deterministic SquashFS archive ($out_lpk)..."
-        rm -f -- "$out_lpk" || { _cleanup_structured; return 1; }
-
-        local mkfs_epoch="${SOURCE_DATE_EPOCH:-0}"
-        local mksq_args=(
-            "$src"
-            "$out_lpk"
-            -comp zstd
-            -Xcompression-level "$zstd_level"
-            -noappend
-            -all-root
-            -mkfs-time "$mkfs_epoch"
-            -no-xattrs
-            -quiet
-        )
-        if mksquashfs -help 2>&1 | grep -q -- '-reproducible'; then
-            mksq_args+=(-reproducible)
-        fi
-
-        if ! mksquashfs "${mksq_args[@]}"; then
-            error "Failed to create SquashFS archive."
-            rm -f -- "$out_lpk"
-            _cleanup_structured
-            return 1
-        fi
-
-        log "Sealing package with Ed25519 signature..."
-        if ! cmd_sign "$out_lpk" ""; then
-            error "Package created but signature failed: $out_lpk"
-            _cleanup_structured
+        if ! _pack_and_seal "$build_stage" "$out_lpk" "$zstd_level"; then
+            _cleanup_pack_stage
             return 1
         fi
 
         info "Pack complete (Pre-structured): $out_lpk"
-        _cleanup_structured
+        _cleanup_pack_stage
         return 0
     fi
 
@@ -552,10 +568,12 @@ cmd_pack() {
     app_name="$(printf '%s' "$app_name" | tr -cd 'a-zA-Z0-9._-')"
     [[ -n "$app_name" ]] || {
         error "Application name is empty or contains invalid characters."
+        _cleanup_pack_stage
         return 1
     }
     [[ "$ver" =~ ^[A-Za-z0-9.+_:~-]+$ ]] || {
         error "Invalid version string: $ver"
+        _cleanup_pack_stage
         return 1
     }
 
@@ -564,41 +582,32 @@ cmd_pack() {
     [[ "$out_lpk" == *.lpk ]] || out_lpk="${out_lpk}.lpk"
     local out_parent
     out_parent="$(dirname -- "$out_lpk")"
-    mkdir -p -- "$out_parent" || return 1
-    out_lpk="$(realpath -m -- "$out_lpk")" || return 1
+    mkdir -p -- "$out_parent" || { _cleanup_pack_stage; return 1; }
+    out_lpk="$(realpath -m -- "$out_lpk")" || { _cleanup_pack_stage; return 1; }
 
-    local cache_base build_dir
-    cache_base="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
-    mkdir -p -- "$cache_base" || return 1
-    build_dir="$(mktemp -d "$cache_base/build_XXXXXX")" || return 1
-
-    _cleanup_raw_build() {
-        [[ -n "${build_dir:-}" && -d "$build_dir" ]] && rm -rf -- "$build_dir"
-    }
-
-    mkdir -p -- "$build_dir/meta" "$build_dir/root" || { _cleanup_raw_build; return 1; }
+    mkdir -p -- "$build_stage/meta" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
 
     log "Extracting assets from $src..."
-    extract_any_payload "$src" "$build_dir/root" || { _cleanup_raw_build; return 1; }
+    extract_any_payload "$src" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
 
     local detected_exec="" f
-    if [[ -x "$build_dir/root/AppRun" && ! -d "$build_dir/root/AppRun" ]]; then
+    if [[ -x "$build_stage/root/AppRun" && ! -d "$build_stage/root/AppRun" ]]; then
         detected_exec="AppRun"
-    elif [[ -x "$build_dir/root/bin/main" && ! -d "$build_dir/root/bin/main" ]]; then
+    elif [[ -x "$build_stage/root/bin/main" && ! -d "$build_stage/root/bin/main" ]]; then
         detected_exec="bin/main"
-    elif [[ -x "$build_dir/root/main" && ! -d "$build_dir/root/main" ]]; then
+    elif [[ -x "$build_stage/root/main" && ! -d "$build_stage/root/main" ]]; then
         detected_exec="main"
-    elif [[ -x "$build_dir/root/bin/$app_name" && ! -d "$build_dir/root/bin/$app_name" ]]; then
+    elif [[ -x "$build_stage/root/bin/$app_name" && ! -d "$build_stage/root/bin/$app_name" ]]; then
         detected_exec="bin/$app_name"
-    elif [[ -x "$build_dir/root/usr/bin/$app_name" && ! -d "$build_dir/root/usr/bin/$app_name" ]]; then
+    elif [[ -x "$build_stage/root/usr/bin/$app_name" && ! -d "$build_stage/root/usr/bin/$app_name" ]]; then
         detected_exec="usr/bin/$app_name"
     else
         local scan_list
-        scan_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/exec_scan.XXXXXX")" || { _cleanup_raw_build; return 1; }
-        find "$build_dir/root" -xdev -maxdepth 4 -type f \( -perm -0100 -o -perm -0111 \) -print0 2>/dev/null > "$scan_list"
+        scan_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/exec_scan.XXXXXX")" || { _cleanup_pack_stage; return 1; }
+        find "$build_stage/root" -xdev -maxdepth 4 -type f \( -perm -0100 -o -perm -0111 \) -print0 2>/dev/null > "$scan_list"
         while IFS= read -r -d '' f; do
             if _is_executable_payload "$f"; then
-                detected_exec="${f#"$build_dir/root/"}"
+                detected_exec="${f#"$build_stage/root/"}"
                 break
             fi
         done < "$scan_list"
@@ -607,13 +616,13 @@ cmd_pack() {
 
     if [[ -z "$detected_exec" ]]; then
         error "No executable binary or entrypoint identified in payload."
-        _cleanup_raw_build
+        _cleanup_pack_stage
         return 1
     fi
     info "Detected entrypoint: $detected_exec"
 
     if [[ "$no_scan" != "true" && "${ULPM_NO_SCAN:-0}" != "1" ]]; then
-        bundle_elf_libraries "$build_dir/root" "$detected_exec"
+        bundle_elf_libraries "$build_stage/root" "$detected_exec"
     else
         info "Skipping dynamic library scan."
     fi
@@ -663,72 +672,59 @@ cmd_pack() {
                     }
                 }
             }
-        }' > "$build_dir/meta/manifest.json" || {
-        error "Failed to write Schema v5 manifest."
-        _cleanup_raw_build
-        return 1
-    }
+        }' > "$build_stage/meta/manifest.json" || {
+            error "Failed to write Schema v5 manifest."
+            _cleanup_pack_stage
+            return 1
+        }
 
-    validate_manifest "$build_dir/meta/manifest.json" || { _cleanup_raw_build; return 1; }
+    validate_manifest "$build_stage/meta/manifest.json" || { _cleanup_pack_stage; return 1; }
 
-    normalize_tree_for_reproducibility "$build_dir"
-
-    log "Generating deterministic SquashFS archive ($out_lpk)..."
-    rm -f -- "$out_lpk" || { _cleanup_raw_build; return 1; }
-
-    local mkfs_epoch_raw="${SOURCE_DATE_EPOCH:-0}"
-    local mksq_args=(
-        "$build_dir"
-        "$out_lpk"
-        -comp zstd
-        -Xcompression-level "$zstd_level"
-        -noappend
-        -all-root
-        -mkfs-time "$mkfs_epoch_raw"
-        -no-xattrs
-        -quiet
-    )
-
-    if mksquashfs -help 2>&1 | grep -q -- '-reproducible'; then
-        mksq_args+=(-reproducible)
-    fi
-
-    if ! mksquashfs "${mksq_args[@]}"; then
-        error "Failed to create SquashFS archive."
-        rm -f -- "$out_lpk"
-        _cleanup_raw_build
-        return 1
-    fi
-
-    log "Sealing package with Ed25519 signature..."
-    if ! cmd_sign "$out_lpk" ""; then
-        error "Package signing failed: $out_lpk"
-        _cleanup_raw_build
+    if ! _pack_and_seal "$build_stage" "$out_lpk" "$zstd_level"; then
+        _cleanup_pack_stage
         return 1
     fi
 
     info "Pack complete: $out_lpk"
-    _cleanup_raw_build
+    _cleanup_pack_stage
     return 0
+}
+
+# ------------------------------------------------------------------------------
+# Package Manifest Reader & Package Inspection (Dual Support v5.3 / v6.0)
+# ------------------------------------------------------------------------------
+
+read_package_manifest() {
+    local package="${1:-}"
+    check_dependencies unsquashfs jq || return 1
+    local manifest=""
+    manifest="$(unsquashfs -cat "$package" meta/manifest.json 2>/dev/null)" || \
+    manifest="$(unsquashfs -cat "$package" lpk.json 2>/dev/null)" || return 1
+    jq -e 'type == "object"' <<< "$manifest" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$manifest"
 }
 
 cmd_inspect() {
     local package="${1:-}" manifest="" rc=0
     [[ -n "$package" ]] || { error 'Usage: ulpm inspect <package.lpk>'; return 2; }
     [[ -f "$package" && -r "$package" ]] || { error "Package not found or unreadable: $package"; return 1; }
-    verify_package "$package" || rc=$?
-    case "$rc" in
-        0) info 'Signature status: valid and trusted.' ;;
-        2) warn 'Signature status: unsigned package.' ;;
-        3) warn 'Signature status: signature valid, publisher key not trusted.' ;;
-        *) error 'Signature status: invalid or unreadable signature.'; return 1 ;;
-    esac
+
+    if declare -F verify_package >/dev/null 2>&1; then
+        verify_package "$package" || rc=$?
+        case "$rc" in
+            0) info 'Signature status: valid and trusted.' ;;
+            2) warn 'Signature status: unsigned package.' ;;
+            3) warn 'Signature status: signature valid, publisher key not trusted.' ;;
+            *) error 'Signature status: invalid or unreadable signature.'; return 1 ;;
+        esac
+    fi
+
     check_dependencies unsquashfs jq || return 1
     manifest="$(unsquashfs -cat "$package" meta/manifest.json 2>/dev/null)" || \
     manifest="$(unsquashfs -cat "$package" lpk.json 2>/dev/null)" || {
         error 'Could not read package manifest.'
         return 1
     }
-    jq -e 'type == "object"' <<<"$manifest" >/dev/null || { error 'Invalid package manifest.'; return 1; }
+    jq -e 'type == "object"' <<< "$manifest" >/dev/null 2>&1 || { error 'Invalid package manifest.'; return 1; }
     printf '%s\n' "$manifest" | jq .
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/stream.sh - Ephemeral RAM Streaming Engine
-# ULPM v5.3 Architecture Engine (RAM Streamer & Sandbox Profiles Passthrough)
+# ULPM v6.0.0 Architecture Engine (v5.3 Ephemeral RAM Streamer & Hardened Wiping)
 # ==============================================================================
 
 resolve_stream_url() {
@@ -58,12 +58,11 @@ resolve_stream_url() {
             endpoint="releases/tags/${tag}"
         fi
 
-        local arch arch_regex universal_regex
-        arch="$(detect_arch)" || {
-            error "Unable to detect target architecture."
-            return 1
-        }
-        case "${arch,,}" in
+        local raw_arch host_arch arch_regex universal_regex
+        raw_arch="$(detect_arch 2>/dev/null || uname -m)"
+        host_arch="$(normalize_arch_name "$raw_arch" 2>/dev/null || echo "$raw_arch")"
+
+        case "${host_arch,,}" in
             amd64|x86_64|x86-64)
                 arch_regex='(^|[._+ -])(amd64|x86_64|x86-64|x64)([._+ -]|$)'
                 ;;
@@ -77,12 +76,12 @@ resolve_stream_url() {
                 arch_regex='(^|[._+ -])(i386|i686|x86)([._+ -]|$)'
                 ;;
             *)
-                arch_regex="(^|[._+ -])(${arch})([._+ -]|$)"
+                arch_regex="(^|[._+ -])(${host_arch})([._+ -]|$)"
                 ;;
         esac
         universal_regex='(^|[._+ -])(all|any|universal|noarch|no-arch)([._+ -]|$)'
 
-        log "Resolving GitHub release for ${owner}/${repo} (${arch})..."
+        log "Resolving GitHub release for ${owner}/${repo} (${host_arch})..."
         local release_json
         release_json="$(fetch_github_api "repos/${owner}/${repo}/${endpoint}" 15)" || {
             error "Failed to fetch GitHub release metadata for '${owner}/${repo}'."
@@ -107,7 +106,7 @@ resolve_stream_url() {
         ' <<< "$release_json" 2>/dev/null)" || download_url=""
 
         if [[ -z "$download_url" ]]; then
-            error "No .lpk release asset found in ${owner}/${repo} for architecture '${arch}'."
+            error "No .lpk release asset found in ${owner}/${repo} for architecture '${host_arch}'."
             return 1
         fi
 
@@ -161,10 +160,15 @@ cmd_stream() (
         return 1
     }
 
+    # shellcheck disable=SC2329
     _ulpm_stream_cleanup() {
         if [[ -n "${tmp_lpk:-}" && -f "$tmp_lpk" ]]; then
-            : > "$tmp_lpk" 2>/dev/null || true
-            rm -f -- "$tmp_lpk"
+            if command -v shred >/dev/null 2>&1; then
+                shred -u "$tmp_lpk" 2>/dev/null || rm -f -- "$tmp_lpk"
+            else
+                : > "$tmp_lpk" 2>/dev/null || true
+                rm -f -- "$tmp_lpk"
+            fi
             tmp_lpk=""
         fi
     }

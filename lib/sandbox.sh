@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
-# ULPM v5.3 Architecture Engine (Manifest v5, Multi-Axis Runtimes & Hardened BPF)
+# ULPM v6.0.0 Architecture Engine (v5.3 Rock-Solid Isolation & Safe Signatures)
 # ==============================================================================
 
 ENV_WHITELIST=(
     HOME USER LOGNAME LANG LANGUAGE LC_ALL TZ TERM COLORTERM
     DISPLAY XAUTHORITY WAYLAND_DISPLAY
     XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
-    XDG_RUNTIME_DIR
+    XDG_RUNTIME_DIR PULSE_SERVER PIPEWIRE_RUNTIME_DIR
     GDK_BACKEND GDK_SCALE GDK_DPI_SCALE GTK_THEME
     QT_QPA_PLATFORM QT_QPA_PLATFORMTHEME QT_SCALE_FACTOR QT_AUTO_SCREEN_SCALE_FACTOR
     XCURSOR_THEME XCURSOR_SIZE SDL_VIDEODRIVER MOZ_ENABLE_WAYLAND
+    ELECTRON_OZONE_PLATFORM_HINT DRI_PRIME
     __GLX_VENDOR_LIBRARY_NAME __NV_PRIME_RENDER_OFFLOAD__ VK_LAYER_NV_optimus
     VK_ICD_FILENAMES VK_DRIVER_FILES LIBVA_DRIVER_NAME MESA_LOADER_DRIVER_OVERRIDE
     RECALBOX_SYSTEM_DIR CONTROLLER_CONFIG SDL_JOYSTICK_DEVICE
@@ -66,6 +67,22 @@ setup_sandbox_downloads_links() {
     fi
 }
 
+_ulpm_allow_unsafe_exec() {
+    [[ "${ULPM_UNSAFE_NO_SANDBOX:-0}" == 1 ]]
+}
+
+_ulpm_refuse_unsandboxed() {
+    local app_id="${1:-application}"
+    if _ulpm_allow_unsafe_exec; then
+        warn "ULPM_UNSAFE_NO_SANDBOX=1: '$app_id' will run WITHOUT bubblewrap isolation."
+        return 0
+    fi
+    error "Bubblewrap sandbox unavailable (bwrap missing or unprivileged user namespaces disabled)."
+    error "Refusing to execute '$app_id' without isolation."
+    error "Install bubblewrap / enable user namespaces, or set ULPM_UNSAFE_NO_SANDBOX=1 to explicitly override."
+    return 1
+}
+
 session_bus_socket() {
     local run_user_dir="$1"
     local addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$run_user_dir/bus}"
@@ -81,7 +98,7 @@ session_bus_socket() {
 }
 
 # ------------------------------------------------------------------------------
-# Security & Cryptographic Validation Integration
+# Security & Cryptographic Validation Integration (v5.3 Permissive Fallback Engine)
 # ------------------------------------------------------------------------------
 
 _ulpm_check_signature() {
@@ -159,7 +176,7 @@ lpk_is_rootfs() {
 
     if [[ -f "$manifest" ]]; then
         local is_rootfs
-        is_rootfs=$(jq -r '.type // .kind // empty' "$manifest" 2>/dev/null || true)
+        is_rootfs="$(jq -r '.type // .kind // empty' "$manifest" 2>/dev/null || true)"
         if [[ "$is_rootfs" =~ ^(rootfs|distro|os)$ ]]; then
             return 0
         fi
@@ -236,7 +253,8 @@ lpk_run_rootfs() {
     done
 
     if ! command -v bwrap >/dev/null 2>&1 || is_proot || ! bwrap --ro-bind / / true >/dev/null 2>&1; then
-        warn "Bubblewrap sandbox unavailable; executing rootfs entrypoint directly under host..."
+        _ulpm_refuse_unsandboxed "$app_id" || return 1
+        warn "Executing rootfs entrypoint directly under host (unsafe compatibility mode)..."
         export PATH="$rootfs_dir/bin:$rootfs_dir/usr/bin:$PATH"
         export LD_LIBRARY_PATH="$rootfs_dir/lib:$rootfs_dir/usr/lib:$rootfs_dir/lib64:$rootfs_dir/usr/lib64:${LD_LIBRARY_PATH:-}"
         exec "$rootfs_dir/$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
@@ -263,6 +281,10 @@ lpk_run_rootfs() {
         --bind "$app_data_dir/home" "$HOME"
         --bind "$app_data_dir/tmp" /tmp
         --bind "$dl_host_dir" "$dl_host_dir"
+        --bind-try /media /media
+        --bind-try /run/media /run/media
+        --bind-try /mnt /mnt
+        --bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
     )
 
     if [[ "$disable_gui" == "true" || -z "${DISPLAY:-}" ]]; then
@@ -310,7 +332,11 @@ lpk_run_rootfs() {
     )
 
     if [[ "$disable_gpu" != "true" ]]; then
-        bwrap_args+=(--dev-bind-try /dev/dri /dev/dri)
+        bwrap_args+=(
+            --dev-bind-try /dev/dri /dev/dri
+            --ro-bind-try /usr/share/vulkan /usr/share/vulkan
+            --ro-bind-try /usr/share/glvnd /usr/share/glvnd
+        )
         shopt -s nullglob
         local dev
         for dev in /dev/nvidia* /dev/nvidia-uvm* /dev/nvidia-modeset*; do
@@ -396,9 +422,9 @@ lpk_run_rootfs() {
     "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
-# --------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # App Mode Execution (Shared Host Base + Isolated Sandbox)
-# --------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 lpk_run_isolated() {
     local cli_force_offline=false
@@ -493,6 +519,7 @@ lpk_run_isolated() {
         return 1
     fi
 
+    # Cryptographic validation with v5.3 compatibility
     _ulpm_check_signature "$pkg_path" || return 1
 
     local instance_id="$$_${RANDOM}"
@@ -502,7 +529,7 @@ lpk_run_isolated() {
     mnt_dir="$(mktemp -d "${cache_dir}/mnt_${instance_id}.XXXXXX")"
     local is_extracted=0
 
-    # Variable protégée pour le mode nounset (set -u)
+    # Guaranteed systematic cleanup
     local cleanup_done=0
     # shellcheck disable=SC2329
     _cleanup_sandbox_instance() {
@@ -555,7 +582,7 @@ lpk_run_isolated() {
 
     if [[ -f "$manifest_file" ]]; then
         local raw_id
-        raw_id=$(jq -r '.id // .name // empty' "$manifest_file" 2>/dev/null || true)
+        raw_id="$(jq -r '.id // .name // empty' "$manifest_file" 2>/dev/null || true)"
         if [[ -n "$raw_id" ]]; then
             if ! is_safe_app_id "$raw_id"; then
                 error "Refusing to run: unsafe application id in manifest: '$raw_id'"
@@ -722,7 +749,7 @@ EOF
     done
 
     if [[ "$app_id" =~ (firefox|Firefox) ]] || [[ "$clean_exec" =~ firefox ]]; then
-        if [ ${#sanitized_args[@]} -eq 0 ]; then
+        if [[ ${#sanitized_args[@]} -eq 0 ]]; then
             sanitized_args=("about:home")
         fi
     fi
@@ -735,7 +762,12 @@ EOF
     fi
 
     if (( can_use_bwrap == 0 )); then
-        warn "Bubblewrap unprivileged sandbox unavailable. Executing in direct compatibility mode..."
+        if ! _ulpm_refuse_unsandboxed "$app_id"; then
+            _cleanup_sandbox_instance
+            trap - EXIT
+            return 1
+        fi
+        warn "Executing in direct compatibility mode without bubblewrap isolation..."
         export PATH="$app_payload_dir/bin:$app_payload_dir/usr/bin:$app_payload_dir:/usr/bin:/bin"
         export LD_LIBRARY_PATH="$app_payload_dir/lib:$app_payload_dir/usr/lib:$app_payload_dir/lib64:$app_payload_dir/usr/lib64:${LD_LIBRARY_PATH:-}"
         export XDG_CONFIG_HOME="$app_data_dir/config"
@@ -778,13 +810,17 @@ EOF
         --tmpfs /tmp
         --tmpfs /run
         --tmpfs /var/tmp
+        --bind-try /media /media
+        --bind-try /run/media /run/media
+        --bind-try /mnt /mnt
+        --bind-try /run/dbus/system_bus_socket /run/dbus/system_bus_socket
     )
 
     if [[ -n "$runtime_root" && -d "$runtime_root/usr" ]]; then
         bwrap_args+=(--ro-bind "$runtime_root/usr" /usr)
-        [[ -d "$runtime_root/lib" ]]   && bwrap_args+=(--ro-bind-try "$runtime_root/lib" /lib)
+        [[ -d "$runtime_root/lib" ]] && bwrap_args+=(--ro-bind-try "$runtime_root/lib" /lib)
         [[ -d "$runtime_root/lib64" ]] && bwrap_args+=(--ro-bind-try "$runtime_root/lib64" /lib64)
-        [[ -d "$runtime_root/bin" ]]   && bwrap_args+=(--ro-bind-try "$runtime_root/bin" /bin)
+        [[ -d "$runtime_root/bin" ]] && bwrap_args+=(--ro-bind-try "$runtime_root/bin" /bin)
     else
         bwrap_args+=(--ro-bind /usr /usr)
         local dir target_link
@@ -799,15 +835,15 @@ EOF
     fi
 
     case "$home_mode" in
-        isolated)       bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
-        read|ro)        bwrap_args+=(--ro-bind "$HOME" "$HOME") ;;
-        read-write|rw)  bwrap_args+=(--bind "$HOME" "$HOME") ;;
-        *)              bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
+        isolated)      bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
+        read|ro)       bwrap_args+=(--ro-bind "$HOME" "$HOME") ;;
+        read-write|rw) bwrap_args+=(--bind "$HOME" "$HOME") ;;
+        *)             bwrap_args+=(--bind "$app_data_dir/home" "$HOME") ;;
     esac
 
     case "$dl_mode" in
-        read-write|rw)  bwrap_args+=(--bind "$dl_host_dir" "$dl_host_dir") ;;
-        read|ro)        bwrap_args+=(--ro-bind "$dl_host_dir" "$dl_host_dir") ;;
+        read-write|rw) bwrap_args+=(--bind "$dl_host_dir" "$dl_host_dir") ;;
+        read|ro)       bwrap_args+=(--ro-bind "$dl_host_dir" "$dl_host_dir") ;;
     esac
 
     local custom_fs_entries
@@ -856,7 +892,7 @@ EOF
     local etc_item
     for etc_item in alternatives ld.so.cache ld.so.conf ld.so.conf.d \
         fonts X11 xdg gtk-2.0 gtk-3.0 gtk-4.0 pulse vulkan glvnd \
-        time timezone os-release machine-id passwd group; do
+        timezone os-release machine-id passwd group; do
         bwrap_args+=(--ro-bind-try "/etc/$etc_item" "/etc/$etc_item")
     done
 
@@ -923,7 +959,7 @@ EOF
     fi
 
     [[ -f "$HOME/.config/user-dirs.dirs" ]] && bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
-    [[ -d "/recalbox/share" ]]              && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
+    [[ -d "/recalbox/share" ]] && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
 
     if [[ "$allow_gui" == "true" ]]; then
         if [[ -n "${DISPLAY:-}" ]]; then
@@ -949,73 +985,85 @@ EOF
         fi
     fi
 
-    # D-Bus Filtering Proxy with Full Desktop Portals Baseline
+    # D-Bus Filtering Proxy with Full Desktop Portals Baseline (and Direct Fallback)
     local session_bus
-    if [[ "$allow_gui" == "true" ]] && session_bus="$(session_bus_socket "$run_user_dir")" && command -v xdg-dbus-proxy >/dev/null 2>&1; then
-        dbus_proxy_dir="$(mktemp -d "$cache_dir/dbus_proxy_${instance_id}.XXXXXX")"
-        local proxy_socket="$dbus_proxy_dir/bus"
-        local proxy_args=(xdg-dbus-proxy "$session_bus" "$proxy_socket" --filter)
+    if [[ "$allow_gui" == "true" ]] && session_bus="$(session_bus_socket "$run_user_dir")"; then
+        if command -v xdg-dbus-proxy >/dev/null 2>&1; then
+            dbus_proxy_dir="$(mktemp -d "$cache_dir/dbus_proxy_${instance_id}.XXXXXX")"
+            local proxy_socket="$dbus_proxy_dir/bus"
+            local proxy_args=(xdg-dbus-proxy "$session_bus" "$proxy_socket" --filter)
 
-        case "$app_id" in
-            org.freedesktop*|org.gnome*|org.kde*|org.mpris*|com.canonical*)
-                warn "App id '$app_id' collides with system D-Bus namespace: automatic --own omitted."
-                ;;
-            *) proxy_args+=(--own="${app_id}.*") ;;
-        esac
+            case "$app_id" in
+                org.freedesktop*|org.gnome*|org.kde*|org.mpris*|com.canonical*)
+                    warn "App id '$app_id' collides with system D-Bus namespace: automatic --own omitted."
+                    ;;
+                *) proxy_args+=(--own="${app_id}.*") ;;
+            esac
 
-        local talk_rules own_rules rule
-        talk_rules="$(jq -r '.permissions.dbus.session.talk[]?' <<< "$effective_json" 2>/dev/null || true)"
-        if [[ -n "$talk_rules" ]]; then
-            while IFS= read -r rule; do
-                [[ -n "$rule" ]] && proxy_args+=(--talk="$rule")
-            done <<< "$talk_rules"
-        fi
-
-        own_rules="$(jq -r '.permissions.dbus.session.own[]?' <<< "$effective_json" 2>/dev/null || true)"
-        if [[ -n "$own_rules" ]]; then
-            while IFS= read -r rule; do
-                [[ -n "$rule" ]] && proxy_args+=(--own="$rule")
-            done <<< "$own_rules"
-        fi
-
-        # Standard Freedesktop & XDG Portals baseline
-        proxy_args+=(
-            --own='org.mpris.MediaPlayer2.*'
-            --talk=org.freedesktop.Notifications
-            --talk=org.freedesktop.ScreenSaver
-            --talk=org.freedesktop.PowerManagement.Inhibit
-            --talk=org.freedesktop.portal.Desktop
-            --talk=org.freedesktop.portal.Documents
-            --talk=org.kde.StatusNotifierWatcher
-        )
-
-        if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
-            # shellcheck disable=SC2206
-            proxy_args+=($ULPM_DBUS_EXTRA)
-        fi
-
-        "${proxy_args[@]}" &
-        dbus_pid=$!
-
-        local proxy_wait=0
-        while [[ ! -S "$proxy_socket" ]] && (( proxy_wait < 20)); do
-            if ! kill -0 "$dbus_pid" 2>/dev/null; then
-                break
+            local talk_rules own_rules rule
+            talk_rules="$(jq -r '.permissions.dbus.session.talk[]?' <<< "$effective_json" 2>/dev/null || true)"
+            if [[ -n "$talk_rules" ]]; then
+                while IFS= read -r rule; do
+                    [[ -n "$rule" ]] && proxy_args+=(--talk="$rule")
+                done <<< "$talk_rules"
             fi
-            sleep 0.05
-            proxy_wait=$((proxy_wait + 1))
-        done
 
-        if [[ -S "$proxy_socket" ]]; then
+            own_rules="$(jq -r '.permissions.dbus.session.own[]?' <<< "$effective_json" 2>/dev/null || true)"
+            if [[ -n "$own_rules" ]]; then
+                while IFS= read -r rule; do
+                    [[ -n "$rule" ]] && proxy_args+=(--own="$rule")
+                done <<< "$own_rules"
+            fi
+
+            # Standard Freedesktop & XDG Portals baseline
+            proxy_args+=(
+                --own='org.mpris.MediaPlayer2.*'
+                --talk=org.freedesktop.Notifications
+                --talk=org.freedesktop.ScreenSaver
+                --talk=org.freedesktop.PowerManagement.Inhibit
+                --talk=org.freedesktop.portal.Desktop
+                --talk=org.freedesktop.portal.Documents
+                --talk=org.kde.StatusNotifierWatcher
+            )
+
+            if [[ -n "${ULPM_DBUS_EXTRA:-}" ]]; then
+                # shellcheck disable=SC2206
+                proxy_args+=($ULPM_DBUS_EXTRA)
+            fi
+
+            "${proxy_args[@]}" &
+            dbus_pid=$!
+
+            local proxy_wait=0
+            while [[ ! -S "$proxy_socket" ]] && (( proxy_wait < 20 )); do
+                if ! kill -0 "$dbus_pid" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.05
+                proxy_wait=$((proxy_wait + 1))
+            done
+
+            if [[ -S "$proxy_socket" ]]; then
+                bwrap_args+=(
+                    --bind "$proxy_socket" "$run_user_dir/bus"
+                    --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
+                )
+            else
+                warn "Failed to initialize filtered D-Bus proxy; falling back to direct socket."
+                kill "$dbus_pid" 2>/dev/null || true
+                wait "$dbus_pid" 2>/dev/null || true
+                dbus_pid=""
+                bwrap_args+=(
+                    --bind-try "$session_bus" "$run_user_dir/bus"
+                    --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
+                )
+            fi
+        else
+            # FlatImage-style direct bind when proxy is missing
             bwrap_args+=(
-                --bind "$proxy_socket" "$run_user_dir/bus"
+                --bind-try "$session_bus" "$run_user_dir/bus"
                 --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
             )
-        else
-            warn "Failed to initialize filtered D-Bus proxy; proceeding without session bus."
-            kill "$dbus_pid" 2>/dev/null || true
-            wait "$dbus_pid" 2>/dev/null || true
-            dbus_pid=""
         fi
     fi
 
@@ -1052,11 +1100,11 @@ EOF
 
     local host_multiarch=""
     case "$(detect_arch)" in
-        amd64)     host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
-        arm64)     host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
-        armhf)     host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
-        i386)      host_multiarch="/usr/lib/i386-linux-gnu" ;;
-        riscv64)   host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
+        amd64)   host_multiarch="/usr/lib/x86_64-linux-gnu" ;;
+        arm64)   host_multiarch="/usr/lib/aarch64-linux-gnu" ;;
+        armhf)   host_multiarch="/usr/lib/arm-linux-gnueabihf" ;;
+        i386)    host_multiarch="/usr/lib/i386-linux-gnu" ;;
+        riscv64) host_multiarch="/usr/lib/riscv64-linux-gnu" ;;
     esac
 
     local ld_paths="/app/lib:/app/usr/lib:/app/lib64:/app/usr/lib64"
@@ -1075,10 +1123,14 @@ EOF
     log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
     local app_exit_code=0
     if (( ${#seccomp_fd_arg[@]} > 0 )); then
-        "${bwrap_args[@]}" "${seccomp_fd_arg[@]}" "$sandbox_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
+        "${bwrap_args[@]}" "${seccomp_fd_arg[@]}" "$sandbox_exec" \
+            ${extra_app_flags[@]+"${extra_app_flags[@]}"} \
+            ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
         exec 9<&- 2>/dev/null || true
     else
-        "${bwrap_args[@]}" "$sandbox_exec" ${extra_app_flags[@]+"${extra_app_flags[@]}"} ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
+        "${bwrap_args[@]}" "$sandbox_exec" \
+            ${extra_app_flags[@]+"${extra_app_flags[@]}"} \
+            ${sanitized_args[@]+"${sanitized_args[@]}"} || app_exit_code=$?
     fi
 
     _cleanup_sandbox_instance
