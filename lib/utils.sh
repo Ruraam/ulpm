@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/utils.sh - Core utilities, binary helpers and environment setup
-# ULPM v5.3 Architecture Engine (Hardened POSIX / Strict Bash)
+# ULPM v6.0.0 Architecture Engine (Hardened POSIX / Strict Bash / v5.3 Reliability)
 # ==============================================================================
 
 # Strict color configuration (supports NO_COLOR standard & terminal detection)
@@ -23,14 +23,14 @@ else
     C_BOLD=''
 fi
 
-log()    { printf '%b[ulpm]%b %s\n' "${C_BLUE}${C_BOLD}" "$C_RESET" "$*"; }
-info()   { printf '%b[+]%b %s\n' "${C_GREEN}${C_BOLD}" "$C_RESET" "$*"; }
-warn()   { printf '%b[!]%b %s\n' "${C_YELLOW}${C_BOLD}" "$C_RESET" "$*" >&2; }
-error()  { printf '%b[x]%b %s\n' "${C_RED}${C_BOLD}" "$C_RESET" "$*" >&2; }
-die()    { error "$*"; exit 1; }
+log()   { printf '%b[ulpm]%b %s\n' "${C_BLUE}${C_BOLD}" "$C_RESET" "$*"; }
+info()  { printf '%b[+]%b %s\n' "${C_GREEN}${C_BOLD}" "$C_RESET" "$*"; }
+warn()  { printf '%b[!]%b %s\n' "${C_YELLOW}${C_BOLD}" "$C_RESET" "$*" >&2; }
+error() { printf '%b[x]%b %s\n' "${C_RED}${C_BOLD}" "$C_RESET" "$*" >&2; }
+die()   { error "$*"; exit 1; }
 
 # ==============================================================================
-# Path, URI & Durability (WAL Primitives)
+# Path, URI & Durability (WAL Primitives - v5.3 Proven Engine)
 # ==============================================================================
 
 sync_file() {
@@ -64,7 +64,7 @@ durable_write() {
     tmp_file="$(mktemp "$dest_dir/.tmp.wal.XXXXXX")" || return 1
     chmod "$mode" "$tmp_file" 2>/dev/null || true
 
-    if ! printf '%s' "$content" >"$tmp_file"; then
+    if ! printf '%s' "$content" > "$tmp_file"; then
         rm -f -- "$tmp_file"
         return 1
     fi
@@ -95,7 +95,7 @@ normalize_target() {
     fi
 
     if [[ "$rest" =~ %00 ]]; then
-        error 'NUL byte is not valid in a filepath.'
+        error 'NUL byte is not valid in a file path.'
         return 1
     fi
 
@@ -217,6 +217,113 @@ _ulpm_valid_bind_dest() {
 }
 
 # ------------------------------------------------------------------------------
+# Architecture Normalization & Host Detection (v5.3 Proven Engine)
+# ------------------------------------------------------------------------------
+
+normalize_arch_name() {
+    case "${1,,}" in
+        amd64|x86_64|x86-64|x64)          printf 'amd64\n' ;;
+        arm64|aarch64|arm-64|armv8)       printf 'arm64\n' ;;
+        armhf|armv7|armv7l|arm32)         printf 'armhf\n' ;;
+        i386|i486|i586|i686|x86)          printf 'i386\n' ;;
+        riscv64)                          printf 'riscv64\n' ;;
+        ppc64le)                          printf 'ppc64le\n' ;;
+        s390x)                            printf 's390x\n' ;;
+        loongarch64)                      printf 'loongarch64\n' ;;
+        mips64)                           printf 'mips64\n' ;;
+        mips)                             printf 'mips\n' ;;
+        sparc64)                          printf 'sparc64\n' ;;
+        all|any|noarch|no-arch|universal) printf 'all\n' ;;
+        *)                                printf '%s\n' "${1,,}" ;;
+    esac
+}
+
+detect_arch() {
+    case "$(uname -m 2>/dev/null || echo 'unknown')" in
+        x86_64|amd64)        echo amd64 ;;
+        aarch64|arm64)       echo arm64 ;;
+        armv7*|armv6*|armhf) echo armhf ;;
+        i386|i486|i586|i686) echo i386 ;;
+        riscv64)             echo riscv64 ;;
+        ppc64le)             echo ppc64le ;;
+        s390x)               echo s390x ;;
+        loongarch64)         echo loongarch64 ;;
+        *)                   normalize_arch_name "$(uname -m 2>/dev/null || echo 'unknown')" ;;
+    esac
+}
+
+is_arch_compatible() {
+    local package_arch="${1:-all}" host_arch
+    package_arch="$(normalize_arch_name "$package_arch")"
+    host_arch="$(detect_arch)"
+    [[ "$package_arch" == all || "$package_arch" == "$host_arch" ]]
+}
+
+find_host_loader() {
+    local arch
+    arch="$(detect_arch)" || return 1
+    local candidates=()
+    case "$arch" in
+        amd64)
+            candidates=(
+                /lib64/ld-linux-x86-64.so.2
+                /usr/lib64/ld-linux-x86-64.so.2
+                /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+                /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+                /lib/ld-musl-x86_64.so.1
+                /usr/lib/ld-musl-x86_64.so.1
+            )
+            ;;
+        arm64)
+            candidates=(
+                /lib/ld-linux-aarch64.so.1
+                /usr/lib/ld-linux-aarch64.so.1
+                /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+                /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+                /lib/ld-musl-aarch64.so.1
+                /usr/lib/ld-musl-aarch64.so.1
+            )
+            ;;
+        armhf)
+            candidates=(
+                /lib/ld-linux-armhf.so.3
+                /usr/lib/ld-linux-armhf.so.3
+                /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
+                /usr/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
+            )
+            ;;
+        i386)
+            candidates=(
+                /lib/ld-linux.so.2
+                /usr/lib/ld-linux.so.2
+                /lib/i386-linux-gnu/ld-linux.so.2
+                /usr/lib/i386-linux-gnu/ld-linux.so.2
+                /lib/ld-musl-i386.so.1
+                /usr/lib/ld-musl-i386.so.1
+            )
+            ;;
+        riscv64)
+            candidates=(
+                /lib/ld-linux-riscv64-lp64d.so.1
+                /usr/lib/ld-linux-riscv64-lp64d.so.1
+                /lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1
+                /usr/lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1
+                /lib/ld-musl-riscv64.so.1
+                /usr/lib/ld-musl-riscv64.so.1
+            )
+            ;;
+        *) return 1 ;;
+    esac
+    for cand in "${candidates[@]}"; do
+        if [[ -x "$cand" ]]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
 # Semantic Version Comparison Engine (Deterministic, Pure Bash Fallback)
 # ------------------------------------------------------------------------------
 
@@ -333,7 +440,7 @@ manifest_resolve_effective() {
 
 manifest_get() {
     local json="$1" query="$2" default_val="${3:-}" res
-    res=$(jq -r "$query // empty" <<< "$json" 2>/dev/null || true)
+    res="$(jq -r "$query // empty" <<< "$json" 2>/dev/null || true)"
     if [[ -z "$res" ]]; then
         printf '%s\n' "$default_val"
     else
@@ -403,7 +510,7 @@ db_remove_entry() {
     }
     db_dir="$(dirname -- "$db_file")"
     tmp="$(mktemp "$db_dir/.installed.db.XXXXXX")" || return 1
-    if ! awk -F'|' -v id="$id" -v name="$name" '!($1 == id || $2 == name)' "$db_file" > "$tmp"; then
+    if ! awk -F'|' -v id="$id" -v name="$name" '!($1 == id || $2 == name)' "$db_file" >"$tmp"; then
         rm -f -- "$tmp"
         error "Could not prepare package database removal."
         return 1
@@ -508,108 +615,6 @@ safe_unmount() {
     return 1
 }
 
-normalize_arch_name() {
-    case "${1,,}" in
-        amd64|x86_64|x86-64|x64)          printf 'amd64\n' ;;
-        arm64|aarch64|arm-64|armv8)       printf 'arm64\n' ;;
-        armhf|armv7|armv7l|arm32)         printf 'armhf\n' ;;
-        i386|i486|i586|i686|x86)          printf 'i386\n' ;;
-        riscv64)                          printf 'riscv64\n' ;;
-        ppc64le)                          printf 'ppc64le\n' ;;
-        s390x)                            printf 's390x\n' ;;
-        loongarch64)                      printf 'loongarch64\n' ;;
-        mips64)                           printf 'mips64\n' ;;
-        mips)                             printf 'mips\n' ;;
-        sparc64)                          printf 'sparc64\n' ;;
-        all|any|noarch|no-arch|universal) printf 'all\n' ;;
-        *)                                printf '%s\n' "${1,,}" ;;
-    esac
-}
-
-is_arch_compatible() {
-    local package_arch="${1:-all}" host_arch
-    package_arch="$(normalize_arch_name "$package_arch")"
-    host_arch="$(normalize_arch_name "$(detect_arch)")"
-    [[ "$package_arch" == all || "$package_arch" == "$host_arch" ]]
-}
-
-detect_arch() {
-    case "$(uname -m)" in
-        x86_64|amd64)        echo amd64 ;;
-        aarch64|arm64)       echo arm64 ;;
-        armv7*|armv6*|armhf) echo armhf ;;
-        i386|i486|i586|i686) echo i386 ;;
-        riscv64)             echo riscv64 ;;
-        ppc64le)             echo ppc64le ;;
-        s390x)               echo s390x ;;
-        *)                   uname -m ;;
-    esac
-}
-
-find_host_loader() {
-    local arch
-    arch="$(detect_arch)" || return 1
-    local candidates=()
-    case "$arch" in
-        amd64)
-            candidates=(
-                /lib64/ld-linux-x86-64.so.2
-                /usr/lib64/ld-linux-x86-64.so.2
-                /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-                /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-                /lib/ld-musl-x86_64.so.1
-                /usr/lib/ld-musl-x86_64.so.1
-            )
-            ;;
-        arm64)
-            candidates=(
-                /lib/ld-linux-aarch64.so.1
-                /usr/lib/ld-linux-aarch64.so.1
-                /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
-                /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
-                /lib/ld-musl-aarch64.so.1
-                /usr/lib/ld-musl-aarch64.so.1
-            )
-            ;;
-        armhf)
-            candidates=(
-                /lib/ld-linux-armhf.so.3
-                /usr/lib/ld-linux-armhf.so.3
-                /lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
-                /usr/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3
-            )
-            ;;
-        i386)
-            candidates=(
-                /lib/ld-linux.so.2
-                /usr/lib/ld-linux.so.2
-                /lib/i386-linux-gnu/ld-linux.so.2
-                /usr/lib/i386-linux-gnu/ld-linux.so.2
-                /lib/ld-musl-i386.so.1
-                /usr/lib/ld-musl-i386.so.1
-            )
-            ;;
-        riscv64)
-            candidates=(
-                /lib/ld-linux-riscv64-lp64d.so.1
-                /usr/lib/ld-linux-riscv64-lp64d.so.1
-                /lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1
-                /usr/lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1
-                /lib/ld-musl-riscv64.so.1
-                /usr/lib/ld-musl-riscv64.so.1
-            )
-            ;;
-        *) return 1 ;;
-    esac
-    for cand in "${candidates[@]}"; do
-        if [[ -x "$cand" ]]; then
-            printf '%s\n' "$cand"
-            return 0
-        fi
-    done
-    return 1
-}
-
 # ==============================================================================
 # GitHub Configuration, API & Authentication Helper
 # ==============================================================================
@@ -673,7 +678,7 @@ cmd_token() {
         while IFS= read -r line || [[ -n "$line" ]]; do
             if [[ "$line" =~ ^[[:space:]]*GITHUB_TOKEN= ]]; then
                 if (( found == 0 )); then
-                    printf 'GITHUB_TOKEN="%s"\n' "$token" >> "$tmp_file" || {
+                    printf 'GITHUB_TOKEN="%s"\n' "$token" >>"$tmp_file" || {
                         rm -f -- "$tmp_file"
                         return 1
                     }
@@ -935,7 +940,7 @@ cmd_self_update() {
         rm -rf -- "$tmp_dir"
         return 1
     fi
-    if awk 'substr($0,1,1) ~ /^[bcps]/ { bad=1 } END {exit bad ? 0 : 1 }' "$tmp_dir/archive.verbose"; then
+    if awk 'substr($0,1,1) ~ /^[bcps]/ { bad=1 } END {exit bad ? 0 : 1}' "$tmp_dir/archive.verbose"; then
         error 'Archive contains dangerous special device nodes or FIFOs; update cancelled.'
         rm -rf -- "$tmp_dir"
         return 1

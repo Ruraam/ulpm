@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/transaction.sh - Multi-package Atomic Transaction Engine with WAL
-# ULPM v5.3 Architecture Engine (Crash Recovery, Persistent WAL & LIFO Rollback)
+# ULPM v6.0.0 Architecture Engine (v5.3 Crash Recovery & Persistent LIFO Rollback)
 # ==============================================================================
 
 _txn_safe_name() {
@@ -68,7 +68,11 @@ _txn_select_row() {
 
         local cmp=0
         if [[ -n "$selected_version" ]]; then
-            semver_compare "$candidate_version" "$selected_version" || cmp=$?
+            if declare -F semver_compare >/dev/null 2>&1; then
+                semver_compare "$candidate_version" "$selected_version" || cmp=$?
+            else
+                [[ "$candidate_version" != "$selected_version" ]] && cmp=1
+            fi
         fi
 
         if [[ -z "$selected" ]] || (( cmp == 1 )); then
@@ -94,12 +98,12 @@ _txn_restore_file() {
     if [[ -e "$saved" ]]; then
         mkdir -p -- "$(dirname -- "$target")" || return 1
         cp -a -- "$saved" "$target.restore.$$" || return 1
-        sync_file "$target.restore.$$"
+        sync_file "$target.restore.$$" 2>/dev/null || true
         mv -f -- "$target.restore.$$" "$target" || {
             rm -f -- "$target.restore.$$"
             return 1
         }
-        sync_dir "$(dirname -- "$target")"
+        sync_dir "$(dirname -- "$target")" 2>/dev/null || true
     else
         rm -f -- "$target" 2>/dev/null || true
     fi
@@ -129,7 +133,7 @@ _txn_rollback() {
         rm -rf -- "$target" || failed=1
         if [[ "$existed" == 1 && -d "$snap/apps/$name" ]]; then
             mkdir -p -- "$apps_dir" && cp -a -- "$snap/apps/$name" "$target" || failed=1
-            sync_dir "$apps_dir"
+            sync_dir "$apps_dir" 2>/dev/null || true
         fi
         id="${t_ids[$i]}"
         _txn_restore_file "$snap/icons/$id.png" "$data_home/icons/hicolor/256x256/apps/$id.png" || failed=1
@@ -140,14 +144,13 @@ _txn_rollback() {
     if [[ -f "$snap/installed.db" ]]; then
         mkdir -p -- "$(dirname -- "$db")" 2>/dev/null || true
         cp -a -- "$snap/installed.db" "$db.restore.$$" && \
-        sync_file "$db.restore.$$" && \
-        mv -f -- "$db.restore.$$" "$db" || failed=1
-        sync_dir "$(dirname -- "$db")"
+            sync_file "$db.restore.$$" 2>/dev/null && \
+            mv -f -- "$db.restore.$$" "$db" || failed=1
+        sync_dir "$(dirname -- "$db")" 2>/dev/null || true
     fi
 
     if [[ -d "$history" && -f "$snap/history.before" ]]; then
-        local f base
-        local tmp_hist_list
+        local f base tmp_hist_list
         tmp_hist_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/hist_rb.XXXXXX")" || failed=1
         if [[ -f "$tmp_hist_list" ]]; then
             find "$history" -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null > "$tmp_hist_list"
@@ -195,13 +198,13 @@ cmd_transaction_recover() {
             if _txn_rollback "$snap_path" "$apps_dir" "$db" "$history" "$data_home"; then
                 info "Successfully rolled back interrupted transaction."
                 rm -rf -- "$snap_path" "$j"
-                sync_dir "$wal_dir"
+                sync_dir "$wal_dir" 2>/dev/null || true
             else
                 error "Failed to cleanly recover transaction at $snap_path; leaving files in place for inspection."
             fi
         else
             rm -f -- "$j"
-            sync_dir "$wal_dir"
+            sync_dir "$wal_dir" 2>/dev/null || true
         fi
     done
 
@@ -354,7 +357,12 @@ cmd_transaction() {
             remote_version="$(jq -r '.version' <<< "$row")"
 
             local cmp_root=0
-            semver_compare "$remote_version" "$installed_version" || cmp_root=$?
+            if declare -F semver_compare >/dev/null 2>&1; then
+                semver_compare "$remote_version" "$installed_version" || cmp_root=$?
+            else
+                [[ "$remote_version" != "$installed_version" ]] && cmp_root=1
+            fi
+
             if (( cmp_root == 1 )); then
                 local -a kept_done=()
                 for id in "${done_ids[@]}"; do
@@ -429,7 +437,7 @@ cmd_transaction() {
             release_lock
             error "Could not download '$id' from '$repo'."
             return 1
-        fi
+        }
         got="$(sha256sum "$pkg" | awk '{print $1}')"
         [[ "$got" == "$hash" ]] || {
             rm -rf -- "$work"
@@ -444,7 +452,11 @@ cmd_transaction() {
             return 1
         }
 
-        manifest_raw="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null || unsquashfs -cat "$pkg" lpk.json 2>/dev/null || true)"
+        if declare -F read_package_manifest >/dev/null 2>&1; then
+            manifest_raw="$(read_package_manifest "$pkg" 2>/dev/null || true)"
+        else
+            manifest_raw="$(unsquashfs -cat "$pkg" meta/manifest.json 2>/dev/null || unsquashfs -cat "$pkg" lpk.json 2>/dev/null || true)"
+        fi
         manifest_id="$(jq -r '.id // empty' <<< "$manifest_raw" 2>/dev/null || true)"
         manifest_version="$(jq -r '.version // empty' <<< "$manifest_raw" 2>/dev/null || true)"
 
@@ -471,42 +483,37 @@ cmd_transaction() {
         else
             TXN_EXISTED+=(0)
         fi
-        [[ ! -L "$data_home/icons/hicolor/256x256/apps/$id.png" ]] || {
-            rm -rf -- "$work"
-            release_lock
-            error "Refusing symlinked icon for '$id'."
-            return 1
-        }
-        [[ ! -L "$data_home/icons/hicolor/512x512/apps/$id.png" ]] || {
-            rm -rf -- "$work"
-            release_lock
-            error "Refusing symlinked 512x512 icon for '$id'."
-            return 1
-        }
-        [[ ! -L "$data_home/applications/$id.desktop" ]] || {
+
+        # Backup icons safely (factorized size-matrix)
+        local isize snap_subdir
+        for isize in "256x256" "512x512"; do
+            [[ "$isize" == "256x256" ]] && snap_subdir="icons" || snap_subdir="icons_512"
+            local icon_target="$data_home/icons/hicolor/$isize/apps/$id.png"
+            [[ ! -L "$icon_target" ]] || {
+                rm -rf -- "$work"
+                release_lock
+                error "Refusing symlinked $isize icon for '$id'."
+                return 1
+            }
+            if [[ -f "$icon_target" ]]; then
+                cp -a -- "$icon_target" "$work/snap/$snap_subdir/$id.png" || {
+                    rm -rf -- "$work"
+                    release_lock
+                    error "Could not snapshot $isize icon for '$id'."
+                    return 1
+                }
+            fi
+        done
+
+        local desktop_target="$data_home/applications/$id.desktop"
+        [[ ! -L "$desktop_target" ]] || {
             rm -rf -- "$work"
             release_lock
             error "Refusing symlinked desktop launcher for '$id'."
             return 1
         }
-        if [[ -f "$data_home/icons/hicolor/256x256/apps/$id.png" ]]; then
-            cp -a -- "$data_home/icons/hicolor/256x256/apps/$id.png" "$work/snap/icons/$id.png" || {
-                rm -rf -- "$work"
-                release_lock
-                error "Could not snapshot icon for '$id'."
-                return 1
-            }
-        fi
-        if [[ -f "$data_home/icons/hicolor/512x512/apps/$id.png" ]]; then
-            cp -a -- "$data_home/icons/hicolor/512x512/apps/$id.png" "$work/snap/icons_512/$id.png" || {
-                rm -rf -- "$work"
-                release_lock
-                error "Could not snapshot 512x512 icon for '$id'."
-                return 1
-            }
-        fi
-        if [[ -f "$data_home/applications/$id.desktop" ]]; then
-            cp -a -- "$data_home/applications/$id.desktop" "$work/snap/desktop/$id.desktop" || {
+        if [[ -f "$desktop_target" ]]; then
+            cp -a -- "$desktop_target" "$work/snap/desktop/$id.desktop" || {
                 rm -rf -- "$work"
                 release_lock
                 error "Could not snapshot launcher for '$id'."
@@ -520,7 +527,7 @@ cmd_transaction() {
     local i
     for ((i=0; i<${#TXN_IDS[@]}; i++)); do
         wal_meta="$(jq --arg id "${TXN_IDS[$i]}" --arg name "${TXN_NAMES[$i]}" --argjson ex "${TXN_EXISTED[$i]}" \
-            '.items += [{id:$id, name:$name, existed:$ex}]' <<< "$wal_meta")"
+            '.items += [{id: $id, name: $name, existed: $ex}]' <<< "$wal_meta")"
     done
     durable_write "$work/snap/meta.json" "$wal_meta" 600 || { rm -rf -- "$work"; release_lock; return 1; }
     durable_write "$wal_file" "$work/snap" 600 || { rm -rf -- "$work"; release_lock; return 1; }
@@ -536,7 +543,7 @@ cmd_transaction() {
             error "Transaction interrupted by $sig; executing atomic LIFO rollback..."
             if _txn_rollback "$work/snap" "$apps_dir" "$db" "$history" "$data_home"; then
                 rm -rf -- "$work" "$wal_file"
-                sync_dir "$wal_dir"
+                sync_dir "$wal_dir" 2>/dev/null || true
             fi
         fi
         release_lock
@@ -571,7 +578,7 @@ cmd_transaction() {
         if _txn_rollback "$work/snap" "$apps_dir" "$db" "$history" "$data_home"; then
             error 'Transaction successfully rolled back; system state restored.'
             rm -rf -- "$work" "$wal_file"
-            sync_dir "$wal_dir"
+            sync_dir "$wal_dir" 2>/dev/null || true
         else
             error "CRITICAL: Rollback failed. Recovery snapshot retained at: $work/snap"
         fi
@@ -582,10 +589,10 @@ cmd_transaction() {
     fi
 
     # Commit phase: sync storage and remove WAL log atomically
-    sync_dir "$apps_dir"
-    sync_dir "$(dirname -- "$db")"
+    sync_dir "$apps_dir" 2>/dev/null || true
+    sync_dir "$(dirname -- "$db")" 2>/dev/null || true
     rm -rf -- "$work" "$wal_file"
-    sync_dir "$wal_dir"
+    sync_dir "$wal_dir" 2>/dev/null || true
 
     txn_committed=1
     trap - INT TERM HUP

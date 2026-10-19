@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/run.sh - Direct Sandbox Execution Dispatcher
-# ULPM v5.3 Architecture Engine (Profiles, Sandbox Isolation & ABI Support)
+# ULPM v6.0.0 Architecture Engine (v5.3 Rock-Solid Resolution & Sandbox Dispatch)
 # ==============================================================================
 
 _run_resolve_target() {
@@ -9,11 +9,14 @@ _run_resolve_target() {
     local apps_dir="${ULPM_APPS_DIR:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/apps}"
     local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
 
+    [[ -n "$target" ]] || return 1
+
+    # Normalisation préalable si le module utils est chargé
     if declare -F normalize_target >/dev/null 2>&1; then
         target="$(normalize_target "$target" 2>/dev/null || printf '%s' "$target")"
     fi
 
-    # 1. Direct path to regular file
+    # 1. Chemin direct vers un fichier régulier
     if [[ -f "$target" ]]; then
         local real_target
         real_target="$(realpath -e -- "$target" 2>/dev/null || printf '%s' "$target")"
@@ -23,7 +26,18 @@ _run_resolve_target() {
         fi
     fi
 
-    # 2. Direct directory lookups in apps directory
+    # 2. Utilisation du résolveur officiel de manage.sh s'il est chargé
+    if declare -F _manage_resolve_installed_lpk >/dev/null 2>&1; then
+        local found
+        if found="$(_manage_resolve_installed_lpk "$target" 2>/dev/null || true)"; then
+            if [[ -n "$found" && -f "$found" ]]; then
+                realpath -e -- "$found" 2>/dev/null || printf '%s\n' "$found"
+                return 0
+            fi
+        fi
+    fi
+
+    # 3. Recherche directe dans le répertoire des applications (apps_dir)
     local candidate
     for candidate in \
         "$apps_dir/$target/$target.lpk" \
@@ -40,10 +54,11 @@ _run_resolve_target() {
         fi
     done
 
-    # 3. Lookup inside installed.db (exact match first, then case-insensitive)
+    # 4. Lookup direct à double passe dans installed.db (Socle v5.3 éprouvé)
     if [[ -f "$db_file" && ! -L "$db_file" ]]; then
         local id name _rest
-        # Pass 1: Strict match
+
+        # Passe 1 : Correspondance stricte
         while IFS='|' read -r id name _rest; do
             if [[ "$id" == "$target" || "$name" == "$target" ]]; then
                 for candidate in \
@@ -62,7 +77,7 @@ _run_resolve_target() {
             fi
         done < "$db_file"
 
-        # Pass 2: Case-insensitive fallback
+        # Passe 2: Repli insensible à la casse
         while IFS='|' read -r id name _rest; do
             if [[ "${id,,}" == "${target,,}" || "${name,,}" == "${target,,}" ]]; then
                 for candidate in \
@@ -93,7 +108,7 @@ cmd_run() {
     local -a sandbox_opts=()
     local -a app_args=()
 
-    while (($#)); do
+    while (( $# )); do
         arg="$1"
 
         if (( explicit_app_args )); then
@@ -107,12 +122,12 @@ cmd_run() {
                 explicit_app_args=1
                 shift
                 ;;
-            # Execution Profiles
+            # Profils d'exécution
             --gaming|--strict|--desktop)
                 sandbox_opts+=("$arg")
                 shift
                 ;;
-            # Network Control
+            # Contrôle Réseau
             --offline|--no-net)
                 sandbox_opts+=("--offline")
                 shift
@@ -121,14 +136,14 @@ cmd_run() {
                 sandbox_opts+=("--net")
                 shift
                 ;;
-            # Hardware & Subsystem Isolation Flags
+            # Isolation Matérielle et Sous-systèmes
             --no-gpu|--no-audio|--no-gui|--no-input)
                 sandbox_opts+=("$arg")
                 shift
                 ;;
-            # Directory Binds
+            # Montages de dossiers (Binds)
             --bind)
-                if (($# < 2)) || [[ -z "${2:-}" || "${2:-}" == -- ]]; then
+                if (( $# < 2 )) || [[ -z "${2:-}" || "${2:-}" == -- ]]; then
                     error "--bind requires a mapping formatted as <host_dir>:<sandbox_dir>."
                     return 2
                 fi
@@ -151,10 +166,10 @@ cmd_run() {
                 ;;
             -*)
                 if [[ -z "$target" ]]; then
-                    # Passthrough custom sandbox options safely
+                    # Transmission sécurisée des options de sandbox personnalisées
                     sandbox_opts+=("$arg")
                 else
-                    # Argument after target without explicit '--' is treated as application argument
+                    # Argument après la cible sans '--' explicite : considéré comme argument de l'application
                     app_args+=("$arg")
                 fi
                 shift

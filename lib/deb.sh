@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/deb.sh - Debian Package Downloader & Converter Engine
-# ULPM v5.3 Architecture Engine (Hardened Extraction & Isolated Assembly)
+# ULPM v6.0.0 Architecture Engine (v5.3 Hardened Extraction & Isolated Assembly)
 # ==============================================================================
 
 # Extract a .deb archive using dpkg-deb or fallback to ar+tar with traversal checks
@@ -45,7 +45,7 @@ _deb_extract_archive() {
                 tar --auto-compress -xf "$tar_tmp" -C "$dest_dir" --no-same-owner 2>/dev/null || extract_status=1
             fi
         else
-            tar -xf "$tar_tmp" -C "$dest_dir" --no-same-owner || \
+            tar -xf "$tar_tmp" -C "$dest_dir" --no-same-owner 2>/dev/null || \
             tar --auto-compress -xf "$tar_tmp" -C "$dest_dir" --no-same-owner 2>/dev/null || extract_status=1
         fi
 
@@ -81,6 +81,26 @@ _deb_read_control_field() {
         tar -xOf - ./control control 2>/dev/null | \
         awk -v f="$field" 'tolower($1) == tolower(f ":") { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' || true
     fi
+}
+
+_deb_write_apprun() {
+    local root_dir="$1" rel_target="$2"
+    cat <<EOF > "$root_dir/AppRun"
+#!/bin/sh
+HERE="\$(dirname "\$(readlink -f "\$0")")"
+export PATH="\$HERE/usr/bin:\$HERE/bin:\$HERE/usr/games:\$PATH"
+
+EXTRA_LIBS=""
+for d in "\$HERE"/usr/lib/*-linux-* "\$HERE"/lib/*-linux-* "\$HERE"/usr/lib64 "\$HERE"/lib64 "\$HERE"/usr/lib32 "\$HERE"/lib32; do
+    if [ -d "\$d" ]; then
+        EXTRA_LIBS="\${EXTRA_LIBS:+\$EXTRA_LIBS:}\$d"
+    fi
+done
+
+export LD_LIBRARY_PATH="\$HERE/lib:\$HERE/usr/lib:\$HERE/lib64:\$HERE/usr/lib64\${EXTRA_LIBS+:+\$EXTRA_LIBS}\${LD_LIBRARY_PATH+:+\$LD_LIBRARY_PATH}"
+exec "\$HERE/$rel_target" "\$@"
+EOF
+    chmod 0755 "$root_dir/AppRun"
 }
 
 resolve_github_deb_asset() {
@@ -130,6 +150,7 @@ resolve_github_deb_asset() {
         error "Detected architecture is empty."
         return 1
     }
+
     case "$arch" in
         arm64|aarch64)
             arch_regex='(^|[._+ -])(arm64|aarch64|arm-64|armv8|arm64v8|all)([._+ -]|$)'
@@ -204,7 +225,7 @@ _deb_download_direct_lib_deps() {
     done < "$tmp_dep_file"
     rm -f -- "$tmp_dep_file"
 
-    if ((${#deps[@]} > 0)); then
+    if (( ${#deps[@]} > 0 )); then
         log "Downloading ${#deps[@]} library dependency package(s)..."
         ( cd "$target_dir" && apt-get download "${deps[@]}" 2>/dev/null ) || true
     fi
@@ -282,7 +303,7 @@ _cmd_deb_pack_work() (
         return 1
     }
 
-    # CASE 0: GitHub repository.
+    # CASE 0: GitHub repository
     if [[ "$pkg_input" =~ ^https?://github\.com/ || "$pkg_input" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(@.+)?$ ]]; then
         check_dependencies curl jq || return 1
         deb_url="$(resolve_github_deb_asset "$pkg_input")" || return 1
@@ -310,7 +331,7 @@ _cmd_deb_pack_work() (
         pkg_input="$deb_dir/$deb_filename"
     fi
 
-    # CASE 1: Local .deb file.
+    # CASE 1: Local .deb file
     if [[ -L "$pkg_input" ]]; then
         error "Refusing a symbolic link as Debian package input: $pkg_input"
         return 1
@@ -334,7 +355,7 @@ _cmd_deb_pack_work() (
             _deb_download_direct_lib_deps "$extracted_name" "$deb_dir" || true
         fi
     else
-        # CASE 2: APT package name.
+        # CASE 2: APT package name
         check_dependencies apt-get apt-cache || return 1
         [[ -n "$app_name" ]] || app_name="$pkg_input"
 
@@ -396,22 +417,7 @@ _cmd_deb_pack_work() (
     for cand_bin in "$root_dir/usr/bin/$app_name" "$root_dir/bin/$app_name" "$root_dir/usr/games/$app_name"; do
         if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
             rel_target="${cand_bin#"$root_dir/"}"
-            cat <<EOF > "$root_dir/AppRun"
-#!/bin/sh
-HERE="\$(dirname "\$(readlink -f "\$0")")"
-export PATH="\$HERE/usr/bin:\$HERE/bin:\$HERE/usr/games:\$PATH"
-
-EXTRA_LIBS=""
-for d in "\$HERE"/usr/lib/*-linux-* "\$HERE"/lib/*-linux-* "\$HERE"/usr/lib64 "\$HERE"/lib64 "\$HERE"/usr/lib32 "\$HERE"/lib32; do
-    if [ -d "\$d" ]; then
-        EXTRA_LIBS="\${EXTRA_LIBS:+\$EXTRA_LIBS:}\$d"
-    fi
-done
-
-export LD_LIBRARY_PATH="\$HERE/lib:\$HERE/usr/lib:\$HERE/lib64:\$HERE/usr/lib64\${EXTRA_LIBS+:+\$EXTRA_LIBS}\${LD_LIBRARY_PATH+:+\$LD_LIBRARY_PATH}"
-exec "\$HERE/$rel_target" "\$@"
-EOF
-            chmod 0755 "$root_dir/AppRun"
+            _deb_write_apprun "$root_dir" "$rel_target"
             entry_found=1
             break
         fi
@@ -424,22 +430,7 @@ EOF
         while IFS= read -r -d '' cand_bin; do
             if [[ -x "$cand_bin" && ! -d "$cand_bin" ]]; then
                 rel_target="${cand_bin#"$root_dir/"}"
-                cat <<EOF > "$root_dir/AppRun"
-#!/bin/sh
-HERE="\$(dirname "\$(readlink -f "\$0")")"
-export PATH="\$HERE/usr/bin:\$HERE/bin:\$HERE/usr/games:\$PATH"
-
-EXTRA_LIBS=""
-for d in "\$HERE"/usr/lib/*-linux-* "\$HERE"/lib/*-linux-* "\$HERE"/usr/lib64 "\$HERE"/lib64 "\$HERE"/usr/lib32 "\$HERE"/lib32; do
-    if [ -d "\$d" ]; then
-        EXTRA_LIBS="\${EXTRA_LIBS:+\$EXTRA_LIBS:}\$d"
-    fi
-done
-
-export LD_LIBRARY_PATH="\$HERE/lib:\$HERE/usr/lib:\$HERE/lib64:\$HERE/usr/lib64\${EXTRA_LIBS+:+\$EXTRA_LIBS}\${LD_LIBRARY_PATH+:+\$LD_LIBRARY_PATH}"
-exec "\$HERE/$rel_target" "\$@"
-EOF
-                chmod 0755 "$root_dir/AppRun"
+                _deb_write_apprun "$root_dir" "$rel_target"
                 entry_found=1
                 break
             fi
@@ -447,7 +438,7 @@ EOF
         rm -f -- "$scan_list"
     fi
 
-    # Strip system-level glibc & graphics/sound loaders (Must resolve dynamically to host kernel stack)
+    # Strip host-provided system libraries
     find "$root_dir" \( -type f -o -type l \) \( \
         -name 'ld-linux*.so*' -o \
         -name 'ld-*.so*' -o \
@@ -468,7 +459,7 @@ EOF
         -name 'libpulse.so*' -o \
         -name 'libpipewire*.so*' -o \
         -name 'libwayland*.so*' \
-        \) -delete 2>/dev/null || true
+    \) -delete 2>/dev/null || true
 
     log "Handing over assembled Debian payload to bundler (Version: $pkg_ver)..."
     cmd_pack "${extra_pack_flags[@]}" "$root_dir" "$app_name" "$out_pkg" "$pkg_ver"

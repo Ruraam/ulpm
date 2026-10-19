@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/manage.sh - Application Lifecycle & Desktop Integration Engine
-# ULPM v5.3 Architecture Engine (Permissions, Overrides, Runtimes, Rollback & DB)
+# lib/manage.sh - Application Lifecycle, Unified Installer & Integration Engine
+# ULPM v6.0.0 Architecture Engine (v5.3 Proven Database, Rollback & Sandboxing)
 # ==============================================================================
 
 refresh_desktop_environment() {
@@ -19,11 +19,11 @@ refresh_desktop_environment() {
 
 _desktop_escape_value() {
     local value="$1"
-    value=${value//\\/\\\\}
-    value=${value//$'\n'/ }
-    value=${value//$'\r'/}
-    value=${value//\;/\\;}
-    value=${value//\#/\\#}
+    value="${value//\\/\\\\}"
+    value="${value//$'\n'/ }"
+    value="${value//$'\r'/}"
+    value="${value//\;/\\;}"
+    value="${value//\#/\\#}"
     printf '%s' "$value"
 }
 
@@ -36,6 +36,56 @@ _safe_managed_dir() {
     [[ -n "$path" ]] || return 1
     resolved="$(readlink -m -- "$path" 2>/dev/null)" || return 1
     [[ -n "$resolved" && "$resolved" != / && "$resolved" != "$HOME" ]]
+}
+
+_get_pkg_manifest() {
+    local lpk_file="$1"
+    if declare -F read_package_manifest >/dev/null 2>&1; then
+        read_package_manifest "$lpk_file"
+    else
+        unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null || \
+        unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null || return 1
+    fi
+}
+
+_db_upsert_entry() {
+    local db_file="$1" app_id="$2" app_name="$3" app_ver="$4" origin="$5"
+    local db_dir db_tmp db_mode
+    db_dir="$(dirname -- "$db_file")"
+    mkdir -p -- "$db_dir" || return 1
+    [[ ! -L "$db_file" ]] || return 1
+
+    db_tmp="$(mktemp "$db_dir/.installed.db.XXXXXX")" || return 1
+    if [[ -f "$db_file" ]]; then
+        awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || {
+            rm -f -- "$db_tmp"
+            return 1
+        }
+    fi
+    printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_ver" "$(date +%s)" "$origin" >> "$db_tmp" || {
+        rm -f -- "$db_tmp"
+        return 1
+    }
+    db_mode="$(stat -c '%a' -- "$db_file" 2>/dev/null || stat -f '%Lp' -- "$db_file" 2>/dev/null || printf '600')"
+    chmod "$db_mode" "$db_tmp" 2>/dev/null || true
+    sync_file "$db_tmp" 2>/dev/null || true
+    mv -f -- "$db_tmp" "$db_file" || { rm -f -- "$db_tmp"; return 1; }
+    sync_dir "$db_dir" 2>/dev/null || true
+}
+
+_db_delete_entry() {
+    local db_file="$1" app_id="$2" app_name="$3"
+    [[ -f "$db_file" ]] || return 0
+    local db_dir db_tmp
+    db_dir="$(dirname -- "$db_file")"
+    db_tmp="$(mktemp "$db_dir/.installed.db.XXXXXX")" || return 1
+    awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || {
+        rm -f -- "$db_tmp"
+        return 1
+    }
+    sync_file "$db_tmp" 2>/dev/null || true
+    mv -f -- "$db_tmp" "$db_file" || { rm -f -- "$db_tmp"; return 1; }
+    sync_dir "$db_dir" 2>/dev/null || true
 }
 
 _manage_resolve_installed_lpk() {
@@ -92,8 +142,8 @@ write_desktop_launcher() {
     launcher="$desktop_dir/$app_id.desktop"
     exec_bin="${ULPM_BIN:-ulpm}"
     safe_name="$(_desktop_escape_value "$app_name")"
-    exec_bin=${exec_bin//\\/\\\\}
-    exec_bin=${exec_bin//\"/\\\"}
+    exec_bin="${exec_bin//\\/\\\\}"
+    exec_bin="${exec_bin//\"/\\\"}"
 
     cat > "$launcher" <<EOF_DESKTOP
 [Desktop Entry]
@@ -148,8 +198,7 @@ cmd_permissions() {
     }
 
     local manifest_raw
-    manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || \
-    manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || {
+    manifest_raw="$(_get_pkg_manifest "$lpk_file")" || {
         error "Could not read manifest from $lpk_file"
         return 1
     }
@@ -207,13 +256,13 @@ cmd_permissions() {
     printf '  %-24s : %b\n' 'Display (GUI/Wayland/X11)' "$(_fmt_bool "$gui")"
     printf '  %-24s : \033[1m%s\033[0m\n' 'Filesystem Home' "$home"
     printf '  %-24s : \033[1m%s\033[0m\n' 'Host Downloads' "$dl"
-    printf '%-24s : DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
+    printf '  %-24s : DRI: %b | Input: %b | HID: %b | USB: %b | KVM: %b\n' \
         'Hardware Devices' "$(_fmt_bool "$dri")" "$(_fmt_bool "$input")" "$(_fmt_bool "$hidraw")" "$(_fmt_bool "$usb")" "$(_fmt_bool "$kvm")"
 
     local custom_paths
     custom_paths="$(jq -r '.permissions.filesystem.custom[]? | "- \(.path) (\(.mode))"' <<< "$effective_json" 2>/dev/null || true)"
     if [[ -n "$custom_paths" ]]; then
-        printf '  %-24s :\n%s\n' 'Custom Bind Paths' "$custom_paths"
+        printf '  %-24s:\n%s\n' 'Custom Bind Paths' "$custom_paths"
     fi
 
     local dbus_talk
@@ -245,7 +294,7 @@ cmd_override() {
     }
 
     local app_id
-    app_id="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null | jq -r '.id // .name' || true)"
+    app_id="$(_get_pkg_manifest "$lpk_file" | jq -r '.id // .name' 2>/dev/null || true)"
     [[ -n "$app_id" ]] || app_id="$target"
 
     while [[ $# -gt 0 ]]; do
@@ -372,8 +421,7 @@ cmd_runtime() {
                 return 1
             fi
 
-            manifest_raw="$(unsquashfs -cat "$r_src" meta/manifest.json 2>/dev/null)" || \
-            manifest_raw="$(unsquashfs -cat "$r_src" lpk.json 2>/dev/null)" || {
+            manifest_raw="$(_get_pkg_manifest "$r_src")" || {
                 error "Runtime package has no valid manifest."
                 _manage_runtime_cleanup "" "$stage"
                 return 1
@@ -428,7 +476,7 @@ cmd_runtime() {
             fi
             if mv -- "$stage" "$runtime_dest"; then
                 [[ -n "$runtime_old" ]] && rm -rf -- "$runtime_old"
-                sync_dir "$(dirname -- "$runtime_dest")"
+                sync_dir "$(dirname -- "$runtime_dest")" 2>/dev/null || true
                 info "Runtime '$r_id' installed successfully."
                 rc=0
             else
@@ -446,12 +494,106 @@ cmd_runtime() {
 }
 
 # ==============================================================================
-# Core Application Management
+# Unified Application Installer (Local LPK, URL, or Repository Package)
 # ==============================================================================
 
 cmd_install() {
-    local source="${1:-}"
-    [[ -n "$source" ]] || { error "Usage: ulpm install <package.lpk|url>"; return 1; }
+    local repo_filter="" reinstall=0 dry=0
+    local -a passthrough_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo|-r)
+                repo_filter="${2:-}"
+                shift 2
+                ;;
+            --reinstall)
+                reinstall=1
+                shift
+                ;;
+            --dry-run)
+                dry=1
+                shift
+                ;;
+            *)
+                passthrough_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    local source="${passthrough_args[0]:-}"
+    [[ -n "$source" ]] || {
+        error "Usage: ulpm install [--repo <name>] [--reinstall] [--dry-run] <package.lpk|app_id|url>"
+        return 1
+    }
+
+    # 1. Signed repository resolution if not a URL and not a local file
+    if [[ ! -f "$source" && ! "$source" =~ ^https?:// && "$source" != file://* ]]; then
+        if declare -F repo_iter_packages >/dev/null 2>&1; then
+            local best="" best_ver=""
+            local r_repo r_id r_name r_ver r_arch r_file r_sha r_base r_desc
+            while IFS=$'\t' read -r r_repo r_id r_name r_ver r_arch r_file r_sha r_base r_desc; do
+                [[ -n "$repo_filter" && "$r_repo" != "$repo_filter" ]] && continue
+                if [[ "$r_id" == "$source" || "$r_name" == "$source" ]]; then
+                    if [[ -z "$best_ver" ]] || repo_version_gt "$r_ver" "$best_ver"; then
+                        best_ver="$r_ver"
+                        best="${r_repo}"$'\t'"${r_id}"$'\t'"${r_name}"$'\t'"${r_ver}"$'\t'"${r_arch}"$'\t'"${r_file}"$'\t'"${r_sha}"$'\t'"${r_base}"
+                    fi
+                fi
+            done < <(repo_iter_packages)
+
+            if [[ -n "$best" ]]; then
+                IFS=$'\t' read -r r_repo r_id r_name r_ver r_arch r_file r_sha r_base <<< "$best"
+                info "Resolved package '$source' -> $r_id $r_ver from repository '$r_repo'"
+
+                if (( dry )); then
+                    info "[dry-run] Would download and install $r_id ($r_ver) from $r_repo"
+                    return 0
+                fi
+
+                local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
+                if [[ -s "$db_file" ]] && (( reinstall == 0 )); then
+                    local cur_ver
+                    cur_ver="$(awk -F'|' -v id="$r_id" -v n="$r_name" '$1==id || $2==n {print $3; exit}' "$db_file" 2>/dev/null || true)"
+                    if [[ "$cur_ver" == "$r_ver" ]]; then
+                        info "Already installed: $r_id $r_ver (use --reinstall to force)"
+                        return 0
+                    fi
+                fi
+
+                local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
+                mkdir -p "$cache_home/tmp" || return 1
+                local tmp_dl
+                tmp_dl="$(mktemp "$cache_home/tmp/repo_${r_id}_XXXXXX.lpk")" || return 1
+
+                info "Fetching payload from $r_repo..."
+                local dl_status=0
+                repo_download_payload "$r_base" "$r_file" "$tmp_dl" "$r_sha" || dl_status=$?
+
+                if (( dl_status == 1 )); then
+                    rm -f -- "$tmp_dl"
+                    error "Download failed: ${r_base%/}/$r_file"
+                    return 1
+                elif (( dl_status == 2 )); then
+                    rm -f -- "$tmp_dl"
+                    error "SHA-256 checksum mismatch for $r_file (expected: $r_sha)"
+                    return 1
+                fi
+
+                local ret=0
+                INSTALL_ORIGIN="repo:${r_repo}:${r_id}" cmd_install "$tmp_dl" || ret=$?
+                rm -f -- "$tmp_dl"
+                return "$ret"
+            fi
+        fi
+    fi
+
+    if (( dry )); then
+        info "[dry-run] Would install package: $source"
+        return 0
+    fi
+
     if [[ "${ULPM_TRANSACTION_ACTIVE:-0}" != 1 ]]; then acquire_lock 10 || return 1; fi
 
     local cache_home="${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}"
@@ -499,8 +641,7 @@ cmd_install() {
     check_dependencies unsquashfs jq || { _manage_cleanup_install "$tmp_lpk" ""; return 1; }
 
     local manifest_raw
-    manifest_raw="$(unsquashfs -cat "$tmp_lpk" meta/manifest.json 2>/dev/null)" || \
-    manifest_raw="$(unsquashfs -cat "$tmp_lpk" lpk.json 2>/dev/null)" || {
+    manifest_raw="$(_get_pkg_manifest "$tmp_lpk")" || {
         _manage_cleanup_install "$tmp_lpk" ""
         error "Package manifest not found in $tmp_lpk."
         return 1
@@ -552,6 +693,20 @@ cmd_install() {
     app_version="$(printf '%s' "$app_version" | tr -cd 'A-Za-z0-9.+_-')"
     [[ -n "$app_version" && ${#app_version} -le 64 ]] || app_version="1.0.0"
 
+    # Check if application is already installed (unless --reinstall)
+    local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
+    local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
+    if [[ -s "$db_file" ]] && (( reinstall == 0 )); then
+        local cur_ver
+        cur_ver="$(awk -F'|' -v id="$app_id" -v n="$app_name" '$1==id || $2==n {print $3; exit}' "$db_file" 2>/dev/null || true)"
+        if [[ "$cur_ver" == "$app_version" ]]; then
+            info "Application '$app_name' ($app_version) is already installed. Use --reinstall to force."
+            _manage_cleanup_install "$tmp_lpk" ""
+            return 0
+        fi
+    fi
+
+    # Extract icons
     local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
     local icon_dir="$data_home/icons/hicolor/256x256/apps"
     local icon_dir_512="$data_home/icons/hicolor/512x512/apps"
@@ -571,8 +726,6 @@ cmd_install() {
         rm -f -- "$tmp_icon" "$tmp_icon_512"
     fi
 
-    local apps_dir="${ULPM_APPS_DIR:-$HOME/.local/share/ulpm/apps}"
-    local db_file="${ULPM_DB:-${ULPM_DATA_HOME:-$HOME/.local/share/ulpm}/installed.db}"
     _safe_managed_dir "$apps_dir" || {
         _manage_cleanup_install "$tmp_lpk" ""
         error "Refusing unsafe application directory: $apps_dir"
@@ -593,7 +746,7 @@ cmd_install() {
         source_origin="local"
     fi
 
-    local final_pkg="$dest_dir/$app_name.lpk" staged_pkg="" pkg_backup="" db_dir db_tmp db_mode old_version="" old_origin=""
+    local final_pkg="$dest_dir/$app_name.lpk" staged_pkg="" pkg_backup="" old_version="" old_origin=""
     local history_dir="${ULPM_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ulpm}/history" history_file=""
 
     if [[ -f "$db_file" ]]; then
@@ -615,70 +768,41 @@ cmd_install() {
     cp -- "$tmp_lpk" "$staged_pkg" || { rm -f -- "$staged_pkg"; _manage_cleanup_install "$tmp_lpk" ""; return 1; }
     chmod 644 -- "$staged_pkg" || { rm -f -- "$staged_pkg"; _manage_cleanup_install "$tmp_lpk" ""; return 1; }
 
-    db_dir="$(dirname -- "$db_file")"
-    mkdir -p -- "$db_dir" || { rm -f -- "$staged_pkg"; _manage_cleanup_install "$tmp_lpk" ""; return 1; }
-    [[ ! -L "$db_file" ]] || {
-        rm -f -- "$staged_pkg"
-        _manage_cleanup_install "$tmp_lpk" ""
-        error "Refusing symlinked package database: $db_file"
-        return 1
-    }
-    db_tmp="$(mktemp "$db_dir/.installed.db.XXXXXX")" || { rm -f -- "$staged_pkg"; _manage_cleanup_install "$tmp_lpk" ""; return 1; }
-    if [[ -f "$db_file" ]]; then
-        awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || {
-            rm -f -- "$db_tmp" "$staged_pkg"
-            _manage_cleanup_install "$tmp_lpk" ""
-            return 1
-        }
-    fi
-    printf '%s|%s|%s|%s|%s\n' "$app_id" "$app_name" "$app_version" "$(date +%s)" "$source_origin" >> "$db_tmp" || {
-        rm -f -- "$db_tmp" "$staged_pkg"
-        _manage_cleanup_install "$tmp_lpk" ""
-        return 1
-    }
-    db_mode="$(stat -c '%a' -- "$db_file" 2>/dev/null || stat -f '%Lp' -- "$db_file" 2>/dev/null || printf '600')"
-    chmod "$db_mode" "$db_tmp" || {
-        rm -f -- "$db_tmp" "$staged_pkg"
-        _manage_cleanup_install "$tmp_lpk" ""
-        return 1
-    }
-
     if [[ -e "$final_pkg" ]]; then
         pkg_backup="$(mktemp "$dest_dir/.${app_name}.lpk.old.XXXXXX")" || {
-            rm -f -- "$db_tmp" "$staged_pkg"
+            rm -f -- "$staged_pkg"
             _manage_cleanup_install "$tmp_lpk" ""
             return 1
         }
         rm -f -- "$pkg_backup" || {
-            rm -f -- "$db_tmp" "$staged_pkg"
+            rm -f -- "$staged_pkg"
             _manage_cleanup_install "$tmp_lpk" ""
             return 1
         }
         mv -- "$final_pkg" "$pkg_backup" || {
-            rm -f -- "$db_tmp" "$staged_pkg"
+            rm -f -- "$staged_pkg"
             _manage_cleanup_install "$tmp_lpk" ""
             return 1
         }
     fi
-    sync_file "$staged_pkg"
+
+    sync_file "$staged_pkg" 2>/dev/null || true
     if ! mv -- "$staged_pkg" "$final_pkg"; then
         [[ -n "$pkg_backup" && -e "$pkg_backup" ]] && mv -- "$pkg_backup" "$final_pkg" 2>/dev/null || true
-        rm -f -- "$db_tmp" "$staged_pkg"
+        rm -f -- "$staged_pkg"
         _manage_cleanup_install "$tmp_lpk" ""
         error "Could not commit new application package."
         return 1
     fi
-    sync_file "$db_tmp"
-    if ! mv -f -- "$db_tmp" "$db_file"; then
+
+    if ! _db_upsert_entry "$db_file" "$app_id" "$app_name" "$app_version" "$source_origin"; then
         rm -f -- "$final_pkg"
         [[ -n "$pkg_backup" && -e "$pkg_backup" ]] && mv -- "$pkg_backup" "$final_pkg" 2>/dev/null || true
-        rm -f -- "$db_tmp"
         _manage_cleanup_install "$tmp_lpk" ""
         error "Could not commit package database update; previous package was restored."
         return 1
     fi
-    sync_dir "$db_dir"
-    sync_dir "$dest_dir"
+    sync_dir "$dest_dir" 2>/dev/null || true
 
     if [[ -n "$pkg_backup" && -f "$pkg_backup" ]]; then
         if mkdir -p -- "$history_dir"; then
@@ -819,19 +943,14 @@ cmd_rollback() {
     tmp_target="$(mktemp "$dest_dir/.rollback.XXXXXX.lpk")" || { release_lock; return 1; }
     cp -- "$roll_pkg" "$tmp_target" || { rm -f -- "$tmp_target"; release_lock; return 1; }
     chmod 644 -- "$tmp_target"
-    sync_file "$tmp_target"
+    sync_file "$tmp_target" 2>/dev/null || true
     mv -f -- "$tmp_target" "$final_pkg" || { release_lock; return 1; }
-    sync_dir "$dest_dir"
+    sync_dir "$dest_dir" 2>/dev/null || true
 
-    local db_dir db_tmp
-    db_dir="$(dirname -- "$db_file")"
-    db_tmp="$(mktemp "$db_dir/.installed.db.rollback.XXXXXX")" || { release_lock; return 1; }
-    awk -F'|' -v id="$app_id" -v name="$roll_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f -- "$db_tmp"; release_lock; return 1; }
-    printf '%s|%s|%s|%s|%s\n' "$app_id" "$roll_name" "$roll_ver" "$(date +%s)" "$roll_origin" >> "$db_tmp" || { rm -f -- "$db_tmp"; release_lock; return 1; }
-    chmod 600 "$db_tmp"
-    sync_file "$db_tmp"
-    mv -f -- "$db_tmp" "$db_file" || { rm -f -- "$db_tmp"; release_lock; return 1; }
-    sync_dir "$db_dir"
+    if ! _db_upsert_entry "$db_file" "$app_id" "$roll_name" "$roll_ver" "$roll_origin"; then
+        release_lock
+        return 1
+    fi
 
     rm -f -- "$roll_pkg" "$latest_meta"
 
@@ -860,8 +979,8 @@ cmd_integrate() {
 EOF_MIME
 
     local handler_bin="${ULPM_BIN:-ulpm}"
-    handler_bin=${handler_bin//\\/\\\\}
-    handler_bin=${handler_bin//\"/\\\"}
+    handler_bin="${handler_bin//\\/\\\\}"
+    handler_bin="${handler_bin//\"/\\\"}"
 
     cat > "$desk_dir/ulpm-handler.desktop" <<EOF_HANDLER
 [Desktop Entry]
@@ -888,7 +1007,7 @@ EOF_HANDLER
 }
 
 # ==============================================================================
-# Removal / Uninstallation (Both cmd_remove and cmd_uninstall entrypoints)
+# Removal / Uninstallation
 # ==============================================================================
 
 cmd_remove() {
@@ -942,14 +1061,7 @@ cmd_remove() {
     rm -f -- "$icon_base/256x256/apps/$app_id.png"
     rm -f -- "$icon_base/512x512/apps/$app_id.png"
 
-    if declare -F db_remove_entry >/dev/null 2>&1; then
-        db_remove_entry "$app_id" "$app_name"
-    elif [[ -f "$db_file" ]]; then
-        local db_tmp
-        db_tmp="$(mktemp "${db_file}.tmp.XXXXXX")" || return 1
-        awk -F'|' -v id="$app_id" -v name="$app_name" '$1 != id && $2 != name' "$db_file" > "$db_tmp" || { rm -f "$db_tmp"; return 1; }
-        mv -f -- "$db_tmp" "$db_file" || { rm -f "$db_tmp"; return 1; }
-    fi
+    _db_delete_entry "$db_file" "$app_id" "$app_name"
 
     if [[ "$purge" == true ]]; then
         log "Purging persistent user sandbox state & overrides..."
@@ -962,7 +1074,6 @@ cmd_remove() {
     info "Application '$app_name' removed successfully."
 }
 
-# Compatibility alias to avoid broken links
 cmd_uninstall() {
     cmd_remove "$@"
 }
@@ -991,44 +1102,104 @@ cmd_clean() {
 }
 
 # ==============================================================================
-# Upstream Repositories & Ecosystem Search (Native LPK, AppImage & Debian)
+# Unified Search Engine (Configured Repositories, GitHub Releases & Debian/APT)
 # ==============================================================================
 
 cmd_search() {
-    local query="$*"
-    [[ -n "$query" ]] || { error "Usage: ulpm search <keyword>"; return 1; }
-    check_dependencies curl jq || return 1
+    local repo_filter="" exact=0
+    local -a search_words=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo|-r)
+                repo_filter="${2:-}"
+                shift 2
+                ;;
+            --exact|-e)
+                exact=1
+                shift
+                ;;
+            *)
+                search_words+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    local query="${search_words[*]:-}"
+    [[ -n "$query" ]] || { error "Usage: ulpm search [--repo <name>] [--exact] <keyword>"; return 1; }
+
+    check_dependencies jq || return 1
+
+    # 1. Search in configured repositories
+    if declare -F repo_iter_packages >/dev/null 2>&1; then
+        local found_repo=0
+        printf '\n\033[1;36m[ Configured Repositories ]\033[0m\n'
+        printf '%s\n' '----------------------------------------------------------------------------------------'
+        printf '\033[1m%-14s %-30s %-14s %-10s %s\033[0m\n' "REPO" "ID" "VERSION" "ARCH" "NAME"
+        printf '%s\n' '----------------------------------------------------------------------------------------'
+
+        local r_repo r_id r_name r_ver r_arch r_file r_sha r_base r_desc
+        while IFS=$'\t' read -r r_repo r_id r_name r_ver r_arch r_file r_sha r_base r_desc; do
+            [[ -n "$repo_filter" && "$r_repo" != "$repo_filter" ]] && continue
+
+            local match=0
+            if (( exact )); then
+                [[ "$r_id" == "$query" || "$r_name" == "$query" ]] && match=1
+            else
+                local blob
+                blob="$r_id $r_name $r_ver $r_arch $r_desc"
+                grep -qi -- "$query" <<< "$blob" && match=1
+            fi
+
+            if (( match )); then
+                printf '%-14s %-30s %-14s %-10s %s\n' "$r_repo" "$r_id" "$r_ver" "$r_arch" "$r_name"
+                if [[ -n "$r_desc" ]]; then
+                    printf '               \033[0;90m%s\033[0m\n' "${r_desc:0:70}"
+                fi
+                found_repo=1
+            fi
+        done < <(repo_iter_packages)
+
+        if (( found_repo == 0 )); then
+            printf '  No matches in configured repositories.\n'
+        fi
+    fi
+
+    # 2. Remote search in GitHub Releases and Debian/APT packages
     local is_debian_like=false
     if [[ -r /etc/os-release ]] && grep -qiE '^(ID|ID_LIKE)=.*(debian|ubuntu)' /etc/os-release; then
         is_debian_like=true
     elif command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
         is_debian_like=true
     fi
+
     local arch arch_regex
     arch="$(detect_arch)"
     case "$arch" in
         arm64|aarch64) arch_regex='arm64|aarch64|arm-64|armv8|arm64v8|all' ;;
-        x86_64|amd64) arch_regex='amd64|x86_64|x86-64|x64|all' ;;
+        x86_64|amd64)  arch_regex='amd64|x86_64|x86-64|x64|all' ;;
         armv7l|armhf)  arch_regex='armv7|armhf|armv7l|all' ;;
         *)             arch_regex="$arch|all" ;;
     esac
-    info "Searching for '$query' across GitHub Releases and Local Repositories..."
 
     # shellcheck disable=SC2034
     local -a global_targets=() global_types=() global_assets=() global_labels=()
     local display_idx=1 gh_query raw_results raw_count
     gh_query="$(printf '%s' "$query" | sed 's/ /+/g')"
-    raw_results="$(fetch_github_api "search/repositories?q=${gh_query}+in:name&sort=stars&order=desc&per_page=10" 15)" || raw_results=''
+    raw_results="$(fetch_github_api "search/repositories?q=${gh_query}+in:name&sort=stars&order=desc&per_page=10" 15 2>/dev/null)" || raw_results=''
     raw_count="$(jq -r '.items | length // 0' <<< "$raw_results" 2>/dev/null || printf '0')"
 
     if [[ "$raw_count" =~ ^[0-9]+$ ]] && (( raw_count > 0 )); then
-        printf '\n\033[1;32m[ GitHub Upstream Releases ]\033[0m\n%s\n' '--------------------------------------------------------------------------------'
+        printf '\n\033[1;32m[ GitHub Upstream Releases ]\033[0m\n'
+        printf '%s\n' '----------------------------------------------------------------------------------------'
         while IFS=$'\t' read -r repo stars desc; do
             [[ -n "$repo" ]] || continue
             local rel_data assets_json aname aurl
-            rel_data="$(fetch_github_api "repos/${repo}/releases/latest" 30)" || continue
+            rel_data="$(fetch_github_api "repos/${repo}/releases/latest" 30 2>/dev/null)" || continue
             assets_json="$(jq -r '.assets[]? | [.name, .browser_download_url] | @tsv' <<< "$rel_data" 2>/dev/null)"
             [[ -n "$assets_json" ]] || continue
+
             local -a compat_names=() compat_urls=()
             while IFS=$'\t' read -r aname aurl; do
                 [[ -n "$aname" && -n "$aurl" ]] || continue
@@ -1044,6 +1215,7 @@ cmd_search() {
                     compat_urls+=("$aurl")
                 fi
             done <<< "$assets_json"
+
             local selected_type='' selected_url='' selected_filename='' priority
             for priority in lpk appimage deb; do
                 [[ "$priority" != deb || "$is_debian_like" == true ]] || continue
@@ -1053,15 +1225,16 @@ cmd_search() {
                         selected_filename="${compat_names[j]}"
                         selected_url="${compat_urls[j]}"
                         case "$priority" in
-                            lpk) selected_type=LPK ;;
+                            lpk)      selected_type=LPK ;;
                             appimage) selected_type=APPIMAGE ;;
-                            deb) selected_type=DEB ;;
+                            deb)      selected_type=DEB ;;
                         esac
                         break
                     fi
                 done
                 [[ -n "$selected_type" ]] && break
             done
+
             [[ -n "$selected_type" ]] || continue
             global_targets[display_idx]="$repo"
             global_types[display_idx]="$selected_type"
@@ -1070,9 +1243,9 @@ cmd_search() {
 
             local badge=""
             case "$selected_type" in
-                LPK) badge="\033[1;32m[1. Native LPK]\033[0m" ;;
-                APPIMAGE)  badge="\033[1;34m[2. AppImage]\033[0m" ;;
-                DEB)       badge="\033[1;33m[3. Debian .deb]\033[0m" ;;
+                LPK)      badge="\033[1;32m[1. Native LPK]\033[0m" ;;
+                APPIMAGE) badge="\033[1;34m[2. AppImage]\033[0m" ;;
+                DEB)      badge="\033[1;33m[3. Debian .deb]\033[0m" ;;
             esac
 
             printf " \033[1;33m[%d]\033[0m %b \033[1m%-25s\033[0m \033[1;33m★ %-5s\033[0m\n     \033[0;90mAsset: %s\033[0m\n     \033[0;90m%s\033[0m\n" \
@@ -1082,7 +1255,8 @@ cmd_search() {
     fi
 
     if [[ "$is_debian_like" == true ]] && command -v apt-cache >/dev/null 2>&1; then
-        printf '\n\033[1;35m[ Native Debian / APT Candidates ]\033[0m\n%s\n' '--------------------------------------------------------------------------------'
+        printf '\n\033[1;35m[ Native Debian / APT Candidates ]\033[0m\n'
+        printf '%s\n' '----------------------------------------------------------------------------------------'
         local apt_results
         apt_results="$(apt-cache search "$query" 2>/dev/null | head -n 5 || true)"
         if [[ -n "$apt_results" ]]; then
@@ -1104,9 +1278,10 @@ cmd_search() {
     fi
 
     local total_options=$(( display_idx - 1 ))
-    printf '%s\n' '--------------------------------------------------------------------------------'
+    printf '%s\n' '----------------------------------------------------------------------------------------'
     (( total_options > 0 )) || { warn "No package candidates found for '$query'."; return 0; }
     [[ -r /dev/tty ]] || { error 'Interactive selection requires a terminal.'; return 1; }
+
     printf '\033[1;36mSelect package(s) to install (e.g. 1, 1 2, 1-3) [default: cancel]: \033[0m'
     local raw_input
     IFS= read -r raw_input < /dev/tty || return 1
@@ -1217,9 +1392,8 @@ cmd_info() {
     }
 
     local manifest_raw
-    manifest_raw="$(unsquashfs -cat "$lpk_file" meta/manifest.json 2>/dev/null)" || \
-    manifest_raw="$(unsquashfs -cat "$lpk_file" lpk.json 2>/dev/null)" || {
-        error "Could not read manifest from package."
+    manifest_raw="$(_get_pkg_manifest "$lpk_file")" || {
+        error "Could not read manifest from package: $lpk_file"
         return 1
     }
 
@@ -1232,5 +1406,24 @@ cmd_info() {
     printf 'Size: %s bytes\n' "$(stat -c '%s' "$lpk_file" 2>/dev/null || stat -f '%z' "$lpk_file" 2>/dev/null || echo '-')"
 }
 
-# vim: set et ts=4 sw=4 :
+cmd_inspect() {
+    local package="${1:-}" manifest="" rc=0
+    [[ -n "$package" ]] || { error 'Usage: ulpm inspect <package.lpk>'; return 2; }
+    [[ -f "$package" && -r "$package" ]] || { error "Package not found or unreadable: $package"; return 1; }
 
+    if declare -F verify_package >/dev/null 2>&1; then
+        verify_package "$package" || rc=$?
+        case "$rc" in
+            0) info 'Signature status: valid and trusted.' ;;
+            2) warn 'Signature status: unsigned package.' ;;
+            3) warn 'Signature status: signature valid, publisher key not trusted.' ;;
+            *) error 'Signature status: invalid or unreadable signature.'; return 1 ;;
+        esac
+    fi
+
+    manifest="$(_get_pkg_manifest "$package")" || {
+        error 'Could not read package manifest.'
+        return 1
+    }
+    printf '%s\n' "$manifest" | jq .
+}
