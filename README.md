@@ -1,4 +1,4 @@
-v6.0.0 STAGING VERSION WITH REPOSTIORY MANAGEMENT INTEGRATION
+# v6.0.0 STAGING VERSION WITH REPOSTIORY MANAGEMENT INTEGRATION
 
 <div align="center">
 <img src="assets/ulpm-logo.svg" width="225" alt="ulpm logo" />
