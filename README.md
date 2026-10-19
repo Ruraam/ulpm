@@ -1,3 +1,5 @@
+v6.0.0 STAGING VERSION WITH REPOSTIROTIES INTEGRATION
+
 <div align="center">
 <img src="assets/ulpm-logo.svg" width="225" alt="ulpm logo" />
 <h1>ULPM - Universal Linux Package Manager & Autonomous Containerized Bundle Engine</h1>
