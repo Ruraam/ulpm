@@ -23,7 +23,7 @@
 > **ULPM Engine v6.0.0** introduces a hardened multi-package transactional engine and dynamic dependency orchestration over the autonomous **`.lpk` Format v5** specification.
 >
 > * **Atomic Multi-Package Transactions & Crash-Resistant WAL:** All installation phases (dependency solving, downloads, SHA-256 and Ed25519 cryptographic checks) are pre-validated before any disk mutation. A persistent Write-Ahead Log (`~/.local/state/ulpm/wal/`) guarantees safe LIFO rollback and full crash recovery even across unexpected reboots or `SIGKILL`.
-> * **StateHistory & Bidirectional Rollback:** Zero-data-loss application snapshots (`ulpm history`, `ulpm rollback <app_id>`) allowing instant rollback to previous versions and atomic rollback-undo swaps.
+> * **State History & Bidirectional Rollback:** Zero-data-loss application snapshots (`ulpm history`, `ulpm rollback <app_id>`) allowing instant rollback to previous versions and atomic rollback-undo swaps.
 > * **DAG Dependency Resolver & SemVer Guard:** Complete Directed Acyclic Graph resolution engine detecting cycles and comparing exact or range versions (`>=`, `<=`, `==`, `>`,`<`) before committing transactions (`ulpm deps resolve <app-id>`).
 > * **Signed Deterministic Repositories:** Remote or local mirror support with pinned Ed25519 repository signatures (`ulpm repo add/update/search`) ensuring index integrity and preventing supply-chain poisoning.
 > * **Declarative Permissions & Overrides:** Fine-grained sandbox controls declared in JSON manifests (`meta/manifest.json`), customizable at runtime with user-defined overrides stored in`~/.config/ulpm/overrides/`.
