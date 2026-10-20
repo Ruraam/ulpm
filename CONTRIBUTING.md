@@ -41,7 +41,7 @@ sudo apt install bash git shellcheck jq openssl curl util-linux bubblewrap \
 Run from a checkout, no build step:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Ruraam/ulpm.git
 cd ulpm
 ./bin/ulpm --help
 ./bin/ulpm doctor
