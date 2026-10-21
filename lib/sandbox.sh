@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
-# ULPM v6.1.0 — Session runtime (Xephyr / gamescope / weston / cage) aware
+# ULPM v6.1.1 — Session runtime (Xephyr / gamescope / weston / cage) aware
 # ==============================================================================
 
 ENV_WHITELIST=(
@@ -308,6 +308,11 @@ lpk_run_rootfs() {
     local app_data_dir="$HOME/.var/app/$app_id"
     mkdir -p "$app_data_dir/home" "$app_data_dir/cache" "$app_data_dir/tmp"
 
+    # [ULPM v6.1.1] Mount point for /home: rootfs may not have /home (Debian
+    # minimal, Ubuntu cloud). Bind an empty writable dir on /home so bwrap
+    # can create /home/$USER afterwards.
+    mkdir -p "$app_data_dir/.home-mnt"
+
     # /tmp/.X11-unix created on the host side (bound to /tmp) so Xephyr can
     # create its socket there
     if [[ "$disable_gui" != "true" ]]; then
@@ -368,6 +373,7 @@ lpk_run_rootfs() {
         --tmpfs /run
         --tmpfs /var/tmp
         --ro-bind "$rootfs_dir" /
+        --bind "$app_data_dir/.home-mnt" /home
         --bind "$app_data_dir/home" "$HOME"
         --bind "$app_data_dir/tmp" /tmp
         --bind "$dl_host_dir" "$dl_host_dir"
