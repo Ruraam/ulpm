@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/sandbox.sh - Concurrent-Safe Production Sandboxing Engine (App & RootFS)
-# ULPM v6.0.0 Architecture Engine (v5.3 Rock-Solid Isolation & Safe Signatures)
+# ULPM v6.1.0 — Session runtime (Xephyr / gamescope / weston / cage) aware
 # ==============================================================================
 
 ENV_WHITELIST=(
@@ -98,6 +98,83 @@ session_bus_socket() {
 }
 
 # ------------------------------------------------------------------------------
+# [ULPM v6.1] Session helpers — GUI binding factorization + context resolution
+# ------------------------------------------------------------------------------
+
+# Expose all host X11 sockets as read-only, create a writable /tmp/.X11-unix
+# (isolated mode), bind the Wayland socket, and set ULPM_HOST_* / SESSION_*.
+# $1 = "rootfs" | "isolated"  (how /tmp is mounted)
+# $2 = run_user_dir
+# $3 = nameref to bwrap_args array
+_ulpm_bind_gui_sockets() {
+    local mode="$1"
+    local run_user_dir="$2"
+    local -n _bw="$3"
+
+    # Writable /tmp/.X11-unix for Xephyr.
+    # - rootfs : /tmp == $app_data_dir/tmp, mkdir done host-side before the call
+    # - isolated : /tmp == tmpfs, --dir creates the directory inside the tmpfs
+    if [[ "$mode" == "isolated" ]]; then
+        _bw+=(--dir /tmp/.X11-unix)
+    fi
+
+    # All host X11 sockets as read-only (X0..Xn).
+    # Important: on a pure Wayland host, DISPLAY may be empty while
+    # XWayland still exposes X0.
+    shopt -s nullglob
+    local xsock
+    for xsock in /tmp/.X11-unix/X*; do
+        [[ -S "$xsock" ]] && _bw+=(--ro-bind-try "$xsock" "$xsock")
+    done
+    shopt -u nullglob
+
+    # Xauthority (needed by Xephyr to authenticate on the host)
+    local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
+    [[ -f "$xauth_file" ]] && _bw+=(--ro-bind-try "$xauth_file" "$xauth_file")
+
+    # Host Wayland socket, bound unconditionally if it exists
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+        local wayland_sock
+        if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+            wayland_sock="$WAYLAND_DISPLAY"
+        else
+            wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
+        fi
+        [[ -S "$wayland_sock" ]] && _bw+=(--bind-try "$wayland_sock" "$wayland_sock")
+    fi
+
+    # Host context exposed to launch.sh
+    [[ -n "${DISPLAY:-}" ]] && _bw+=(--setenv ULPM_HOST_DISPLAY "$DISPLAY")
+    [[ -n "${WAYLAND_DISPLAY:-}" ]] && \
+        _bw+=(--setenv ULPM_HOST_WAYLAND_DISPLAY "$WAYLAND_DISPLAY")
+    _bw+=(--setenv ULPM_HOST_XDG_RUNTIME_DIR "$run_user_dir")
+
+    # Session mode if set (manifest/CLI/env)
+    if [[ -n "${ULPM_SESSION_MODE:-}" ]]; then
+        _bw+=(--setenv ULPM_SESSION_MODE "$ULPM_SESSION_MODE")
+        [[ -n "${ULPM_SESSION_CMD:-}" ]] && \
+            _bw+=(--setenv ULPM_SESSION_CMD "$ULPM_SESSION_CMD")
+    fi
+}
+
+# Read .launch.mode / .launch.session_cmd from manifest if ULPM_SESSION_*
+# are not already set (env or CLI). Idempotent, no-op if manifest absent.
+_ulpm_resolve_session_context() {
+    local manifest_file="${1:-}"
+    if [[ -z "${ULPM_SESSION_MODE:-}" && -f "$manifest_file" ]]; then
+        local _mode
+        _mode="$(jq -r '.launch.mode // .session.mode // empty' "$manifest_file" 2>/dev/null || true)"
+        [[ -n "$_mode" ]] && export ULPM_SESSION_MODE="$_mode"
+    fi
+    if [[ -z "${ULPM_SESSION_CMD:-}" && -f "$manifest_file" ]]; then
+        local _cmd
+        _cmd="$(jq -r '.launch.session_cmd // empty
+                        | if type == "array" then join(" ") else . end' "$manifest_file" 2>/dev/null || true)"
+        [[ -n "$_cmd" ]] && export ULPM_SESSION_CMD="$_cmd"
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # Security & Cryptographic Validation Integration (v5.3 Permissive Fallback Engine)
 # ------------------------------------------------------------------------------
 
@@ -153,7 +230,6 @@ resolve_shared_runtime() {
         return 0
     fi
 
-    # Fallback to any matching runtime version if "latest" requested
     if [[ "$runtime_ver" == "latest" ]] && [[ -d "$runtimes_dir/$runtime_id" ]]; then
         local match
         match="$(find "$runtimes_dir/$runtime_id" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | sort -V | tail -n 1)"
@@ -198,6 +274,7 @@ lpk_is_rootfs() {
 }
 
 lpk_run_rootfs() {
+    # SIGNATURE UNCHANGED — 10 positionals + "$@"
     local mnt_dir="$1"
     local app_id="$2"
     local exec_bin="$3"
@@ -221,8 +298,21 @@ lpk_run_rootfs() {
         rootfs_dir="$mnt_dir/root"
     fi
 
+    # [ULPM v6.1] Normalization: inside the sandbox, the entrypoint must always
+    # be absolute (rootfs_dir is bound to /, --chdir $HOME must not influence
+    # resolution). "usr/bin/launch.sh" -> "/usr/bin/launch.sh"
+    if [[ -n "$exec_bin" && "$exec_bin" != /* ]]; then
+        exec_bin="/$exec_bin"
+    fi
+
     local app_data_dir="$HOME/.var/app/$app_id"
     mkdir -p "$app_data_dir/home" "$app_data_dir/cache" "$app_data_dir/tmp"
+
+    # /tmp/.X11-unix created on the host side (bound to /tmp) so Xephyr can
+    # create its socket there
+    if [[ "$disable_gui" != "true" ]]; then
+        mkdir -p "$app_data_dir/tmp/.X11-unix" 2>/dev/null || true
+    fi
 
     local run_uid run_user_dir
     run_uid="$(id -u)"
@@ -233,7 +323,7 @@ lpk_run_rootfs() {
     setup_sandbox_downloads_links "$app_data_dir/home" "$dl_host_dir"
 
     local entrypoint="${exec_bin:-/bin/sh}"
-    if [[ -z "$exec_bin" || "$exec_bin" == "/bin/main" || "$exec_bin" == "bin/main" ]]; then
+    if [[ -z "$exec_bin" || "$exec_bin" == "/bin/main" ]]; then
         if [[ -x "$rootfs_dir/usr/bin/startxfce4" ]]; then
             entrypoint="/usr/bin/startxfce4"
         elif [[ -x "$rootfs_dir/usr/bin/x-session-manager" ]]; then
@@ -367,28 +457,10 @@ lpk_run_rootfs() {
         )
     fi
 
+    # [ULPM v6.1] GUI: all X11 sockets, writable /tmp/.X11-unix, Wayland,
+    # ULPM_HOST_* — required for Xephyr / gamescope / etc.
     if [[ "$disable_gui" != "true" ]]; then
-        if [[ -n "${DISPLAY:-}" ]]; then
-            local x_sock
-            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
-                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
-                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
-            else
-                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
-            fi
-            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
-            [[ -f "$xauth_file" ]] && bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
-        fi
-
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            local wayland_sock
-            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
-                wayland_sock="$WAYLAND_DISPLAY"
-            else
-                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
-            fi
-            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
-        fi
+        _ulpm_bind_gui_sockets rootfs "$run_user_dir" bwrap_args
     fi
 
     local b
@@ -418,7 +490,7 @@ lpk_run_rootfs() {
         fi
     done
 
-    log "Starting RootFS session [$app_id] (Entrypoint: $entrypoint)..."
+    log "Starting RootFS session [$app_id] (Entrypoint: $entrypoint${ULPM_SESSION_MODE:+, Mode: $ULPM_SESSION_MODE})..."
     "${bwrap_args[@]}" "$entrypoint" ${sanitized_args[@]+"${sanitized_args[@]}"}
 }
 
@@ -473,6 +545,21 @@ lpk_run_isolated() {
                 cli_no_input=true
                 shift
                 ;;
+            --session-mode)
+                if [[ -n "${2:-}" ]]; then
+                    ULPM_SESSION_MODE="$2"
+                    export ULPM_SESSION_MODE
+                    shift 2
+                else
+                    error "--session-mode requires an argument"
+                    return 1
+                fi
+                ;;
+            --session-mode=*)
+                ULPM_SESSION_MODE="${1#--session-mode=}"
+                export ULPM_SESSION_MODE
+                shift
+                ;;
             --bind)
                 if [[ -n "${2:-}" && "$2" == *:* ]]; then
                     custom_binds+=("$2")
@@ -519,7 +606,6 @@ lpk_run_isolated() {
         return 1
     fi
 
-    # Cryptographic validation with v5.3 compatibility
     _ulpm_check_signature "$pkg_path" || return 1
 
     local instance_id="$$_${RANDOM}"
@@ -529,7 +615,6 @@ lpk_run_isolated() {
     mnt_dir="$(mktemp -d "${cache_dir}/mnt_${instance_id}.XXXXXX")"
     local is_extracted=0
 
-    # Guaranteed systematic cleanup
     local cleanup_done=0
     # shellcheck disable=SC2329
     _cleanup_sandbox_instance() {
@@ -597,6 +682,12 @@ lpk_run_isolated() {
     if ! is_arch_compatible "$package_arch"; then
         error "Package architecture '$package_arch' is incompatible with host '$(detect_arch)'."
         return 1
+    fi
+
+    # [ULPM v6.1] Load session mode from manifest if not already set (CLI/env)
+    _ulpm_resolve_session_context "$manifest_file"
+    if [[ -n "${ULPM_SESSION_MODE:-}" ]]; then
+        log "Session mode: $ULPM_SESSION_MODE${ULPM_SESSION_CMD:+ (cmd: $ULPM_SESSION_CMD)}"
     fi
 
     if lpk_is_rootfs "$mnt_dir" "$manifest_file"; then
@@ -961,33 +1052,19 @@ EOF
     [[ -f "$HOME/.config/user-dirs.dirs" ]] && bwrap_args+=(--ro-bind-try "$HOME/.config/user-dirs.dirs" "$HOME/.config/user-dirs.dirs")
     [[ -d "/recalbox/share" ]] && bwrap_args+=(--bind-try /recalbox/share /recalbox/share)
 
+    # [ULPM v6.1] GUI: multiple X11 sockets, writable /tmp/.X11-unix, Wayland,
+    # ULPM_HOST_* — factored into _ulpm_bind_gui_sockets.
     if [[ "$allow_gui" == "true" ]]; then
-        if [[ -n "${DISPLAY:-}" ]]; then
-            local x_sock
-            if [[ "$DISPLAY" =~ ^(unix)?:([0-9]+) ]]; then
-                x_sock="/tmp/.X11-unix/X${BASH_REMATCH[2]}"
-                bwrap_args+=(--ro-bind-try "$x_sock" "$x_sock")
-            else
-                bwrap_args+=(--ro-bind-try /tmp/.X11-unix /tmp/.X11-unix)
-            fi
-            local xauth_file="${XAUTHORITY:-$HOME/.Xauthority}"
-            [[ -f "$xauth_file" ]] && bwrap_args+=(--ro-bind "$xauth_file" "$xauth_file")
-        fi
-
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            local wayland_sock
-            if [[ "$WAYLAND_DISPLAY" == /* ]]; then
-                wayland_sock="$WAYLAND_DISPLAY"
-            else
-                wayland_sock="$run_user_dir/$WAYLAND_DISPLAY"
-            fi
-            bwrap_args+=(--bind-try "$wayland_sock" "$wayland_sock")
-        fi
+        _ulpm_bind_gui_sockets isolated "$run_user_dir" bwrap_args
     fi
 
-    # D-Bus Filtering Proxy with Full Desktop Portals Baseline (and Direct Fallback)
+    # D-Bus: filtered proxy by default. In session mode we SKIP the proxy
+    # (launch.sh creates its own bus via dbus-run-session) and expose the
+    # host bus read-only at a distinct path for optional use.
     local session_bus
-    if [[ "$allow_gui" == "true" ]] && session_bus="$(session_bus_socket "$run_user_dir")"; then
+    if [[ -z "${ULPM_SESSION_MODE:-}" ]] && \
+       [[ "$allow_gui" == "true" ]] && \
+       session_bus="$(session_bus_socket "$run_user_dir")"; then
         if command -v xdg-dbus-proxy >/dev/null 2>&1; then
             dbus_proxy_dir="$(mktemp -d "$cache_dir/dbus_proxy_${instance_id}.XXXXXX")"
             local proxy_socket="$dbus_proxy_dir/bus"
@@ -1015,7 +1092,6 @@ EOF
                 done <<< "$own_rules"
             fi
 
-            # Standard Freedesktop & XDG Portals baseline
             proxy_args+=(
                 --own='org.mpris.MediaPlayer2.*'
                 --talk=org.freedesktop.Notifications
@@ -1059,12 +1135,20 @@ EOF
                 )
             fi
         else
-            # FlatImage-style direct bind when proxy is missing
             bwrap_args+=(
                 --bind-try "$session_bus" "$run_user_dir/bus"
                 --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$run_user_dir/bus"
             )
         fi
+    elif [[ -n "${ULPM_SESSION_MODE:-}" ]] && \
+         [[ "$allow_gui" == "true" ]] && \
+         session_bus="$(session_bus_socket "$run_user_dir")"; then
+        # [ULPM v6.1] Session mode: no proxy, host bus read-only at a distinct
+        # path so dbus-run-session can create its own bus.
+        bwrap_args+=(
+            --bind-try "$session_bus" "$run_user_dir/host-bus"
+            --setenv ULPM_HOST_DBUS_ADDRESS "unix:path=$run_user_dir/host-bus"
+        )
     fi
 
     for b in "${custom_binds[@]}"; do
@@ -1120,7 +1204,7 @@ EOF
         --setenv XDG_DATA_DIRS "/app/share:/app/usr/share:/usr/share:/usr/local/share"
     )
 
-    log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id)..."
+    log "Launching application [$app_id] via Bubblewrap sandbox (Instance: $instance_id${ULPM_SESSION_MODE:+, Mode: $ULPM_SESSION_MODE})..."
     local app_exit_code=0
     if (( ${#seccomp_fd_arg[@]} > 0 )); then
         "${bwrap_args[@]}" "${seccomp_fd_arg[@]}" "$sandbox_exec" \

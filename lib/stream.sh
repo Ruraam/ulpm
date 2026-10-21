@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/stream.sh - Ephemeral RAM Streaming Engine
-# ULPM v6.0.0 Architecture Engine (v5.3 Ephemeral RAM Streamer & Hardened Wiping)
+# ULPM v6.1.0 — Session mode passthrough (via cmd_run) transparent
 # ==============================================================================
 
 resolve_stream_url() {
@@ -12,13 +12,11 @@ resolve_stream_url() {
         return 1
     }
 
-    # Direct HTTP(S) URLs
     if [[ "$uri" =~ ^https?:// ]]; then
         printf '%s\n' "$uri"
         return 0
     fi
 
-    # Local file path or file:// URI
     if [[ "$uri" == file://* ]]; then
         local local_path="${uri#file://}"
         if declare -F normalize_target >/dev/null 2>&1; then
@@ -46,7 +44,6 @@ resolve_stream_url() {
         return 0
     fi
 
-    # GitHub shorthand: owner/repo, optionally owner/repo@tag
     if [[ "$uri" =~ ^([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)(@([A-Za-z0-9._-]+))?$ ]]; then
         check_dependencies curl jq || return 1
 
@@ -123,11 +120,10 @@ resolve_stream_url() {
     return 1
 }
 
-# Run inside an isolated subshell to prevent signals/traps contamination
 cmd_stream() (
     local source_input="${1:-}"
     if [[ -z "$source_input" ]]; then
-        error "Usage: ulpm stream <url|local.lpk|owner/repo[@tag]> [sandbox_flags] [-- app_args...]"
+        error "Usage: ulpm stream <url|local.lpk|owner/repo[@tag]> [sandbox_flags] [--session-mode <mode>] [-- app_args...]"
         return 1
     fi
     shift
@@ -137,7 +133,6 @@ cmd_stream() (
     local target_url
     target_url="$(resolve_stream_url "$source_input")" || return 1
 
-    # Intelligent volatile RAM detection
     local ram_base="/dev/shm"
     local free_kb=0
     if [[ -d "$ram_base" && -w "$ram_base" ]]; then
@@ -145,7 +140,6 @@ cmd_stream() (
         [[ "$free_kb" =~ ^[0-9]+$ ]] || free_kb=0
     fi
 
-    # Fallback to runtime directory if /dev/shm has less than 256MB free
     if (( free_kb < 262144 )) || [[ ! -w "$ram_base" ]]; then
         ram_base="${XDG_RUNTIME_DIR:-${ULPM_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ulpm}/tmp}"
     fi
@@ -212,6 +206,7 @@ cmd_stream() (
         return 1
     fi
 
-    # Forward directly to cmd_run: it natively handles sandbox flags and app args
+    # Forward directly to cmd_run: it natively handles sandbox flags (including
+    # --session-mode) regardless of their position, and app args after '--'.
     cmd_run "$tmp_lpk" "$@"
 )

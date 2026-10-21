@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/run.sh - Direct Sandbox Execution Dispatcher
-# ULPM v6.0.0 Architecture Engine (v5.3 Rock-Solid Resolution & Sandbox Dispatch)
+# ULPM v6.1.0 — Session mode passthrough (Xephyr / gamescope / weston / cage)
 # ==============================================================================
 
 _run_resolve_target() {
@@ -16,7 +16,6 @@ _run_resolve_target() {
         target="$(normalize_target "$target" 2>/dev/null || printf '%s' "$target")"
     fi
 
-    # 1. Chemin direct vers un fichier régulier
     if [[ -f "$target" ]]; then
         local real_target
         real_target="$(realpath -e -- "$target" 2>/dev/null || printf '%s' "$target")"
@@ -26,7 +25,6 @@ _run_resolve_target() {
         fi
     fi
 
-    # 2. Utilisation du résolveur officiel de manage.sh s'il est chargé
     if declare -F _manage_resolve_installed_lpk >/dev/null 2>&1; then
         local found
         if found="$(_manage_resolve_installed_lpk "$target" 2>/dev/null || true)"; then
@@ -37,7 +35,6 @@ _run_resolve_target() {
         fi
     fi
 
-    # 3. Recherche directe dans le répertoire des applications (apps_dir)
     local candidate
     for candidate in \
         "$apps_dir/$target/$target.lpk" \
@@ -54,7 +51,6 @@ _run_resolve_target() {
         fi
     done
 
-    # 4. Lookup direct à double passe dans installed.db (Socle v5.3 éprouvé)
     if [[ -f "$db_file" && ! -L "$db_file" ]]; then
         local id name _rest
 
@@ -77,7 +73,6 @@ _run_resolve_target() {
             fi
         done < "$db_file"
 
-        # Passe 2: Repli insensible à la casse
         while IFS='|' read -r id name _rest; do
             if [[ "${id,,}" == "${target,,}" || "${name,,}" == "${target,,}" ]]; then
                 for candidate in \
@@ -104,7 +99,7 @@ cmd_run() {
     local target=""
     local resolved_target=""
     local explicit_app_args=0
-    local arg bind_value
+    local arg bind_value session_mode
     local -a sandbox_opts=()
     local -a app_args=()
 
@@ -122,12 +117,38 @@ cmd_run() {
                 explicit_app_args=1
                 shift
                 ;;
-            # Profils d'exécution
             --gaming|--strict|--desktop)
                 sandbox_opts+=("$arg")
                 shift
                 ;;
-            # Contrôle Réseau
+            --session-mode)
+                if (( $# < 2 )) || [[ -z "${2:-}" || "${2:-}" == -- ]]; then
+                    error "--session-mode requires a value: xephyr|gamescope|weston|cage|app|auto"
+                    return 2
+                fi
+                session_mode="$2"
+                case "$session_mode" in
+                    xephyr|gamescope|weston|cage|app|auto) ;;
+                    *)
+                        error "Invalid --session-mode value: '$session_mode' (expected xephyr|gamescope|weston|cage|app|auto)"
+                        return 2
+                        ;;
+                esac
+                sandbox_opts+=("--session-mode" "$session_mode")
+                shift 2
+                ;;
+            --session-mode=*)
+                session_mode="${arg#--session-mode=}"
+                case "$session_mode" in
+                    xephyr|gamescope|weston|cage|app|auto) ;;
+                    *)
+                        error "Invalid --session-mode value: '$session_mode' (expected xephyr|gamescope|weston|cage|app|auto)"
+                        return 2
+                        ;;
+                esac
+                sandbox_opts+=("--session-mode=$session_mode")
+                shift
+                ;;
             --offline|--no-net)
                 sandbox_opts+=("--offline")
                 shift
@@ -136,12 +157,10 @@ cmd_run() {
                 sandbox_opts+=("--net")
                 shift
                 ;;
-            # Isolation Matérielle et Sous-systèmes
             --no-gpu|--no-audio|--no-gui|--no-input)
                 sandbox_opts+=("$arg")
                 shift
                 ;;
-            # Montages de dossiers (Binds)
             --bind)
                 if (( $# < 2 )) || [[ -z "${2:-}" || "${2:-}" == -- ]]; then
                     error "--bind requires a mapping formatted as <host_dir>:<sandbox_dir>."
@@ -166,10 +185,8 @@ cmd_run() {
                 ;;
             -*)
                 if [[ -z "$target" ]]; then
-                    # Transmission sécurisée des options de sandbox personnalisées
                     sandbox_opts+=("$arg")
                 else
-                    # Argument après la cible sans '--' explicite : considéré comme argument de l'application
                     app_args+=("$arg")
                 fi
                 shift
@@ -186,7 +203,7 @@ cmd_run() {
     done
 
     if [[ -z "$target" ]]; then
-        error "Usage: ulpm run [sandbox_flags] <package.lpk|app_id> [-- app_args...]"
+        error "Usage: ulpm run [sandbox_flags] [--session-mode <mode>] <package.lpk|app_id> [-- app_args...]"
         return 2
     fi
 

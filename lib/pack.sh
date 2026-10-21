@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/pack.sh - Deterministic LPK Packaging & Dynamic ELF Library Bundler
-# ULPM v6.0.0 Architecture Engine (v5.3 Deterministic Packaging & Robust Bundler)
+# ULPM v6.1.0 — Session rootfs aware (absolute exec + launch.sh detection)
 # ==============================================================================
 
 validate_manifest() {
@@ -18,12 +18,25 @@ validate_manifest() {
     fi
 
     if ! jq -e --argjson max_version "$max_version" '
+        . as $m |
         type == "object" and
         ((.format_version // 1) | type == "number" and . >= 1 and . <= $max_version and floor == .) and
         ((.name // .id) | type == "string" and length > 0 and length <= 128) and
         (if has("id") then (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") and (contains("..") | not)) else true end) and
         (if has("name") then (.name | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) else true end) and
-        (if has("exec") then (.exec | type == "string" and length > 0 and (startswith("/") | not) and (split("/") | all(. != ".." and . != ""))) else true end) and
+        (if has("exec") then (
+            .exec as $e |
+            ($e | type == "string" and length > 0) and
+            (
+                if $e | startswith("/") then
+                    # [ULPM v6.1] Absolute exec allowed ONLY for rootfs
+                    ($e | split("/") | .[1:] | all(. != "" and . != "..")) and
+                    ($m.type // $m.kind // "" | test("^(rootfs|os|distro)$"))
+                else
+                    ($e | split("/") | all(. != "" and . != ".."))
+                end
+            )
+        ) else true end) and
         (if has("arch") then (.arch | type == "string" and test("^(x86_64|amd64|i386|i686|aarch64|arm64|armv7l|armv7|armhf|riscv64|ppc64le|s390x|loongarch64|mips64|mips|sparc64|all|any|noarch)$"; "i")) else true end) and
         (if has("permissions") then (.permissions | type == "object") else true end)
     ' "$manifest" >/dev/null 2>&1; then
@@ -59,7 +72,6 @@ bundle_elf_libraries() {
     local bin lib_path bname
     local -A seen_libs=()
 
-    # Transitive loop to resolve dependencies of dependencies
     while (( added > 0 && iterations < max_iterations )); do
         added=0
         iterations=$((iterations + 1))
@@ -71,7 +83,6 @@ bundle_elf_libraries() {
                 [[ "$lib_path" == /* && -f "$lib_path" ]] || continue
                 bname="$(basename -- "$lib_path")"
 
-                # Exclude core glibc, graphics, audio and display servers provided by host passthrough
                 if [[ "$bname" =~ ^(ld-linux|ld-musl|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libresolv\.so|libutil\.so|libnss_|libGL|libEGL|libGLX|libGLdispatch|libdrm|libvulkan|libX11|libxcb|libXau|libasound|libpulse|libpipewire|libwayland) ]]; then
                     continue
                 fi
@@ -587,31 +598,51 @@ cmd_pack() {
 
     mkdir -p -- "$build_stage/meta" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
 
+    # [ULPM v6.1] Rootfs detection: changes entrypoint mode and skips bundler
+    local is_rootfs_payload=false
+    if [[ -d "$build_stage/root/etc" && -d "$build_stage/root/usr" ]] || \
+       [[ -d "$build_stage/root/root/etc" && -d "$build_stage/root/root/usr" ]]; then
+        is_rootfs_payload=true
+        info "RootFS payload detected (etc/ + usr/)."
+    fi
+
     log "Extracting assets from $src..."
     extract_any_payload "$src" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
 
     local detected_exec="" f
-    if [[ -x "$build_stage/root/AppRun" && ! -d "$build_stage/root/AppRun" ]]; then
-        detected_exec="AppRun"
-    elif [[ -x "$build_stage/root/bin/main" && ! -d "$build_stage/root/bin/main" ]]; then
-        detected_exec="bin/main"
-    elif [[ -x "$build_stage/root/main" && ! -d "$build_stage/root/main" ]]; then
-        detected_exec="main"
-    elif [[ -x "$build_stage/root/bin/$app_name" && ! -d "$build_stage/root/bin/$app_name" ]]; then
-        detected_exec="bin/$app_name"
-    elif [[ -x "$build_stage/root/usr/bin/$app_name" && ! -d "$build_stage/root/usr/bin/$app_name" ]]; then
-        detected_exec="usr/bin/$app_name"
-    else
-        local scan_list
-        scan_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/exec_scan.XXXXXX")" || { _cleanup_pack_stage; return 1; }
-        find "$build_stage/root" -xdev -maxdepth 4 -type f \( -perm -0100 -o -perm -0111 \) -print0 2>/dev/null > "$scan_list"
-        while IFS= read -r -d '' f; do
-            if _is_executable_payload "$f"; then
-                detected_exec="${f#"$build_stage/root/"}"
+    # [ULPM v6.1] Absolute priority: launch.sh inside a rootfs
+    if [[ "$is_rootfs_payload" == "true" ]]; then
+        local cand_launch
+        for cand_launch in "usr/bin/launch.sh" "bin/launch.sh"; do
+            if [[ -x "$build_stage/root/$cand_launch" && ! -d "$build_stage/root/$cand_launch" ]]; then
+                detected_exec="$cand_launch"
                 break
             fi
-        done < "$scan_list"
-        rm -f -- "$scan_list"
+        done
+    fi
+    if [[ -z "$detected_exec" ]]; then
+        if [[ -x "$build_stage/root/AppRun" && ! -d "$build_stage/root/AppRun" ]]; then
+            detected_exec="AppRun"
+        elif [[ -x "$build_stage/root/bin/main" && ! -d "$build_stage/root/bin/main" ]]; then
+            detected_exec="bin/main"
+        elif [[ -x "$build_stage/root/main" && ! -d "$build_stage/root/main" ]]; then
+            detected_exec="main"
+        elif [[ -x "$build_stage/root/bin/$app_name" && ! -d "$build_stage/root/bin/$app_name" ]]; then
+            detected_exec="bin/$app_name"
+        elif [[ -x "$build_stage/root/usr/bin/$app_name" && ! -d "$build_stage/root/usr/bin/$app_name" ]]; then
+            detected_exec="usr/bin/$app_name"
+        else
+            local scan_list
+            scan_list="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/exec_scan.XXXXXX")" || { _cleanup_pack_stage; return 1; }
+            find "$build_stage/root" -xdev -maxdepth 4 -type f \( -perm -0100 -o -perm -0111 \) -print0 2>/dev/null > "$scan_list"
+            while IFS= read -r -d '' f; do
+                if _is_executable_payload "$f"; then
+                    detected_exec="${f#"$build_stage/root/"}"
+                    break
+                fi
+            done < "$scan_list"
+            rm -f -- "$scan_list"
+        fi
     fi
 
     if [[ -z "$detected_exec" ]]; then
@@ -621,11 +652,21 @@ cmd_pack() {
     fi
     info "Detected entrypoint: $detected_exec"
 
-    if [[ "$no_scan" != "true" && "${ULPM_NO_SCAN:-0}" != "1" ]]; then
+    if [[ "$is_rootfs_payload" == "true" ]]; then
+        info "RootFS payload: skipping dynamic library bundling."
+    elif [[ "$no_scan" != "true" && "${ULPM_NO_SCAN:-0}" != "1" ]]; then
         bundle_elf_libraries "$build_stage/root" "$detected_exec"
     else
         info "Skipping dynamic library scan."
     fi
+
+    # [ULPM v6.1] RootFS: exec must be absolute (rootfs is bound to / in bwrap)
+    local exec_field="$detected_exec"
+    if [[ "$is_rootfs_payload" == "true" && -n "$exec_field" && "$exec_field" != /* ]]; then
+        exec_field="/$exec_field"
+    fi
+    local pkg_type="app"
+    [[ "$is_rootfs_payload" == "true" ]] && pkg_type="rootfs"
 
     local format_version="${ULPM_FORMAT_VERSION:-5}"
     jq -n \
@@ -634,7 +675,8 @@ cmd_pack() {
         --arg name "$app_name" \
         --arg ver "$ver" \
         --arg arch "$arch" \
-        --arg exec "$detected_exec" \
+        --arg exec "$exec_field" \
+        --arg pkg_type "$pkg_type" \
         --arg runtime "$runtime_ref" \
         --argjson shared "$shared_runtime" \
         --argjson dependencies "$dependencies_json" \
@@ -644,7 +686,9 @@ cmd_pack() {
             name: $name,
             version: $ver,
             arch: $arch,
+            type: $pkg_type,
             exec: $exec,
+            launch: { mode: "auto" },
             runtime: (if $runtime != "" then $runtime else null end),
             dependencies: $dependencies,
             shared: $shared,

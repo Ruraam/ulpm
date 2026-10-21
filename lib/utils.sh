@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # lib/utils.sh - Core utilities, binary helpers and environment setup
-# ULPM v6.0.0 Architecture Engine (Hardened POSIX / Strict Bash / v5.3 Reliability)
+# ULPM v6.1.0 — Session-aware diagnostics & completion
 # ==============================================================================
 
 # Strict color configuration (supports NO_COLOR standard & terminal detection)
@@ -333,18 +333,15 @@ semver_compare() {
         return 0
     fi
 
-    # Strip epoch prefixes if present (e.g., "1:2.0" -> "2.0")
     v1="${v1#*:}"
     v2="${v2#*:}"
 
-    # Delegate to dpkg if available (highest compatibility)
     if command -v dpkg >/dev/null 2>&1; then
         if dpkg --compare-versions "$v1" eq "$v2"; then return 0; fi
         if dpkg --compare-versions "$v1" gt "$v2"; then return 1; fi
         return 2
     fi
 
-    # Pure Bash SemVer comparison (handles numeric & alphanumeric tags safely)
     local -a ver1 ver2
     local old_ifs="$IFS"
     IFS='.-+' read -r -a ver1 <<< "$v1"
@@ -366,7 +363,6 @@ semver_compare() {
         clean1="${p1//[^0-9]/}"
         clean2="${p2//[^0-9]/}"
 
-        # If both parts contain numeric data and are equal in length, compare numerically
         if [[ -n "$clean1" && -n "$clean2" && "$p1" =~ ^[0-9]+$ && "$p2" =~ ^[0-9]+$ ]]; then
             if (( ${#clean1} > ${#clean2} )); then
                 return 1
@@ -379,7 +375,6 @@ semver_compare() {
                 return 2
             fi
         else
-            # Lexicographical ASCII comparison for pre-releases (e.g., "alpha" < "beta")
             if [[ "$p1" > "$p2" ]]; then
                 return 1
             else
@@ -825,7 +820,33 @@ cmd_doctor() {
     fi
     printf '%-34s : %b\n' 'GPU & Direct Rendering (/dev/dri)' "$dri_status"
 
-    # 5. Core dependencies
+    # 5. Host display sessions (X11 / Wayland availability for --session-mode)
+    shopt -s nullglob
+    local xsocks=(/tmp/.X11-unix/X*)
+    shopt -u nullglob
+    local wl_sock=""
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+        if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+            wl_sock="$WAYLAND_DISPLAY"
+        else
+            wl_sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY"
+        fi
+    fi
+    local display_parts=()
+    (( ${#xsocks[@]} > 0 )) && display_parts+=("X11(${#xsocks[@]})")
+    [[ -n "$wl_sock" && -S "$wl_sock" ]] && display_parts+=("Wayland")
+    if (( ${#display_parts[@]} > 0 )); then
+        printf '%-34s : %b (%s)\n' 'Host Display Sockets' "$ok" "${display_parts[*]}"
+    else
+        printf '%-34s : %b (no X11/Wayland; --session-mode will fallback to app)\n' 'Host Display Sockets' "$fail_tag"
+    fi
+    if [[ -d /tmp/.X11-unix && -w /tmp/.X11-unix ]]; then
+        printf '%-34s : %b (Xephyr-ready)\n' '/tmp/.X11-unix writable' "$ok"
+    else
+        printf '%-34s : %b (Xephyr sessions will fail)\n' '/tmp/.X11-unix writable' "$warn_tag"
+    fi
+
+    # 6. Core dependencies
     local missing_tools=() bin
     for bin in unsquashfs mksquashfs jq curl openssl tar flock sync; do
         command -v "$bin" >/dev/null 2>&1 || missing_tools+=("$bin")
@@ -836,7 +857,7 @@ cmd_doctor() {
         printf '%-34s : %b (Missing: %s)\n' 'Core CLI Dependencies' "$fail_tag" "${missing_tools[*]}"
     fi
 
-    # 6. Keys & Keychain
+    # 7. Keys & Keychain
     local keys_dir="${ULPM_KEYS_DIR:-${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm}/keys"
     local trusted_dir="${ULPM_CONFIG_HOME:-$HOME/.config}/ulpm/trusted_keys"
     local default_priv="$keys_dir/default.priv"
@@ -853,7 +874,7 @@ cmd_doctor() {
     trust_count="${#trusted_files[@]}"
     printf '%-34s : %s key(s) registered\n' 'Trust Keychain' "$trust_count"
 
-    # 7. GitHub API token
+    # 8. GitHub API token
     local token
     if token="$(get_github_token)"; then
         local gh_rate
@@ -1012,6 +1033,7 @@ _ulpm_completion() {
     case "$prev" in
         run|stream|install|pack|sign|trust|inspect|info) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
         --bind) COMPREPLY=(); return ;;
+        --session-mode) COMPREPLY=( $(compgen -W 'xephyr gamescope weston cage app auto' -- "$cur") ); return ;;
     esac
     COMPREPLY=( $(compgen -W 'run stream override permissions runtime pack deb-pack install upgrade remove search list inspect doctor keygen sign trust token self-update clean integrate completion help version repo deps transaction history rollback' -- "$cur") )
 }
