@@ -192,6 +192,7 @@ Security & Maintenance:
   self-update [repo]                           Update ULPM from upstream release
 
 Runtime Flags (run / stream / override):
+  --session-mode <mode>                        Force session backend: xephyr|gamescope|weston|cage|app|auto
   --gaming                                     Apply gaming preset (DRI, Low-latency audio, Input, HID)
   --strict                                     Apply hardened isolation profile (no network, seccomp)
   --offline, --no-net                          Disable network access
