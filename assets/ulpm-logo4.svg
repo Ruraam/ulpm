@@ -1,0 +1,248 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Dégradés de la bulle -->
+    <linearGradient id="bubbleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a5f3fc" />
+      <stop offset="25%" stop-color="#67e8f9" />
+      <stop offset="50%" stop-color="#60a5fa" />
+      <stop offset="75%" stop-color="#a78bfa" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+
+    <radialGradient id="bubbleInnerGrad" cx="25%" cy="25%" r="75%">
+      <stop offset="0%" stop-color="#1e1b4b" stop-opacity="0.2" />
+      <stop offset="40%" stop-color="#0c2340" stop-opacity="0.4" />
+      <stop offset="75%" stop-color="#051122" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#020617" stop-opacity="0.85" />
+    </radialGradient>
+
+    <!-- Dégradés du paquet CYBERPUNK -->
+    <linearGradient id="packageTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="50%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+
+    <linearGradient id="packageFront" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="50%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+
+    <linearGradient id="packageRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="50%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#3730a3" />
+    </linearGradient>
+
+    <!-- Dégradé pour les rabats du paquet -->
+    <linearGradient id="flapTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a5f3fc" />
+      <stop offset="50%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#818cf8" />
+    </linearGradient>
+
+    <!-- Dégradé néon pour accents cyberpunk -->
+    <linearGradient id="neonAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="50%" stop-color="#a78bfa" />
+      <stop offset="100%" stop-color="#f472b6" />
+    </linearGradient>
+
+    <!-- Dégradé pour le texte ULPM -->
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="50%" stop-color="#60a5fa" />
+      <stop offset="100%" stop-color="#a78bfa" />
+    </linearGradient>
+
+    <!-- Filtres -->
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Dégradé d'ombre -->
+    <radialGradient id="shadowGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#4338ca" stop-opacity="0.45" />
+      <stop offset="100%" stop-color="#4338ca" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Dégradés pour reflets verre réalistes -->
+    <linearGradient id="glassReflect1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.85" />
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="glassReflect2" x1="100%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <radialGradient id="glassSpot" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9" />
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Motif grille cyberpunk -->
+    <pattern id="gridPattern" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M 8 0 L 0 0 0 8" fill="none" stroke="#22d3ee" stroke-width="0.3" opacity="0.15" />
+    </pattern>
+  </defs>
+
+  <!-- Ombre portée sous la bulle -->
+  <ellipse cx="256" cy="462" rx="175" ry="32" fill="url(#shadowGrad)" />
+
+  <!-- Lueur externe subtile -->
+  <circle cx="256" cy="238" r="200" fill="none" stroke="#a78bfa" stroke-width="1" opacity="0.12" filter="url(#strongGlow)" />
+
+  <!-- Anneau principal de la bulle -->
+  <circle cx="256" cy="238" r="196" fill="none" stroke="url(#bubbleGrad)" stroke-width="2.4" opacity="0.95" filter="url(#softGlow)" />
+
+  <!-- Anneau interne fin -->
+  <circle cx="256" cy="238" r="188" fill="none" stroke="#ffffff" stroke-width="0.5" opacity="0.12" />
+
+  <!-- Intérieur sombre de la bulle -->
+  <circle cx="256" cy="238" r="190" fill="url(#bubbleInnerGrad)" />
+
+  <!-- ===== EFFET VERRE REALISTE ===== -->
+  
+  <!-- Grand reflet haut gauche -->
+  <path d="M 95 148 Q 115 95 185 78 Q 230 72 260 95" fill="none" stroke="url(#glassReflect1)" stroke-width="16" stroke-linecap="round" opacity="0.55" />
+  
+  <!-- Reflet principal arc haut gauche -->
+  <path d="M 108 158 A 132 132 0 0 1 242 88" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" opacity="0.88" />
+  <path d="M 113 163 A 127 127 0 0 1 237 93" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round" opacity="0.48" />
+  
+  <!-- Reflet diffus haut gauche -->
+  <ellipse cx="148" cy="132" rx="68" ry="45" fill="#ffffff" opacity="0.075" transform="rotate(-38 148 132)" />
+  <ellipse cx="136" cy="150" rx="28" ry="17" fill="#ffffff" opacity="0.15" transform="rotate(-38 136 150)" />
+  <ellipse cx="128" cy="162" rx="12" ry="7" fill="#ffffff" opacity="0.1" transform="rotate(-38 128 162)" />
+
+  <!-- Points de reflet haut gauche -->
+  <circle cx="96" cy="178" r="5" fill="url(#glassSpot)" opacity="0.95" />
+  <circle cx="108" cy="168" r="1.8" fill="#ffffff" opacity="0.7" />
+  <circle cx="118" cy="160" r="1" fill="#ffffff" opacity="0.5" />
+  <circle cx="128" cy="152" r="0.7" fill="#ffffff" opacity="0.35" />
+  <circle cx="140" cy="145" r="0.5" fill="#ffffff" opacity="0.25" />
+
+  <!-- Reflet bas droit -->
+  <path d="M 365 318 Q 342 375 275 400 Q 242 405 222 388" fill="none" stroke="url(#glassReflect2)" stroke-width="12" stroke-linecap="round" opacity="0.38" />
+  
+  <!-- Courbe basse principale -->
+  <path d="M 350 310 A 130 130 0 0 1 270 400" fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" opacity="0.72" />
+  <path d="M 352 313 A 128 128 0 0 1 273 402" fill="none" stroke="#ffffff" stroke-width="0.65" stroke-linecap="round" opacity="0.32" />
+  
+  <!-- Reflet diffus bas droit -->
+  <ellipse cx="354" cy="340" rx="52" ry="34" fill="#ffffff" opacity="0.05" transform="rotate(28 354 340)" />
+  <ellipse cx="365" cy="325" rx="18" ry="10" fill="#ffffff" opacity="0.08" transform="rotate(28 365 325)" />
+  
+  <!-- Points bas droit -->
+  <circle cx="378" cy="318" r="2" fill="#ffffff" opacity="0.38" />
+  <circle cx="368" cy="333" r="1.2" fill="#ffffff" opacity="0.3" />
+  <circle cx="358" cy="345" r="0.7" fill="#ffffff" opacity="0.22" />
+  <circle cx="348" cy="355" r="0.5" fill="#ffffff" opacity="0.15" />
+
+  <!-- Reflet diagonal -->
+  <ellipse cx="256" cy="238" rx="175" ry="12" fill="#ffffff" opacity="0.025" transform="rotate(-20 256 238)" />
+
+  <!-- Reflets subtils -->
+  <ellipse cx="384" cy="238" rx="16" ry="30" fill="#ffffff" opacity="0.028" transform="rotate(10 384 238)" />
+  <ellipse cx="128" cy="280" rx="12" ry="22" fill="#ffffff" opacity="0.02" transform="rotate(-15 128 280)" />
+
+  <!-- Ombre interne -->
+  <circle cx="256" cy="238" r="185" fill="none" stroke="#000000" stroke-width="10" opacity="0.18" />
+  <circle cx="256" cy="238" r="175" fill="none" stroke="#000000" stroke-width="4" opacity="0.08" />
+
+  <!-- Bord de verre lumineux -->
+  <circle cx="256" cy="238" r="192" fill="none" stroke="#ffffff" stroke-width="0.3" opacity="0.25" />
+
+  <!-- ===== PAQUET ULPM PLUS GROS - STYLE CYBERPUNK ===== -->
+  <g transform="translate(256, 225)" filter="url(#softGlow)">
+    <!-- Grille cyberpunk sur le paquet -->
+    <polygon points="0,-100 88,-52 0,-4 -88,-52" fill="url(#gridPattern)" opacity="0.5" />
+    <polygon points="-88,-52 0,-4 0,100 -88,48" fill="url(#gridPattern)" opacity="0.4" />
+    
+    <!-- Face supérieure du paquet (PLUS GROSSE) -->
+    <polygon points="0,-100 88,-52 0,-4 -88,-52" fill="url(#packageTop)" stroke="#22d3ee" stroke-width="1.2" opacity="0.96" />
+    
+    <!-- Rabat supérieur style cyberpunk -->
+    <polygon points="0,-100 88,-52 62,-42 0,-80 -62,-42 -88,-52" fill="url(#flapTop)" stroke="#a78bfa" stroke-width="0.9" opacity="0.75" />
+    
+    <!-- Ligne de pliure néon -->
+    <line x1="-62" y1="-42" x2="62" y2="-42" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" stroke-dasharray="3,2" />
+
+    <!-- Reflet sur la face supérieure -->
+    <polygon points="0,-96 84,-50 0,-8 -84,-50" fill="#ffffff" opacity="0.08" />
+
+    <!-- Face avant du paquet (PLUS GROSSE) -->
+    <polygon points="-88,-52 0,-4 0,100 -88,48" fill="url(#packageFront)" stroke="#22d3ee" stroke-width="1" opacity="0.88" />
+    
+    <!-- Lignes de circuit cyberpunk sur la face avant -->
+    <line x1="-78" y1="-30" x2="-20" y2="-30" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" filter="url(#neonGlow)" />
+    <line x1="-20" y1="-30" x2="-20" y2="-10" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" filter="url(#neonGlow)" />
+    <line x1="-20" y1="-10" x2="-50" y2="-10" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" filter="url(#neonGlow)" />
+    <line x1="-50" y1="-10" x2="-50" y2="20" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" filter="url(#neonGlow)" />
+    <line x1="-50" y1="20" x2="-15" y2="20" stroke="#22d3ee" stroke-width="0.6" opacity="0.5" filter="url(#neonGlow)" />
+    
+    <!-- LED cyberpunk -->
+    <circle cx="-78" cy="-30" r="2" fill="#22d3ee" opacity="0.9" filter="url(#neonGlow)" />
+    <circle cx="-15" cy="20" r="2" fill="#a78bfa" opacity="0.9" filter="url(#neonGlow)" />
+    
+    <!-- Coutures verticales avant style néon -->
+    <line x1="-80" y1="-44" x2="-80" y2="92" stroke="#22d3ee" stroke-width="0.5" opacity="0.35" />
+    <line x1="-10" y1="-8" x2="-10" y2="97" stroke="#a78bfa" stroke-width="0.5" opacity="0.3" />
+    
+    <!-- Reflet sur la face avant -->
+    <polygon points="-84,-48 0,-8 0,96 -84,46" fill="#ffffff" opacity="0.04" />
+
+    <!-- Face droite du paquet (PLUS GROSSE) -->
+    <polygon points="88,-52 0,-4 0,100 88,48" fill="url(#packageRight)" stroke="#a78bfa" stroke-width="1" opacity="0.82" />
+    
+    <!-- Lignes de circuit sur la face droite -->
+    <line x1="80" y1="-20" x2="30" y1="-20" stroke="#a78bfa" stroke-width="0.5" opacity="0.4" filter="url(#neonGlow)" />
+    <line x1="30" y1="-20" x2="30" y2="15" stroke="#a78bfa" stroke-width="0.5" opacity="0.4" filter="url(#neonGlow)" />
+    <line x1="30" y1="15" x2="55" y2="15" stroke="#a78bfa" stroke-width="0.5" opacity="0.4" filter="url(#neonGlow)" />
+    
+    <!-- LED droite -->
+    <circle cx="80" cy="-20" r="1.8" fill="#f472b6" opacity="0.85" filter="url(#neonGlow)" />
+    <circle cx="55" cy="15" r="1.5" fill="#22d3ee" opacity="0.8" filter="url(#neonGlow)" />
+    
+    <!-- Coutures verticales droite -->
+    <line x1="80" y1="-44" x2="80" y2="92" stroke="#a78bfa" stroke-width="0.5" opacity="0.32" />
+    <line x1="10" y1="-8" x2="10" y2="97" stroke="#22d3ee" stroke-width="0.5" opacity="0.28" />
+    
+    <!-- Ombrage sur la face droite -->
+    <polygon points="84,-48 0,-8 0,96 84,46" fill="#000000" opacity="0.15" />
+
+    <!-- Arêtes vives néon -->
+    <line x1="0" y1="-100" x2="0" y2="-4" stroke="url(#neonAccent)" stroke-width="0.8" opacity="0.6" filter="url(#neonGlow)" />
+    <line x1="-88" y1="-52" x2="0" y2="-4" stroke="#22d3ee" stroke-width="0.6" opacity="0.4" />
+    <line x1="88" y1="-52" x2="0" y2="-4" stroke="#a78bfa" stroke-width="0.6" opacity="0.35" />
+    
+    <!-- Coin renforcé néon -->
+    <circle cx="0" cy="-4" r="2.5" fill="url(#neonAccent)" opacity="0.8" filter="url(#neonGlow)" />
+    
+    <!-- Petit logo hexagone cyberpunk sur la face avant -->
+    <polygon points="-40,50 -34,46 -34,54 -40,58 -46,54 -46,46" fill="none" stroke="#22d3ee" stroke-width="0.6" opacity="0.6" filter="url(#neonGlow)" />
+  </g>
+
+  <!-- Texte ULPM sous le paquet -->
+  <text x="256" y="358" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="url(#textGrad)" text-anchor="middle" filter="url(#neonGlow)" letter-spacing="3">ULPM</text>
+  
+  <!-- Sous-titre style cyberpunk -->
+  <text x="256" y="378" font-family="monospace" font-size="9" fill="#a78bfa" text-anchor="middle" opacity="0.6" letter-spacing="2">// UNIVERSAL_LINUX_PKG_MGR //</text>
+</svg>
