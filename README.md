@@ -1,5 +1,5 @@
 <div align="center">
-<img src="assets/ulpm-logo.svg" width="225" alt="ulpm logo" />
+<img src="https://raw.githubusercontent.com/Ruraam/ulpm/703cc478f9f814ef7b4ec0830230b2e7830d6460/assets/ulpm-logo4.svg" width="340" />
 <h1>ULPM - Universal Linux Package Manager & Autonomous Containerized Bundle Engine</h1>
 
 
