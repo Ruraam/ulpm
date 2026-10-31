@@ -229,7 +229,6 @@ main() {
         exit 0
     fi
 
-    # Support direct double-click or CLI invocation: `ulpm package.lpk`
     if [[ -f "$1" && "$1" == *.lpk ]]; then
         _dispatch cmd_run run "$@"
         return $?
