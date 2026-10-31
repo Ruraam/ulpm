@@ -3,7 +3,7 @@
 # ULRM - Automated management of a signed ULPM repository
 # Usage:
 #   ulrm init
-#ulrm add myapp.lpk
+#   ulrm add myapp.lpk
 #   ulrm rebuild
 #   ulrm publish
 # ==============================================================================
