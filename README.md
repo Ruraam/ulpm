@@ -481,10 +481,11 @@ This project is licensed under the [GPLv3 License](LICENSE).
 
 *My other projects:*
 
-*[debup - Hybrid Package Manager:](https://github.com/Ruraam/debup) 3⭐ - The missing bridge between `GitHub & APT` for Debian/Ubuntu-based distributions, WSL, Android Linux Terminal. Discover, search, track, install, and upgrade.deb packages directly from APT & GitHub Releases on `all architectures` simultaneously.*
+*[BubbleOS](https://github.com/Ruraam/Bubbleos): 0⭐ - BubbleOS is an experimental Linux operating system built around the Linux kernel and the ULPM/LPK ecosystem.*
 
+*[debup - Hybrid Package Manager](https://github.com/Ruraam/debup): 3⭐ - The missing bridge between `GitHub & APT` for Debian/Ubuntu-based distributions, WSL, Android Linux Terminal. Discover, search, track, install, and upgrade.deb packages directly from APT & GitHub Releases on `all architectures` simultaneously.*
 
-*[Universal Ruvomain ADB App Manager [URAAM]:](https://github.com/Ruraam/Uraam) 50⭐ - An all-in-one shell toolkit for `Android debloating`. Uninstall/disable your apps, backup your debloat apps JSON file & revert/restore, install apk. Works with `Termux WirelessADB, Shizuku, Root`, `Linux Debian, Arch, Fedora, macOS & WSL`. Compatible with Canta/UAD JSON lists.*
+*[Universal Ruvomain ADB App Manager [URAAM]](https://github.com/Ruraam/Uraam): 50⭐ - An all-in-one shell toolkit for `Android debloating`. Uninstall/disable your apps, backup your debloat apps JSON file & revert/restore, install apk. Works with `Termux WirelessADB, Shizuku, Root`, `Linux Debian, Arch, Fedora, macOS & WSL`. Compatible with Canta/UAD JSON lists.*
 
 
 
