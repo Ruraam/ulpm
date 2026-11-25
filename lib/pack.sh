@@ -46,6 +46,23 @@ validate_manifest() {
     return 0
 }
 
+_pack_prepare_rootfs_mountpoints() {
+    local root="$1" path
+    # Create mount targets in the staged copy before sealing it read-only.
+    for path in proc sys dev tmp run var var/tmp home media mnt; do
+        if [[ -L "$root/$path" ]] || ! mkdir -p -- "$root/$path"; then
+            error "Invalid RootFS mount point: /$path"
+            return 1
+        fi
+    done
+}
+
+_pack_is_rootfs_tree() {
+    local root="$1"
+    [[ -d "$root/etc" && -d "$root/usr" ]] &&
+        [[ -f "$root/etc/os-release" || -f "$root/usr/lib/os-release" ]]
+}
+
 bundle_elf_libraries() {
     local root_dir="${1:-}"
     # shellcheck disable=SC2034
@@ -550,6 +567,15 @@ cmd_pack() {
             is_system_rootfs=true
         fi
 
+        local staged_root="$build_stage"
+        [[ ! -d "$build_stage/root/etc" ]] || staged_root="$build_stage/root"
+        if [[ "$pkg_type" =~ ^(rootfs|os|distro)$ ]] ||
+           { [[ "$pkg_type" != app && -d "$staged_root/etc" && -d "$staged_root/usr" ]] &&
+             [[ -d "$staged_root/bin" || -L "$staged_root/bin" ]]; }; then
+            _pack_prepare_rootfs_mountpoints "$staged_root" || { _cleanup_pack_stage; return 1; }
+            is_system_rootfs=true
+        fi
+
         if [[ "$no_scan" == "true" || "$is_system_rootfs" == "true" || "${ULPM_NO_SCAN:-0}" == "1" ]]; then
             info "RootFS / Recalbox or fast-mode: skipping library scan."
         else
@@ -598,16 +624,15 @@ cmd_pack() {
 
     mkdir -p -- "$build_stage/meta" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
 
-    # [ULPM v6.1] Rootfs detection: changes entrypoint mode and skips bundler
-    local is_rootfs_payload=false
-    if [[ -d "$build_stage/root/etc" && -d "$build_stage/root/usr" ]] || \
-       [[ -d "$build_stage/root/root/etc" && -d "$build_stage/root/root/usr" ]]; then
-        is_rootfs_payload=true
-        info "RootFS payload detected (etc/ + usr/)."
-    fi
-
     log "Extracting assets from $src..."
     extract_any_payload "$src" "$build_stage/root" || { _cleanup_pack_stage; return 1; }
+
+    local is_rootfs_payload=false
+    if _pack_is_rootfs_tree "$build_stage/root"; then
+        is_rootfs_payload=true
+        info "RootFS payload detected."
+        _pack_prepare_rootfs_mountpoints "$build_stage/root" || { _cleanup_pack_stage; return 1; }
+    fi
 
     local detected_exec="" f
     # [ULPM v6.1] Absolute priority: launch.sh inside a rootfs

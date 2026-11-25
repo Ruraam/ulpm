@@ -256,6 +256,7 @@ lpk_is_rootfs() {
         if [[ "$is_rootfs" =~ ^(rootfs|distro|os)$ ]]; then
             return 0
         fi
+        [[ "$is_rootfs" != app ]] || return 1
     fi
 
     if [[ -d "$mount_dir/root/etc" && -d "$mount_dir/root/usr" ]]; then
@@ -365,6 +366,7 @@ lpk_run_rootfs() {
         --unshare-pid
         --unshare-cgroup-try
         --chdir "$HOME"
+        --ro-bind "$rootfs_dir" /
         --proc /proc
         --dev /dev
         --dev-bind /dev/shm /dev/shm
@@ -372,7 +374,6 @@ lpk_run_rootfs() {
         --tmpfs /tmp
         --tmpfs /run
         --tmpfs /var/tmp
-        --ro-bind "$rootfs_dir" /
         --bind "$app_data_dir/.home-mnt" /home
         --bind "$app_data_dir/home" "$HOME"
         --bind "$app_data_dir/tmp" /tmp
