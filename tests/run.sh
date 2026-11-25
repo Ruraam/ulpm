@@ -190,7 +190,7 @@ if command -v mksquashfs >/dev/null 2>&1 && command -v unsquashfs >/dev/null 2>&
         assert_eq "e2e store rotated fingerprint in database" "$E2E_FP2" \
             "$(cut -d'|' -f6 "$ULPM_DB")"
 
-        if PROOT_TMP_DIR="$E2E_DIR" "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
+        if PROOT_TMP_DIR="$E2E_DIR" bash "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
             > "$E2E_DIR/failclosed.out" 2>&1; then
             fail "e2e refuse unsandboxed execution"
         else
@@ -202,7 +202,7 @@ if command -v mksquashfs >/dev/null 2>&1 && command -v unsquashfs >/dev/null 2>&
             fail "e2e print fail-closed diagnostic"
         fi
 
-        if PROOT_TMP_DIR="$E2E_DIR" ULPM_UNSAFE_NO_SANDBOX=1 "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
+        if PROOT_TMP_DIR="$E2E_DIR" ULPM_UNSAFE_NO_SANDBOX=1 bash "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
             > "$E2E_DIR/unsafe.out" 2>&1; then
             pass "e2e honor explicit unsafe override"
         else
