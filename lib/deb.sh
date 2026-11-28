@@ -205,7 +205,7 @@ _deb_download_required_deps() {
     local primary_deb="$1" archive_dir="$2" build_dir="$3"
     local host_packages="libc6|base-files|dpkg|debconf|perl-base|coreutils"
     local status_file="$build_dir/apt-status"
-    local host_status="/var/lib/dpkg/status"
+    local host_status="${DPKG_ADMINDIR:-/var/lib/dpkg}/status"
     local primary_name plan dependencies
     local -a apt_options=(
         -o Dir::State::status="$status_file"
@@ -215,13 +215,22 @@ _deb_download_required_deps() {
 
     check_dependencies apt-get || return 1
     primary_name="$(_deb_read_control_field "$primary_deb" Package)"
-    # Keep installed versions only for packages deliberately supplied by the host.
+    # Model the host-provided packages as already satisfied. Their installed
+    # versions and virtual provides matter, but their own dependency trees
+    # belong to the host and need not exist in the package's APT universe.
     : > "$status_file" || return 1
     if [[ -e "$host_status" ]]; then
         awk -v host_packages="$host_packages" '
-            BEGIN { RS = ""; ORS = "\n\n" }
+            BEGIN { RS = ""; FS = "\n" }
             $0 ~ ("(^|\n)Package: (" host_packages ")(\n|$)") &&
-            /(^|\n)Status: [^ ]+ ok installed(\n|$)/ { print }
+            /(^|\n)Status: [^ ]+ ok installed(\n|$)/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i !~ /^[[:blank:]]/)
+                        keep = ($i ~ /^(Package|Status|Version|Architecture|Multi-Arch|Provides):/)
+                    if (keep) print $i
+                }
+                print ""
+            }
         ' "$host_status" > "$status_file" || return 1
     fi
     mkdir -p -- "$archive_dir" || return 1
@@ -229,6 +238,7 @@ _deb_download_required_deps() {
     log "Resolving required Debian dependencies..."
     if ! plan="$(LC_ALL=C apt-get "${apt_options[@]}" --simulate --no-remove \
         --no-install-recommends --no-install-suggests install "$primary_deb")"; then
+        [[ -z "$plan" ]] || printf '%s\n' "$plan" >&2
         error "Could not resolve the required dependencies for $(basename "$primary_deb")."
         return 1
     fi
