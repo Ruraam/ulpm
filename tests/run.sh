@@ -190,7 +190,7 @@ if command -v mksquashfs >/dev/null 2>&1 && command -v unsquashfs >/dev/null 2>&
         assert_eq "e2e store rotated fingerprint in database" "$E2E_FP2" \
             "$(cut -d'|' -f6 "$ULPM_DB")"
 
-        if PROOT_TMP_DIR="$E2E_DIR" "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
+        if PROOT_TMP_DIR="$E2E_DIR" bash "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
             > "$E2E_DIR/failclosed.out" 2>&1; then
             fail "e2e refuse unsandboxed execution"
         else
@@ -202,7 +202,7 @@ if command -v mksquashfs >/dev/null 2>&1 && command -v unsquashfs >/dev/null 2>&
             fail "e2e print fail-closed diagnostic"
         fi
 
-        if PROOT_TMP_DIR="$E2E_DIR" ULPM_UNSAFE_NO_SANDBOX=1 "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
+        if PROOT_TMP_DIR="$E2E_DIR" ULPM_UNSAFE_NO_SANDBOX=1 bash "$ROOT_DIR/bin/ulpm" run --no-gui "$E2E_P1" \
             > "$E2E_DIR/unsafe.out" 2>&1; then
             pass "e2e honor explicit unsafe override"
         else
@@ -216,6 +216,31 @@ if command -v mksquashfs >/dev/null 2>&1 && command -v unsquashfs >/dev/null 2>&
     else
         fail "e2e generate test keypairs"
     fi
+fi
+
+test_raw_rootfs_pack() (
+    # shellcheck source=lib/pack.sh
+    source "$ULPM_LIB_DIR/pack.sh"
+    local fixture="$TEST_TMP/raw-rootfs" path
+    mkdir -p "$fixture/etc" "$fixture/usr/bin"
+    printf 'ID=ulpm-test\n' > "$fixture/etc/os-release"
+    printf '#!/bin/sh\nexit 0\n' > "$fixture/usr/bin/launch.sh"
+    chmod +x "$fixture/usr/bin/launch.sh"
+
+    check_dependencies() { return 0; }
+    _pack_and_seal() {
+        local staged="$1"
+        jq -e '.type == "rootfs" and .exec == "/usr/bin/launch.sh"' \
+            "$staged/meta/manifest.json" >/dev/null || return 1
+        for path in proc sys dev run tmp var/tmp home media mnt; do
+            [[ -d "$staged/root/$path" && ! -e "$fixture/$path" ]] || return 1
+        done
+    }
+    cmd_pack "$fixture" rootfs-fixture "$TEST_TMP/raw-rootfs.lpk"
+)
+
+if command -v jq >/dev/null 2>&1; then
+    assert_true "prepare RootFS mount targets before sealing" test_raw_rootfs_pack
 fi
 
 printf '\n%d tests, %d failure(s)\n' "$TESTS" "$FAILURES"
