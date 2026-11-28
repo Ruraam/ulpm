@@ -201,33 +201,73 @@ resolve_github_deb_asset() {
     printf '%s\n' "$selected_url"
 }
 
-_deb_download_direct_lib_deps() {
-    local package_name="${1:-}"
-    local target_dir="${2:-.}"
-    [[ -n "$package_name" ]] || return 0
-    command -v apt-cache >/dev/null 2>&1 || return 0
-    command -v apt-get >/dev/null 2>&1 || return 0
+_deb_download_required_deps() {
+    local primary_deb="$1" archive_dir="$2" build_dir="$3"
+    local host_packages="libc6|base-files|dpkg|debconf|perl-base|coreutils"
+    local status_file="$build_dir/apt-status"
+    local host_status="${DPKG_ADMINDIR:-/var/lib/dpkg}/status"
+    local primary_name plan dependencies
+    local -a apt_options=(
+        -o Dir::State::status="$status_file"
+        -o Dir::State::extended_states="$build_dir/apt-extended-states"
+        -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache=
+    )
 
-    local tmp_dep_file
-    tmp_dep_file="$(mktemp "${ULPM_CACHE_HOME:-/tmp}/apt_deps.XXXXXX")" || return 0
+    check_dependencies apt-get || return 1
+    primary_name="$(_deb_read_control_field "$primary_deb" Package)"
+    # Model the host-provided packages as already satisfied. Their installed
+    # versions and virtual provides matter, but their own dependency trees
+    # belong to the host and need not exist in the package's APT universe.
+    : > "$status_file" || return 1
+    if [[ -e "$host_status" ]]; then
+        awk -v host_packages="$host_packages" '
+            BEGIN { RS = ""; FS = "\n" }
+            $0 ~ ("(^|\n)Package: (" host_packages ")(\n|$)") &&
+            /(^|\n)Status: [^ ]+ ok installed(\n|$)/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i !~ /^[[:blank:]]/)
+                        keep = ($i ~ /^(Package|Status|Version|Architecture|Multi-Arch|Provides):/)
+                    if (keep) print $i
+                }
+                print ""
+            }
+        ' "$host_status" > "$status_file" || return 1
+    fi
+    mkdir -p -- "$archive_dir" || return 1
 
-    apt-cache depends --no-recommends --no-suggests "$package_name" 2>/dev/null \
-    | awk '/^[[:space:]]*Depends:[[:space:]]+(lib|[a-z0-9+-]+lib)/{print $2}' \
-    | sed -E 's/^<([^>]+)>$/\1/' \
-    | grep -vE '^(libc6|base-files|dpkg|debconf|perl-base|coreutils)$' \
-    | grep -vE '^<.*>$' \
-    | sort -u > "$tmp_dep_file" || true
+    log "Resolving required Debian dependencies..."
+    if ! plan="$(LC_ALL=C apt-get "${apt_options[@]}" --simulate --no-remove \
+        --no-install-recommends --no-install-suggests install "$primary_deb")"; then
+        [[ -z "$plan" ]] || printf '%s\n' "$plan" >&2
+        error "Could not resolve the required dependencies for $(basename "$primary_deb")."
+        return 1
+    fi
 
-    local -a deps=()
-    local dep_line
-    while IFS= read -r dep_line || [[ -n "$dep_line" ]]; do
-        [[ -n "$dep_line" ]] && deps+=("$dep_line")
-    done < "$tmp_dep_file"
-    rm -f -- "$tmp_dep_file"
+    # APT simulation emits Inst package [old-version] (version origin [arch]).
+    # Use its chosen versions for downloading, including from file: repositories.
+    dependencies="$(awk -v primary="$primary_name" -v host_packages="$host_packages" '
+        $1 == "Inst" {
+            name = $2
+            sub(/:.*/, "", name)
+            if (name == primary) next
+            if (name ~ ("^(" host_packages ")$")) {
+                print "The host must provide a compatible version of " $2 "." > "/dev/stderr"
+                exit 1
+            }
+            version = ($3 ~ /^\[/ ? $4 : $3)
+            if (version !~ /^\(.+/) exit 1
+            sub(/^\(/, "", version)
+            sub(/\)$/, "", version)
+            print $2 "=" version
+        }
+    ' <<< "$plan")" || return 1
+    [[ -n "$dependencies" ]] || return 0
 
-    if (( ${#deps[@]} > 0 )); then
-        log "Downloading ${#deps[@]} library dependency package(s)..."
-        ( cd "$target_dir" && apt-get download "${deps[@]}" 2>/dev/null ) || true
+    local -a packages
+    mapfile -t packages <<< "$dependencies"
+    if ! (cd "$archive_dir" && apt-get "${apt_options[@]}" download -- "${packages[@]}"); then
+        error "Could not download the required dependencies for $(basename "$primary_deb")."
+        return 1
     fi
 }
 
@@ -290,7 +330,7 @@ _cmd_deb_pack_work() (
     local deb_dir="$build_dir/debs"
     local root_dir="$build_dir/root"
     local app_name="$app_name_hint"
-    local extracted_name="" deb_url deb_filename deb_file
+    local extracted_name="" deb_url deb_filename deb_file primary_deb
     local -a downloaded_debs=()
     local native_arch deb_arch
 
@@ -350,46 +390,41 @@ _cmd_deb_pack_work() (
             }
         fi
 
-        if [[ -n "$extracted_name" ]]; then
-            log "Resolving direct library dependencies for '$extracted_name'..."
-            _deb_download_direct_lib_deps "$extracted_name" "$deb_dir" || true
-        fi
+        primary_deb="$deb_dir/$(basename "$pkg_input")"
     else
         # CASE 2: APT package name
-        check_dependencies apt-get apt-cache || return 1
-        [[ -n "$app_name" ]] || app_name="$pkg_input"
+        check_dependencies apt-get || return 1
 
         log "Downloading primary package '$pkg_input'..."
-        (
-            cd "$deb_dir" || exit 1
-            if ! apt-get download "$pkg_input"; then
-                error "Failed to download primary package: $pkg_input"
-                exit 1
-            fi
-        ) || return 1
-        _deb_download_direct_lib_deps "$pkg_input" "$deb_dir"
+        (cd "$deb_dir" && apt-get download -- "$pkg_input") || {
+            error "Failed to download primary package: $pkg_input"
+            return 1
+        }
+        shopt -s nullglob
+        downloaded_debs=("$deb_dir"/*.deb)
+        shopt -u nullglob
+        if (( ${#downloaded_debs[@]} != 1 )); then
+            error "Expected exactly one Debian archive for '$pkg_input'."
+            return 1
+        fi
+        primary_deb="${downloaded_debs[0]}"
+        extracted_name="$(_deb_read_control_field "$primary_deb" Package)"
+        [[ -n "$app_name" ]] || app_name="$extracted_name"
     fi
 
-    shopt -s nullglob
-    downloaded_debs=("$deb_dir"/*.deb)
-    shopt -u nullglob
-
-    if (( ${#downloaded_debs[@]} == 0 )); then
-        error "No Debian packages were downloaded or extracted."
+    if [[ -z "$extracted_name" ]]; then
+        error "Could not read Debian package metadata: $primary_deb"
         return 1
     fi
 
-    if [[ -z "$pkg_ver" ]]; then
-        for deb_file in "${downloaded_debs[@]}"; do
-            local cur_pkg
-            cur_pkg="$(_deb_read_control_field "$deb_file" Package)"
-            if [[ "$cur_pkg" == "$app_name" || "$cur_pkg" == "$extracted_name" ]]; then
-                pkg_ver="$(_deb_read_control_field "$deb_file" Version)"
-                break
-            fi
-        done
-        [[ -n "$pkg_ver" ]] || pkg_ver="$(_deb_read_control_field "${downloaded_debs[0]}" Version)"
-    fi
+    local dependency_dir="$build_dir/dependencies"
+    _deb_download_required_deps "$primary_deb" "$dependency_dir" "$build_dir" || return 1
+
+    shopt -s nullglob
+    downloaded_debs=("$dependency_dir"/*.deb "$primary_deb")
+    shopt -u nullglob
+
+    [[ -n "$pkg_ver" ]] || pkg_ver="$(_deb_read_control_field "$primary_deb" Version)"
 
     # Strip Debian Epoch (e.g. "1:2.0.4" -> "2.0.4") to maintain valid SemVer/filename format
     pkg_ver="${pkg_ver#*:}"
@@ -400,11 +435,12 @@ _cmd_deb_pack_work() (
     for deb_file in "${downloaded_debs[@]}"; do
         deb_arch="$(_deb_read_control_field "$deb_file" Architecture)"
         if [[ "$deb_arch" != all && -n "$native_arch" && "$deb_arch" != "$native_arch" ]]; then
-            warn "Skipping incompatible package $(basename "$deb_file") (arch: $deb_arch; host: $native_arch)."
-            continue
+            error "Incompatible package $(basename "$deb_file") (arch: $deb_arch; host: $native_arch)."
+            return 1
         fi
         if ! _deb_extract_archive "$deb_file" "$root_dir"; then
-            warn "Failed to extract archive: $(basename "$deb_file")"
+            error "Failed to extract archive: $(basename "$deb_file")"
+            return 1
         fi
     done
 
