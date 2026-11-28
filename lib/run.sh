@@ -222,7 +222,7 @@ cmd_run() {
         lpk_run_isolated \
             ${sandbox_opts[@]+"${sandbox_opts[@]}"} \
             "$resolved_target" \
-            -- "${app_args[@]}" || app_rc=$?
+            "${app_args[@]}" || app_rc=$?
     else
         lpk_run_isolated \
             ${sandbox_opts[@]+"${sandbox_opts[@]}"} \
