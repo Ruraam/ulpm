@@ -29,7 +29,7 @@ build_deb "$test_dir/repo/ulpm-test-data.deb" ulpm-test-data 2 \
     $'Depends: ulpm-test-unavailable | ulpm-test-leaf (>= 2)\n'
 build_deb "$test_dir/repo/ulpm-test-leaf.deb" ulpm-test-leaf 2 ''
 build_deb "$test_dir/ulpm-test-app.deb" ulpm-test-app 1 \
-    $'Pre-Depends: ulpm-test-data (= 2)\n'
+    $'Pre-Depends: ulpm-test-data (= 2), libc6 (>= 2), ulpm-test-host-abi (= 1)\n'
 (
     cd "$test_dir/repo"
     dpkg-scanpackages . /dev/null > Packages
@@ -47,6 +47,25 @@ Acquire::Languages "none";
 APT
 apt-get update >/dev/null
 
+# The host supplies libc6 and its ABI, including libc6's private dependencies.
+# An ordinary installed package must still be downloaded into the LPK.
+export DPKG_ADMINDIR="$test_dir/dpkg"
+mkdir -p "$DPKG_ADMINDIR"
+cat > "$DPKG_ADMINDIR/status" <<STATUS
+Package: libc6
+Status: install ok installed
+Architecture: $(dpkg --print-architecture)
+Version: 2
+Multi-Arch: same
+Provides: ulpm-test-host-abi (= 1)
+Depends: ulpm-test-host-private
+
+Package: ulpm-test-leaf
+Status: install ok installed
+Architecture: all
+Version: 2
+STATUS
+
 # Check the assembled payload at the handoff to compression and signing.
 cmd_pack() {
     [[ -x "$1/AppRun" ]] &&
@@ -61,6 +80,14 @@ cmd_deb_pack "$test_dir/ulpm-test-app.deb"
 rm "$test_dir/pack-called" "$test_dir/repo/ulpm-test-leaf.deb"
 if cmd_deb_pack "$test_dir/ulpm-test-app.deb"; then
     printf '%s\n' 'Expected a missing required download to fail.' >&2
+    exit 1
+fi
+[[ ! -e "$test_dir/pack-called" ]]
+
+# Check a host version mismatch independently of the missing archive.
+build_deb "$test_dir/ulpm-test-app.deb" ulpm-test-app 1 $'Depends: libc6 (>> 2)\n'
+if cmd_deb_pack "$test_dir/ulpm-test-app.deb"; then
+    printf '%s\n' 'Expected an incompatible host library to fail.' >&2
     exit 1
 fi
 [[ ! -e "$test_dir/pack-called" ]]
